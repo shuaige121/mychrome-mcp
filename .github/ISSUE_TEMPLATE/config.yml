@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup and troubleshooting
+    url: https://shuaige121.github.io/mychrome-mcp/getting-started.html
+    about: Start here for installation, permissions and client connection.
+  - name: Report a security vulnerability privately
+    url: https://github.com/shuaige121/mychrome-mcp/security/advisories/new
+    about: Do not post sensitive security reports in public issues.

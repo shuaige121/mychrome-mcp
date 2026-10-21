@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>leave fixture</title>
+<style>body{font:16px -apple-system,sans-serif;padding:40px} select,button{font-size:16px;margin:12px}</style>
+<h1>Round 5 fixture</h1>
+<p>Heading for paragraph B: <select id="h" aria-label="heading B">
+  <option value="">—</option><option>i</option><option>ii</option><option>iii</option><option>iv</option><option>v</option><option>vi</option><option>vii</option>
+</select></p>
+<p><button id="go" onclick="document.getElementById('out').textContent='clicked'">Start</button></p>
+<p><button id="ask" onclick="document.getElementById('out').textContent = confirm('Continue your unfinished answers?') ? 'confirmed' : 'cancelled'">Ask</button></p>
+<p id="out">idle</p>
+<p id="val">value=</p>
+<script>
+  // An exam-like page: a change is "unsaved work", so leaving asks first.
+  const h = document.getElementById('h');
+  h.addEventListener('change', () => { document.getElementById('val').textContent = 'value=' + h.value; });
+  window.addEventListener('beforeunload', (e) => { e.preventDefault(); e.returnValue = ''; });
+</script>

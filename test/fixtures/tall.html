@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>tall page</title>
+<style>
+html,body{margin:0;overflow-x:hidden}
+body{font:16px system-ui;height:500vh;position:relative}
+.band{position:absolute;left:0;right:0;height:1px;background:#ccc}
+.counter{position:absolute;padding:12px 24px}
+.box{position:absolute;overflow:auto;border:2px solid #666;background:#fafafa}
+.fill{position:relative;width:100%}
+#far{left:40%;top:300vh}
+#scroller{left:10%;top:55vh;width:40%;height:300px}
+#scroller .fill{height:2000px}
+#inner{left:20px;top:1500px}
+#outer2{left:45%;top:150vh;width:45%;height:400px}
+#outer2 .fill{height:1500px}
+#inner2{left:20px;top:800px;width:80%;height:250px}
+#inner2 .fill{height:1200px}
+#deep{left:20px;top:900px}
+</style>
+<p style="padding:16px">Wheel targets. <b>#far</b> is 3 screens down; <b>#inner</b> sits inside an
+<code>overflow:auto</code> box that is on the first screen; <b>#deep</b> sits inside a scroller nested in a
+scroller that itself starts below the fold. Every target counts its clicks (<code>data-count</code>).</p>
+<div class="band" style="top:100vh"></div><div class="band" style="top:200vh"></div><div class="band" style="top:300vh"></div>
+<button id="far" class="counter">Far target</button>
+<div id="scroller" class="box"><div class="fill">
+  <p style="padding:8px">Inner scroller: the target is 1500 px down.</p>
+  <button id="inner" class="counter">Inner target</button>
+</div></div>
+<div id="outer2" class="box"><div class="fill">
+  <p style="padding:8px">Outer scroller (starts 1.5 screens down).</p>
+  <div id="inner2" class="box"><div class="fill">
+    <p style="padding:8px">Nested scroller: the target is 900 px down.</p>
+    <button id="deep" class="counter">Deep target</button>
+  </div></div>
+</div></div>
+<script src="/rec.js"></script>

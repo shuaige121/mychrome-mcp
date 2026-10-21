@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible MyChrome problem.
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "Use synthetic content. Remove credentials, account details, private paths and conversations. For vulnerabilities, use the private reporting link in SECURITY.md."
+  - type: input
+    id: versions
+    attributes:
+      label: Environment
+      description: MyChrome release, macOS, Apple Silicon model, Node and AI client versions.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Prefer a small reproduction on the included local practice page.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized error and checks
+      description: Relevant error text and setup check result only. Do not paste raw logs or runtime records.

@@ -1,0 +1,97 @@
+{
+  "name": "mychrome-mcp",
+  "version": "0.12.0",
+  "description": "Let your AI help in the Chrome you already use. Local macOS MCP tools, real mouse and keyboard input, an interruptible native GUI, and reusable website routines.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "chrome",
+    "macos",
+    "browser-assistant",
+    "browser-automation",
+    "claude",
+    "codex",
+    "human-in-the-loop",
+    "local-first"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mychrome-mcp": "src/index.js"
+  },
+  "files": [
+    "src/*.js",
+    "src/*.swift",
+    "src/page/*.js",
+    "bin/cgevent",
+    "bin/chromectl",
+    "bin/cbmenu",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "docs/usage.zh-CN.md",
+    "llms.txt",
+    "docs/ai-guide.md",
+    "docs/release/DISTRIBUTION.md",
+    "docs/release/CHANGELOG.md",
+    "docs/conversation-center.md",
+    "scripts/install-gui.mjs",
+    "docs/routines.md",
+    "scripts/setup.sh",
+    "scripts/setup.mjs",
+    "examples/first-task/",
+    "docs/getting-started.md",
+    "docs/getting-started.zh-CN.md",
+    "docs/faq/",
+    "site/",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "SUPPORT.md"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build": "mkdir -p bin && swiftc -O -target arm64-apple-macos13 -o bin/cgevent.new src/helper.swift && mv bin/cgevent.new bin/cgevent && swiftc -O -target arm64-apple-macos13 -o bin/chromectl.new src/chromectl.swift && mv bin/chromectl.new bin/chromectl && swiftc -parse-as-library -O -target arm64-apple-macos13 -o bin/cbmenu.new src/menubar.swift src/conversation-ui.swift src/routine-ui.swift src/onboarding-ui.swift && mv bin/cbmenu.new bin/cbmenu && file bin/cgevent bin/chromectl bin/cbmenu",
+    "prepack": "npm run build",
+    "test": "node test/setup.test.mjs && node test/first-task.test.mjs && node test/onboarding-gui.test.mjs && node test/public-site.test.mjs && node test/routine-native-guard.test.mjs && node test/routine-cancel.test.mjs && node test/routines.test.mjs && node test/routine-targets.test.mjs && node test/routine-runner.test.mjs && node test/routine-integration.test.mjs && node test/routine-dispatch.test.mjs && node test/routine-gui.test.mjs && node test/gui-input-settings.test.mjs && node test/multi-agent-read.test.mjs && node test/visible-feed-binding.test.mjs && node test/gui-helper-path.test.mjs && node test/gui-list.test.mjs && node test/gui-drafts.test.mjs && node test/gui-lifecycle.test.mjs && node test/conversation-discovery.test.mjs && node test/gui-association.test.mjs && node test/gui-integration.test.mjs && node test/gui-ipc.test.mjs && node test/gui-service.test.mjs && node test/conversation-host.test.mjs && node test/agent-window-layout.test.mjs && node test/typing-mode.test.mjs && node test/ownership-observation.test.mjs && node test/visible-feed.test.mjs && node test/task-lifecycle.test.mjs && node test/input-source-dialog.test.mjs && node test/window-sharing.test.mjs && node test/native-identity.test.mjs && node test/native-input.test.mjs && node test/client.test.mjs && node test/tab-lookup.test.mjs && node test/metadata-recovery.test.mjs && node test/temporal.test.mjs && node test/release-export.test.mjs && node test/privacy.test.mjs && node test/navigation.test.mjs && node test/navigation-late-attribution.test.mjs && node test/screen-state.test.mjs && node test/native-select.test.mjs && node test/coords.test.mjs && node test/page.test.mjs && node test/block.test.mjs && node test/peers.test.mjs && node test/guard.test.mjs && node test/lock.test.mjs && node test/tabs.test.mjs && node test/settings.test.mjs && node test/settings-pause.test.mjs && node test/windowmatch.test.mjs && node test/ledger.test.mjs && node test/ask.test.mjs && node test/hotswap.test.mjs && node test/restart.test.mjs && node test/model.test.mjs && node test/session.test.mjs && node test/panel.test.mjs && node test/ocr.test.mjs && node test/habits.test.mjs && node test/promo-record-v02.test.mjs && node test/package.test.mjs && node test/doctor.test.mjs",
+    "doctor": "node src/index.js doctor",
+    "test:timing": "CHROME_BRIDGE_TIMING_STRICT=1 node test/session.test.mjs",
+    "live:queue:check": "node test/queue-live.mjs --check",
+    "live:queue": "node test/queue-live.mjs",
+    "live:focus:check": "node test/focus-live.mjs --check",
+    "live:focus": "node test/focus-live.mjs",
+    "live:held:check": "node test/held-wait-live.mjs --check",
+    "live:held": "node test/held-wait-live.mjs",
+    "live:ask:check": "node test/ask-live.mjs --check",
+    "live:ask": "node test/ask-live.mjs",
+    "check:ask:chromium": "node test/ask-chromium.mjs",
+    "check:temporal:chromium": "node test/temporal-chromium.mjs",
+    "gui": "node src/index.js gui",
+    "install:gui": "node scripts/install-gui.mjs",
+    "setup": "bash scripts/setup.sh",
+    "setup:check": "node scripts/setup.mjs --check",
+    "practice": "node examples/first-task/serve.mjs --open"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  },
+  "homepage": "https://shuaige121.github.io/mychrome-mcp/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shuaige121/mychrome-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shuaige121/mychrome-mcp/issues"
+  }
+}

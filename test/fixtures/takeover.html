@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>takeover live</title>
+<h1>Takeover live check</h1>
+<button id="go">Go</button>
+<input id="field" placeholder="type here" size="60">
+<p id="state">clicks=0 F19=0 Escape=0 other=0</p>
+<p id="mirror">value=</p>
+<p id="f19t">f19t=</p>
+<script>
+  const s = { clicks: 0, F19: 0, Escape: 0, other: 0 };
+  const show = () => { document.getElementById('state').textContent = `clicks=${s.clicks} F19=${s.F19} Escape=${s.Escape} other=${s.other}`; };
+  document.getElementById('go').addEventListener('click', () => { s.clicks++; show(); });
+  addEventListener('keydown', (e) => {
+    if (e.key === 'F19' || e.key === 'Escape') s[e.key]++;
+    if (e.key === 'F19') { const el = document.getElementById('f19t'); el.textContent += Date.now() + ','; }
+    else if (document.activeElement !== document.getElementById('field')) s.other++;
+    show();
+  }, true);
+  document.getElementById('field').addEventListener('input', (e) => {
+    document.getElementById('mirror').textContent = 'value=' + e.target.value;
+  });
+</script>

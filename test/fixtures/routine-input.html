@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="mychrome-fixture" content="routine-input-live-v1">
+<title>本地流程输入验证</title>
+<style>
+  body { max-width: 760px; margin: 40px auto; padding: 24px; font: 20px/1.5 system-ui; }
+  label, input, button { display: block; margin: 20px 0; }
+  input { width: 90%; padding: 14px; font: inherit; }
+  button { padding: 14px 22px; font: inherit; }
+  p { color: #62666b; font-size: 16px; }
+</style>
+<h1>本地流程输入验证</h1>
+<p>这是本机测试页面。只统计真实输入事件和文字长度，不保存输入正文。</p>
+<label for="fixture-input">测试文字</label>
+<input id="fixture-input" type="text" autocomplete="off" spellcheck="false" aria-label="测试文字">
+<button id="fixture-reset" type="button">清空并开始下一轮</button>
+<output id="evidence" hidden></output>
+<script>
+(() => {
+  const field = document.getElementById('fixture-input');
+  const output = document.getElementById('evidence');
+  const pressed = new Set();
+  let phase = 0, resets = 0, resetRefused = 0;
+  const fresh = () => ({ keydown: 0, keyup: 0, repeats: 0, duplicateDown: 0, unmatchedUp: 0,
+    beforeinput: 0, input: 0, paste: 0, pasteInput: 0, untrusted: 0, wrongTarget: 0 });
+  let counts = fresh();
+  function report() {
+    output.textContent = JSON.stringify({ fixture: 'routine-input-live-v1', phase,
+      resetTrusted: resets, resetRefused, valueLength: field.value.length,
+      counts: { ...counts, heldKeys: pressed.size } });
+  }
+  for (const type of ['keydown', 'keyup', 'beforeinput', 'input', 'paste']) {
+    document.addEventListener(type, event => {
+      if (!event.isTrusted) { counts.untrusted++; report(); return; }
+      if (event.target !== field) { counts.wrongTarget++; report(); return; }
+      counts[type]++;
+      if (type === 'keydown') {
+        if (event.repeat) counts.repeats++;
+        if (pressed.has(event.code)) counts.duplicateDown++;
+        pressed.add(event.code);
+      } else if (type === 'keyup') {
+        if (!pressed.delete(event.code)) counts.unmatchedUp++;
+      } else if (type === 'input' && event.inputType === 'insertFromPaste') counts.pasteInput++;
+      // Do not inspect event.key, event.data or clipboardData. Key codes exist
+      // only in this in-memory pairing set; the evidence contains counts only.
+      report();
+    }, true);
+  }
+  document.getElementById('fixture-reset').addEventListener('click', event => {
+    if (!event.isTrusted) { counts.untrusted++; report(); return; }
+    if (pressed.size) { resetRefused++; report(); return; }
+    field.value = '';
+    phase++; resets++; counts = fresh(); report();
+  });
+  report();
+})();
+</script>
+</html>

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MyChrome practice — a little plan for your weekend</title>
+  <link rel="stylesheet" href="/practice.css">
+  <script src="/practice.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><a href="/" aria-label="MyChrome practice home">MyChrome <span>practice</span></a><span class="local">Only on this Mac</span></header>
+    <section class="intro" aria-labelledby="title">
+      <p class="eyebrow">YOUR FIRST TASK · ABOUT TWO MINUTES</p>
+      <h1 id="title">A little plan for<br>your weekend.</h1>
+      <p>Let your AI read a page, fill a field and check the result.<br class="desktop"> Press Esc twice quickly to stop and take control.</p>
+    </section>
+    <div class="workspace">
+      <section class="ideas" aria-labelledby="ideas-title">
+        <p class="eyebrow">01 · READ THE PAGE</p>
+        <h2 id="ideas-title">Three easy ideas</h2>
+        <article><span class="number">01</span><div><h3>Visit the weekend market</h3><p>Browse the stalls, pick up fresh fruit and find something for lunch.</p><span class="tag">Saturday morning</span></div></article>
+        <article><span class="number">02</span><div><h3>Take a park walk</h3><p>Choose a shady path and bring a cold drink.</p><span class="tag">Saturday afternoon</span></div></article>
+        <article><span class="number">03</span><div><h3>Try a new recipe</h3><p>Make a simple meal with the ingredients you already have.</p><span class="tag">Sunday afternoon</span></div></article>
+      </section>
+      <section class="plan" aria-labelledby="plan-title">
+        <p class="eyebrow">02 · FILL IN A SMALL PLAN</p>
+        <h2 id="plan-title">Make it a plan</h2>
+        <form id="plan-form">
+          <label for="plan-name">Plan name</label>
+          <input id="plan-name" name="plan" placeholder="What would you like to do?" maxlength="120" required autocomplete="off">
+          <label for="plan-when">When</label>
+          <select id="plan-when" name="when" required>
+            <option value="">Choose a time</option>
+            <option value="Saturday morning">Saturday morning</option>
+            <option value="Saturday afternoon">Saturday afternoon</option>
+            <option value="Sunday afternoon">Sunday afternoon</option>
+          </select>
+          <button type="submit">Save practice plan <span aria-hidden="true">↗</span></button>
+          <p class="small">Practice only. No account, booking or message is created. The result stays on this page until you reload.</p>
+        </form>
+        <div id="saved-result" class="result" role="status" aria-live="polite" tabindex="-1" hidden>
+          <p class="eyebrow">03 · CHECK THE RESULT</p>
+          <h3>Practice plan saved</h3>
+          <dl><dt>Plan</dt><dd id="saved-plan"></dd><dt>When</dt><dd id="saved-when"></dd></dl>
+          <p class="small">Ask your AI to read these values back. This confirms what the page saved.</p>
+        </div>
+      </section>
+    </div>
+    <section class="prompt" aria-labelledby="prompt-title">
+      <h2 id="prompt-title">Give your AI a first task</h2>
+      <p>Connect MyChrome in your AI client, then paste this request. Use synthetic practice text only.</p>
+      <label for="task-prompt" class="sr-only">Practice request to copy</label>
+      <textarea id="task-prompt" readonly rows="4">Use MyChrome on this practice page. Read the weekend ideas, enter "Visit the weekend market" in Plan name, choose "Saturday morning" in When, and press "Save practice plan". Read the saved result and confirm both values. Use select_option for the dropdown. Stop when I cancel; I can press Esc twice quickly to stop and take control.</textarea>
+    </section>
+    <footer>Local practice · Nothing is sent to a website · Reload to start again</footer>
+  </main>
+</body>
+</html>

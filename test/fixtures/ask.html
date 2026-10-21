@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>MyChrome 输入测试</title>
+<style>
+  body { font: 16px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; max-width: 480px; margin: 60px auto; padding: 0 16px; color: #1d1d1f; }
+  label { display: block; margin-top: 12px; }
+  input { display: block; width: 100%; box-sizing: border-box; font-size: 16px; padding: 8px; margin-top: 4px; }
+  button { margin-top: 16px; font-size: 16px; padding: 8px 20px; }
+  #msg { color: #6e6e73; }
+</style>
+</head>
+<body>
+<h1 id="h">登录（测试页）</h1>
+<p id="msg">这是 MyChrome 在本机开的测试页，输入的内容不会发到任何地方，也不会出现在网址里。</p>
+<form id="f">
+  <label>用户名<input name="user" value="demo" autocomplete="off"></label>
+  <label>密码<input name="pw" type="password" placeholder="随便输几个字" autocomplete="off"></label>
+  <label>短信验证码<input name="code" inputmode="numeric" placeholder="6 位数字" autocomplete="off"></label>
+  <button type="submit">登录</button>
+</form>
+<script>
+  // Like a real login: the request takes a moment, then the next page (the value never goes anywhere).
+  document.getElementById('f').addEventListener('submit', function (e) {
+    e.preventDefault();
+    document.getElementById('msg').textContent = '登录中…';
+    setTimeout(function () { location.href = 'ask.html?done=1'; }, 1500);
+  });
+  if (new URLSearchParams(location.search).get('done') === '1') {
+    document.getElementById('h').textContent = '已提交';
+    document.getElementById('f').remove();
+    document.getElementById('msg').textContent = '测试完成，MyChrome 会自己关掉这个标签。';
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>长文目录测试页</title>
+<style>
+body{font:16px/1.7 system-ui;margin:0 auto;max-width:860px;padding:16px}
+[hidden]{display:none!important}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;border-bottom:1px solid #ddd;padding-bottom:10px}
+#refs li{font-size:13px;color:#444}
+footer{border-top:1px solid #ddd;margin-top:24px;padding-top:10px}
+.promo{position:fixed;left:50%;top:20%;transform:translateX(-50%);z-index:10;background:#fff;padding:20px 24px;
+  border-radius:8px;box-shadow:0 10px 40px rgba(0,0,0,.35);min-width:320px}
+</style>
+</head>
+<body>
+<!-- read_page outline mode (round 7): headings in three levels (h2 > h3 > h4, with a single h1 as the page title),
+     an "economy" and "society" part that push the text past 12000 characters before the "epilogue" section,
+     a references section far over 8000 tokens, a footer, and with ?modal=1 a modal subscription dialog.
+     Filler paragraphs and references are generated below so the file stays readable. -->
+<header>
+  <a id="site-home" href="#top">长文站</a>
+  <a id="site-login" href="#login">登录</a>
+  <input id="site-search" placeholder="站内搜索">
+  <button id="print" type="button" aria-label="打印本页"></button>
+</header>
+
+<main>
+<h1 id="h-title">狮城简史（测试长文）</h1>
+<p id="lead">导言：这是给 read_page 目录模式用的测试长文。正文有三级标题；经济和社会两部分把正文推过一万两千字；参考文献一节大得不正常；页面末尾有页脚；带 ?modal=1 打开时会弹出订阅弹窗。</p>
+
+<h2 id="h-geo">地理</h2>
+<p>地理部分分为气候和地形两小节。</p>
+<h3 id="h-climate">气候</h3>
+<div class="fill" data-topic="气候" data-n="8"></div>
+<button id="climate-table" type="button">展开气候表</button>
+<h3 id="h-terrain">地形</h3>
+<div class="fill" data-topic="地形" data-n="8"></div>
+
+<h2 id="h-history">历史</h2>
+<p>历史部分按时期分成三小节。<a id="timeline-link" href="#timeline">大事年表</a></p>
+<h3 id="h-early">早期</h3>
+<div class="fill" data-topic="早期" data-n="12"></div>
+<h3 id="h-colonial">殖民时期</h3>
+<div class="fill" data-topic="殖民时期" data-n="10"></div>
+<h4 id="h-straits">海峡殖民地</h4>
+<div class="fill" data-topic="海峡殖民地" data-n="10"></div>
+<a id="straits-more" href="#straits">海峡殖民地的更多资料</a>
+<h3 id="h-independence">独立</h3>
+<div class="fill" data-topic="独立" data-n="12"></div>
+
+<h2 id="h-economy">经济</h2>
+<div class="fill" data-topic="经济" data-n="40"></div>
+
+<h2 id="h-society">社会</h2>
+<div class="fill" data-topic="社会" data-n="40"></div>
+
+<h2 id="h-epilogue">尾声</h2>
+<p id="secret">藏在一万两千字之后的段落：暗号 PINEAPPLE-42。</p>
+<button id="late-btn" type="button">尾声里的按钮</button>
+
+<h2 id="h-refs">参考文献</h2>
+<ol id="refs"></ol>
+</main>
+
+<footer>
+  <a id="about" href="#about">关于本站</a>
+  <a id="privacy" href="#privacy">隐私政策</a>
+</footer>
+
+<div id="promo" class="promo" role="dialog" aria-modal="true" aria-labelledby="promo-title" hidden data-rect="400,160,600,260">
+  <h2 id="promo-title">订阅长文周报</h2>
+  <p>每周一封，随时退订。</p>
+  <input id="promo-email" type="email" placeholder="邮箱">
+  <button id="promo-sub" type="button">订阅</button>
+  <button id="promo-close" type="button">以后再说</button>
+</div>
+
+<script>
+(function () {
+  // Deterministic filler: about 110 Chinese characters a paragraph, each naming its section and number.
+  var S = [
+    '这一段是测试用的填充文字，用来把这一节撑到真实文章的长度，句子本身没有特别的意思，读到这里可以跳过。',
+    '港口、航线和货栈在这里反复出现，只是为了让每一段都像正文一样有主语、有谓语，而不是一串重复的字。',
+    '如果你在目录模式里看到这一段，说明你展开了这一节，或者这一节正好在屏幕上，这两种情况都符合预期。',
+    '测试关心的是这一段属于哪一节、在不在屏上、被算进了多少 token，而不是它讲了什么具体的历史事实。',
+    '为了让估算稳定，每段的长度大致相同，汉字按一个 token 计，英文和数字按三点五个字符一个 token 计。'
+  ];
+  var fills = document.querySelectorAll('.fill');
+  for (var i = 0; i < fills.length; i++) {
+    var box = fills[i], n = +box.getAttribute('data-n'), topic = box.getAttribute('data-topic');
+    for (var k = 1; k <= n; k++) {
+      var p = document.createElement('p');
+      p.textContent = '【' + topic + '·第 ' + k + ' 段】' + S[k % S.length] + S[(k + 2) % S.length];
+      box.appendChild(p);
+    }
+  }
+  var refs = document.getElementById('refs');
+  for (var r = 1; r <= 300; r++) {
+    var li = document.createElement('li');
+    var a = document.createElement('a');
+    a.href = '#ref-' + r;
+    a.textContent = 'Reference ' + r + ': Tan, A. and Lim, B. A Long English Title About Port Cities, Trade Routes and ' +
+      'Colonial Records, volume ' + r + '. Example Press, ' + (1900 + r % 120) + ', pp. ' + r + '-' + (r + 20) + '.';
+    li.appendChild(a);
+    refs.appendChild(li);
+  }
+  var promo = document.getElementById('promo');
+  if (/[?&]modal=1\b/.test(location.search)) promo.hidden = false;
+  document.getElementById('promo-close').addEventListener('click', function () { promo.hidden = true; });
+})();
+</script>
+</body>
+</html>

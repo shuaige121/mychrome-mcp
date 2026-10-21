@@ -1,0 +1,10 @@
+<!doctype html><meta charset="utf-8"><title>world probe</title>
+<p><button id="b">A button</button> <a href="#x">a link</a></p>
+<p id="seen">pending</p>
+<script>
+// The page's own (main-world) view: does it ever see chrome-bridge's globals?
+setInterval(function () {
+  var keys = Object.keys(window).filter(function (k) { return /chromeBridge/i.test(k); });
+  document.getElementById('seen').textContent = 'main-world sees: [' + keys.join(',') + '] webdriver=' + navigator.webdriver;
+}, 200);
+</script>

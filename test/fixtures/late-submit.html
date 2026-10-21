@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyChrome delayed submit</title>
+<style>
+  body { max-width: 700px; margin: 60px auto; padding: 24px; font: 20px system-ui; }
+  label { display: block; margin: 24px 0; }
+  input, select, button { font: inherit; padding: 12px; }
+  output { display: block; white-space: pre-wrap; line-height: 1.7; }
+</style>
+<h1>MyChrome delayed submit</h1>
+<p>Local test only. Submission waits 2.5 seconds before opening the result.</p>
+<form id="form">
+  <label>Sample text <input id="sample" autocomplete="off"></label>
+  <label>Choice <select id="choice">
+    <option value="">Choose one</option><option>Alpha</option><option>Beta</option>
+  </select></label>
+  <button id="submit" type="submit">Submit local test</button>
+</form>
+<output id="result">Not submitted.</output>
+<script>
+  const storageKey = 'mychrome-delayed-submit';
+  const form = document.querySelector('#form');
+  const sample = document.querySelector('#sample');
+  const choice = document.querySelector('#choice');
+  const result = document.querySelector('#result');
+  if (new URLSearchParams(location.search).has('result')) {
+    form.hidden = true;
+    const data = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+    result.textContent = data ? 'Saved local result\n' + JSON.stringify(data, null, 2) : 'No saved result.';
+  } else {
+    const data = { keydowns: 0, pastes: 0, trustedTextInputs: 0, selectionTrusted: false, submitClickTrusted: false };
+    sample.addEventListener('keydown', event => { if (event.isTrusted) data.keydowns++; });
+    sample.addEventListener('paste', () => data.pastes++);
+    sample.addEventListener('input', event => { if (event.isTrusted) data.trustedTextInputs++; });
+    choice.addEventListener('change', event => { data.selectionTrusted = event.isTrusted; });
+    document.querySelector('#submit').addEventListener('click', event => { data.submitClickTrusted = event.isTrusted; });
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      if (form.dataset.pending) return;
+      form.dataset.pending = 'true';
+      sessionStorage.setItem(storageKey, JSON.stringify({ ...data, text: sample.value, choice: choice.value }));
+      result.textContent = 'Saving…';
+      setTimeout(() => { location.href = 'late-submit.html?result=1'; }, 2500);
+    });
+  }
+</script>
+</html>

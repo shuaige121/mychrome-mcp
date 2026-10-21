@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Queue test</title>
+<style>
+  body { font: 20px -apple-system, sans-serif; margin: 40px; }
+  button { font-size: 28px; padding: 18px 40px; margin: 20px 0; }
+  #n { font-weight: 600; }
+</style></head>
+<body>
+<h1 id="who">Agent</h1>
+<p>A neutral test page for several agents at once: each agent clicks its own button.</p>
+<button id="go">Press</button>
+<p>Pressed: <span id="n">0</span></p>
+<script>
+  const who = new URLSearchParams(location.search).get('agent') || '?';
+  document.getElementById('who').textContent = `Agent ${who}`;
+  document.title = `Queue test ${who}`;
+  document.getElementById('go').textContent = `Press ${who}`;
+  let n = 0;
+  document.getElementById('go').addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    document.getElementById('n').textContent = String(++n);
+  });
+</script>
+</body></html>

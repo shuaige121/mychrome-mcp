@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>native ui fixture</title>
+<style>
+  body{font:16px -apple-system,sans-serif;padding:40px}
+  .menu{display:inline-block;position:relative}
+  .menu > span{padding:8px 14px;border:1px solid #888;border-radius:6px;cursor:default}
+  .menu ul{display:none;position:absolute;top:34px;left:0;margin:0;padding:6px 0;list-style:none;border:1px solid #888;background:#fff;min-width:160px}
+  .menu:hover ul{display:block}
+  .menu li a{display:block;padding:6px 14px;color:#000;text-decoration:none}
+  .menu li a:hover{background:#def}
+  p{margin:18px 0}
+</style>
+<h1>Round 6 native UI fixture</h1>
+<p><span class="menu"><button id="m" type="button">Hover menu</button><ul><li><a href="#" id="hi" onclick="out('menu: Settings');return false">Settings</a></li><li><a href="#" onclick="out('menu: Logout');return false">Logout</a></li></ul></span></p>
+<p><button id="ask" onclick="var v = prompt('Your name?'); out('prompt: ' + v)">Ask name</button></p>
+<p>Date: <input type="date" id="d" onchange="out('date: ' + this.value)"></p>
+<p id="out">idle</p>
+<script>function out(t){ document.getElementById('out').textContent = t; }</script>

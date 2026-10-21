@@ -1,0 +1,139 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>event recorder</title>
+<style>
+body{font:16px system-ui;margin:0;height:1600px}
+#b{position:absolute;left:55%;top:420px;padding:14px 28px}
+#f{position:absolute;left:20%;top:260px;width:260px}
+#counter{position:absolute;left:20%;top:420px;padding:14px 28px}
+#ta{position:absolute;left:20%;top:540px;width:300px;height:80px}
+#ce{position:absolute;left:55%;top:540px;width:300px;min-height:80px;border:1px solid #888;padding:4px}
+</style>
+<p style="padding:20px">Records every input event the page receives. Nothing leaves this page except
+beacons to the local fixture server (<code>/beacon</code>). <code>?dirty=1</code> asks before unload
+(Chrome shows that prompt only after the page has had a user gesture).</p>
+<input id="f" placeholder="type here">
+<button id="b">Target X</button>
+<button id="counter">Count 0</button>
+<textarea id="ta" placeholder="textarea"></textarea>
+<div id="ce" contenteditable="true" aria-label="editor"></div>
+<script id="recorder">
+// What a page can see. Everything is kept in window.__rec (read back later).
+// test/fixtures/server.mjs serves this block as /rec.js for the other fixtures.
+(function () {
+var q = new URLSearchParams(location.search);
+var rec = window.__rec = {
+  events: [], leaks: [], t0: performance.now(),
+  url: location.href, id: q.get('id'), referrer: document.referrer, dirty: q.get('dirty') === '1',
+  samples: [], counter: [], beacons: []
+};
+
+function beacon(kind, extra) {
+  var body = { kind: kind, t: performance.now(), page: location.pathname + location.search, id: rec.id };
+  for (var k in extra || {}) body[k] = extra[k];
+  rec.beacons.push({ kind: kind, t: body.t });
+  try { if (navigator.sendBeacon) navigator.sendBeacon('/beacon', JSON.stringify(body)); } catch (e) {}
+}
+rec.beacon = beacon;
+
+// The tool's JS runs in an isolated world (measured): it shares the DOM but not
+// globals, so it asks for the log with a DOM event and reads a data attribute.
+document.addEventListener('rec-dump', function () {
+  try {
+    rec.visEntries = performance.getEntriesByType('visibility-state')
+      .map(function (e) { return { name: e.name, t: e.startTime }; });
+  } catch (e) { rec.visEntries = null; }
+  document.documentElement.dataset.rec = JSON.stringify(rec);
+});
+
+// Would fire if the tool's global were written into THIS world. Measured
+// 2026-09-28: it is not (AppleScript `execute javascript` is isolated).
+Object.defineProperty(window, '__chromeBridge', {
+  configurable: true,
+  set: function (v) {
+    rec.leaks.push({ what: 'window.__chromeBridge assigned from page world', t: performance.now() });
+    Object.defineProperty(window, '__chromeBridge', { value: v, writable: true, configurable: true });
+  }
+});
+
+var TYPES = ['pointerover','pointerenter','pointermove','pointerdown','pointerup','pointerout',
+  'mouseover','mouseenter','mousemove','mousedown','mouseup','click','focus','focusin',
+  'keydown','keypress','input','keyup','wheel','scroll','pointerrawupdate','blur','focusout',
+  'beforeinput','compositionstart','compositionupdate','compositionend','paste'];
+function tgt(e) {
+  var t = e.target;
+  if (!t || t === window) return 'window';
+  if (t === document) return 'document';
+  return t.id ? '#' + t.id : (t.tagName || '').toLowerCase();
+}
+// Foreground signals a page can read.
+document.addEventListener('visibilitychange', function () {
+  rec.events.push({ type: 'visibilitychange', t: performance.now(), vis: document.visibilityState, hasFocus: document.hasFocus() });
+  beacon('visibility', { vis: document.visibilityState });
+});
+window.addEventListener('focus', function (e) { if (e.target === window) rec.events.push({ type: 'window-focus', t: performance.now(), hasFocus: document.hasFocus() }); });
+window.addEventListener('blur', function (e) { if (e.target === window) rec.events.push({ type: 'window-blur', t: performance.now(), hasFocus: document.hasFocus() }); });
+TYPES.forEach(function (ty) {
+  window.addEventListener(ty, function (e) {
+    var r = { type: ty, t: e.timeStamp, trusted: e.isTrusted, vis: document.visibilityState, hasFocus: document.hasFocus(), tgt: tgt(e) };
+    if ('clientX' in e) {
+      r.x = e.clientX; r.y = e.clientY; r.sx = e.screenX; r.sy = e.screenY;
+      r.mx = e.movementX; r.my = e.movementY; r.buttons = e.buttons; r.detail = e.detail;
+    }
+    if ('pointerType' in e) {
+      r.pt = e.pointerType; r.pressure = e.pressure; r.w = e.width; r.h = e.height;
+      var co = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+      r.coalesced = co ? co.length : null;
+      if (co && co.length) {
+        r.coalT = co.map(function (c) { return c.timeStamp; });                              // (1)
+        if (co.length > 1) r.coalXY = co.map(function (c) { return [c.clientX, c.clientY]; });
+      }
+    }
+    if (e.sourceCapabilities) r.firesTouch = e.sourceCapabilities.firesTouchEvents;
+    if ('sourceCapabilities' in e) r.srcCapNull = e.sourceCapabilities === null;              // (4)
+    if ('key' in e) { r.key = e.key; r.code = e.code; r.repeat = e.repeat; }
+    if ('metaKey' in e) { r.meta = e.metaKey; r.ctrl = e.ctrlKey; r.alt = e.altKey; }        // (3)
+    if (ty === 'wheel') {                                                                     // (2)
+      r.dy = e.deltaY; r.dx = e.deltaX; r.mode = e.deltaMode;
+      r.wdy = e.wheelDeltaY; r.wdx = e.wheelDeltaX;
+      r.momentum = 'momentum' in e ? e.momentum : null;
+    }
+    if ('inputType' in e) { r.inputType = e.inputType; r.data = e.data; }
+    if (ty.indexOf('composition') === 0) { r.data = e.data; }
+    if ('keyCode' in e) { r.keyCode = e.keyCode; r.isComposing = e.isComposing; r.shift = e.shiftKey; }
+    if (ty === 'scroll') {
+      r.sy = window.scrollY;
+      if (e.target && e.target.nodeType === 1) r.est = e.target.scrollTop;
+    }
+    var ua = navigator.userActivation;                                                        // (5)
+    if (ua) { r.uaActive = ua.isActive; r.uaBeen = ua.hasBeenActive; }
+    rec.events.push(r);
+  }, true);
+});
+
+// (6) scroll position and visibility over time, including while hidden.
+setInterval(function () {
+  rec.samples.push({ t: performance.now(), sy: window.scrollY, sx: window.scrollX, vis: document.visibilityState });
+}, 250);
+
+// Click-effect ground truth: every #counter / .counter click adds exactly one.
+Array.prototype.forEach.call(document.querySelectorAll('#counter, .counter'), function (el) {
+  el.dataset.count = '0';
+  el.addEventListener('click', function (e) {
+    var n = Number(el.dataset.count) + 1;
+    el.dataset.count = String(n);
+    if (el.id === 'counter') el.textContent = 'Count ' + n;
+    rec.counter.push({ el: el.id || el.className, n: n, t: e.timeStamp, trusted: e.isTrusted, x: e.clientX, y: e.clientY, detail: e.detail });
+  });
+});
+
+// (8) unload signals, sent to the fixture server because the page is gone after them.
+window.addEventListener('pagehide', function (e) { beacon('pagehide', { persisted: e.persisted, vis: document.visibilityState }); });
+window.addEventListener('beforeunload', function (e) {
+  beacon('beforeunload', { dirty: rec.dirty, uaBeen: navigator.userActivation ? navigator.userActivation.hasBeenActive : null });
+  if (rec.dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+// (9) where the navigation came from (also logged by the server as Referer).
+beacon('load', { referrer: document.referrer, dirty: rec.dirty });
+})();
+</script>

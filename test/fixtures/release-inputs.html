@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>MyChrome input regression fixture</title>
+<style>
+  body { font: 16px/1.4 system-ui; margin: 18px; max-width: 960px; }
+  [hidden] { display: none !important; }
+  section { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; }
+  label { display: flex; flex-direction: column; gap: 4px; }
+  input, select, button, [contenteditable] { font: inherit; padding: 6px; }
+  input { width: 230px; }
+  [contenteditable] { border: 1px solid #888; min-height: 36px; }
+  pre { padding: 8px; background: #eee; white-space: pre-wrap; }
+  iframe { width: 94%; height: 150px; border: 1px solid #777; }
+</style>
+<h1>Input regression fixture</h1>
+<section>
+  <label>Native select inside label
+    <select id="select"><option>Basic</option><option>Standard</option><option>Premium</option>
+      <optgroup label="Unavailable" disabled><option>Disabled plan</option></optgroup>
+    </select>
+  </label>
+  <label>Date <input id="date" type="date"></label>
+  <label>Month <input id="month" type="month"></label>
+  <label>Week <input id="week" type="week"></label>
+  <label>Time <input id="time" type="time" step="0.001"></label>
+  <label>Local datetime <input id="datetime" type="datetime-local" step="0.001"></label>
+</section>
+<div id="editor" contenteditable="true" role="textbox" aria-label="Editable note">Original note</div>
+<section><button id="count">Count trusted clicks</button><button id="menu">Focus native select for menu test</button></section>
+<pre id="status">No input yet</pre>
+<div id="shadow"></div>
+<iframe id="frame" title="Cross-origin controls"></iframe>
+<script>
+  const counts = { clicks: 0, trusted: 0, untrusted: 0 };
+  const status = document.querySelector('#status');
+  const report = (event) => {
+    if (event) counts[event.isTrusted ? 'trusted' : 'untrusted']++;
+    const values = Object.fromEntries(['select', 'date', 'month', 'week', 'time', 'datetime'].map(id => [id, document.getElementById(id).value]));
+    status.textContent = JSON.stringify({ ...counts, ...values, note: document.getElementById('editor').textContent });
+  };
+  document.querySelector('#count').onclick = event => { counts.clicks++; report(event); };
+  document.querySelector('#menu').onclick = () => document.querySelector('#select').focus();
+  document.addEventListener('input', report);
+  document.addEventListener('change', report);
+  const frame = document.querySelector('#frame');
+  if (new URLSearchParams(location.search).has('frame')) {
+    document.querySelector('h1').textContent = 'Cross-origin controls';
+    document.querySelector('section').hidden = true;
+    document.querySelector('#editor').hidden = true;
+    document.querySelector('#menu').hidden = true;
+    document.querySelector('#shadow').hidden = true;
+    frame.remove();
+  } else {
+    const root = document.querySelector('#shadow').attachShadow({ mode: 'closed' });
+    root.innerHTML = '<p>Closed shadow controls: <button style="font:16px system-ui;padding:6px">Shadow button</button> <select style="font:16px system-ui;padding:6px"><option>Shadow basic</option><option>Shadow premium</option></select></p>';
+    root.querySelector('button').onclick = event => { counts.clicks++; report(event); };
+    frame.src = location.href.replace('127.0.0.1', 'localhost').split('?')[0] + '?frame=1';
+  }
+</script>
+</html>

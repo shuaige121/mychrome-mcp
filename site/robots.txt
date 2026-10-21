@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://shuaige121.github.io/mychrome-mcp/sitemap.xml

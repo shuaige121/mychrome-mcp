@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MyChrome FAQ — Clients, privacy and controls</title>
+    <meta
+      name="description"
+      content="Clients, existing logins, privacy, desktop controls and website compatibility."
+    />
+    <meta name="theme-color" content="#f7f6f2" />
+    <link
+      rel="canonical"
+      href="https://shuaige121.github.io/mychrome-mcp/faq.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="en"
+      href="https://shuaige121.github.io/mychrome-mcp/faq.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="zh-CN"
+      href="https://shuaige121.github.io/mychrome-mcp/zh/faq.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="x-default"
+      href="https://shuaige121.github.io/mychrome-mcp/faq.html"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="MyChrome" />
+    <meta
+      property="og:title"
+      content="MyChrome FAQ — Clients, privacy and controls"
+    />
+    <meta
+      property="og:description"
+      content="Clients, existing logins, privacy, desktop controls and website compatibility."
+    />
+    <meta
+      property="og:url"
+      content="https://shuaige121.github.io/mychrome-mcp/faq.html"
+    />
+    <meta property="og:locale" content="en_US" />
+    <meta
+      property="og:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="MyChrome — AI help in the Chrome you already use"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./site.js" defer></script>
+  </head>
+  <body class="docs-page">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header wrap">
+      <a class="wordmark" href="./" aria-label="MyChrome home"
+        >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
+      >
+      <nav aria-label="Main navigation">
+        <a href="getting-started.html">Get started</a><a href="faq.html">FAQ</a
+        ><a href="https://github.com/shuaige121/mychrome-mcp">GitHub</a
+        ><a class="language" href="zh/faq.html" lang="zh-CN">中文</a>
+      </nav>
+    </header>
+    <main id="main">
+      <div class="wrap doc-header">
+        <p class="eyebrow">FAQ</p>
+        <h1>A few things you may be wondering.</h1>
+        <p class="intro">
+          Clients, existing logins, privacy, desktop controls and website
+          compatibility.
+        </p>
+      </div>
+      <div class="wrap faq-layout">
+        <article class="prose">
+          <h2 id="what-is-mychrome">What is MyChrome?</h2>
+          <p>
+            A local MCP server and native macOS app that let an AI assistant
+            read and operate the Google Chrome you already use. It uses Chrome
+            Apple Events for page access and real mouse and keyboard input for
+            actions. No Chrome extension or debugging port is needed.
+          </p>
+          <h2 id="which-computers-and-clients-work">
+            Which computers and clients work?
+          </h2>
+          <p>
+            Apple Silicon Macs running macOS 13+ with Google Chrome, supported
+            Node.js and Xcode Command Line Tools. Codex and Claude Code support
+            the browser tools; other local stdio MCP clients can use the
+            generated connection paths. The native conversation text/reply
+            integration requires supported Codex integration and an associated
+            thread. Claude live text and direct replies are not available in the
+            MyChrome window.
+          </p>
+          <h2 id="can-it-use-my-existing-login">
+            Can it use my existing login?
+          </h2>
+          <p>
+            Yes, it operates your installed Chrome. Ask your assistant to use
+            the exact existing tab and confirm the account displayed by the
+            website before making changes. A Chrome profile and a website
+            account are not necessarily the same identity.
+            <a
+              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/faq/use-my-logged-in-chrome-with-claude-code.md"
+              >Claude Code setup</a
+            >.
+          </p>
+          <h2 id="does-it-work-on-every-website">
+            Does it work on every website?
+          </h2>
+          <p>
+            No. Compatibility depends on the site&#x27;s controls, permissions
+            and current page state. A site may require you to log in or handle a
+            challenge. Named-platform compatibility needs a real test of that
+            workflow; the local practice demo does not establish it.
+            <a
+              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/faq/what-happens-at-a-captcha.md"
+              >Site challenges</a
+            >.
+          </p>
+          <h2 id="how-do-i-stop-it">How do I stop it?</h2>
+          <p>
+            Press Esc twice quickly, within 0.8 seconds, to cancel the current
+            agent and return keyboard and mouse control. The agent must wait for
+            a new instruction before taking over again. To prevent new input
+            across agents, use Pause AI actions after control is returned.
+            Stopping does not undo actions already sent.
+          </p>
+          <h2 id="can-i-use-the-mouse-while-it-works">
+            Can I use the mouse while it works?
+          </h2>
+          <p>
+            During takeover, ordinary physical input is intercepted. There is
+            one pointer and keyboard on the desktop, and agent input takes
+            turns. Reading can happen concurrently. Use double Esc when you need
+            to take over.
+          </p>
+          <h2 id="what-stays-on-my-mac">What stays on my Mac?</h2>
+          <p>
+            MyChrome&#x27;s settings, operation records and website routine
+            metadata are local. Routine recording is enabled by default and can
+            be turned off. It records filtered page/target descriptions and
+            action order; typed and selected values are not saved as replay
+            defaults. Paths, labels and routine names may still reveal usage
+            context. Page content returned through MCP goes to your AI client
+            and is handled under its settings. Do not share runtime directories
+            or account screenshots.
+          </p>
+          <h2 id="what-are-website-routines">What are website routines?</h2>
+          <p>
+            Saved continuous sequences of supported website actions. Review the
+            steps, enter fresh values and select an existing tab for each run.
+            Replay uses the same guarded input path without model calls between
+            steps and stops when the page or target no longer matches. It does
+            not support every control or prove an external business result.
+            <a
+              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/routines.md"
+              >Full routine guide</a
+            >.
+          </p>
+          <h2 id="is-it-free">Is it free?</h2>
+          <p>
+            The project is open source under the
+            <a
+              href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE"
+              >MIT License</a
+            >. Your AI client supplies model access, and its own charges or
+            subscription may apply. This release uses source installation and is
+            not published to npm.
+          </p>
+          <h2 id="should-i-use-it-for-every-page">
+            Should I use it for every page?
+          </h2>
+          <p>
+            Choose the tool that fits the task. Public information often needs
+            only an API or web fetch; headless browser automation suits
+            JavaScript pages without your personal session. MyChrome is useful
+            when your existing Chrome context or shared page matters.
+            <a
+              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/faq/mychrome-or-playwright.md"
+              >Choosing a browser tool</a
+            >.
+          </p>
+          <h2 id="does-it-always-save-tokens">Does it always save tokens?</h2>
+          <p>
+            There is no general savings guarantee. Page reads can return an
+            outline or focused text instead of an image; actual model usage
+            depends on the page, client and task.
+            <a
+              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/faq/how-it-saves-tokens.md"
+              >How page reading works</a
+            >.
+          </p>
+        </article>
+        <aside class="help-note">
+          <h2>Ready to try it?</h2>
+          <p>
+            Start with the included offline practice task and get comfortable
+            with the controls.
+          </p>
+          <a class="button primary" href="getting-started.html"
+            >Get started ↗</a
+          >
+        </aside>
+      </div>
+    </main>
+    <footer class="site-footer wrap">
+      <div>
+        <a class="wordmark" href="./"
+          >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
+        >
+        <p>A little help, right where you work.</p>
+      </div>
+      <div class="footer-links">
+        <a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md"
+          >Support</a
+        ><a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md"
+          >Security</a
+        ><a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/CONTRIBUTING.md"
+          >Contribute</a
+        ><a href="./llms.txt">llms.txt</a
+        ><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE"
+          >MIT License</a
+        >
+      </div>
+      <p class="legal">
+        © 2026 Leonard Chow. Independent project. Not affiliated with or
+        endorsed by Google. Chrome is a trademark of Google LLC.
+      </p>
+    </footer>
+  </body>
+</html>

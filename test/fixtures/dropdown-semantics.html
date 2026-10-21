@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>dropdown semantics</title>
+<style>
+body{font:15px system-ui;margin:0 auto;max-width:860px;padding:16px;padding-bottom:240px}
+[hidden]{display:none!important}
+.row{margin:18px 0;display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+.toolbar{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
+.toolbar button{font-size:12px}
+.field{position:relative;display:inline-block}
+input[role=combobox]{width:220px;padding:4px 6px}
+[role=listbox]{list-style:none;margin:2px 0 0;padding:4px 0;border:1px solid #888;background:#fff;
+  max-height:220px;overflow-y:auto;min-width:220px;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+[role=option]{padding:4px 10px;cursor:pointer}
+[role=option][aria-selected=true]{background:#dbeafe;font-weight:600}
+[role=option][aria-disabled=true]{color:#999;cursor:not-allowed}
+#city-list{position:absolute;left:0;top:100%;z-index:5}
+#country{display:inline-block;min-width:220px;padding:4px 8px;border:1px solid #888;cursor:pointer;background:#fff}
+#country-list{position:absolute;z-index:20}
+.fake-select{display:inline-flex;gap:8px;min-width:180px;padding:4px 8px;border:1px solid #888;cursor:pointer;background:#fff}
+.fake-menu{position:absolute;z-index:30;border:1px solid #888;background:#fff;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.fake-opt{padding:5px 10px;cursor:pointer}
+.fake-opt:hover{background:#eef}
+.fake-opt.is-disabled{color:#999;cursor:not-allowed}
+#status{padding:8px;background:#f4f4f4;border-radius:4px}
+.filler p{color:#444;line-height:1.5}
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>下拉框语义测试页</h1>
+  <p>给 read_page 的真机测试用：ARIA combobox + listbox、渲染到 body 末尾的 portal 选项、只有 addEventListener 的 div 选项、
+  120 项长列表、禁用选项，以及大量前置按钮和正文（把输出撑过 12000 字上限，看展开的列表是否仍被保留）。
+  <code>?filler=0</code> 去掉前置内容。</p>
+
+  <p id="status">当前选择：城市 —；国家/地区 —；水果 —；套餐 标准版</p>
+
+  <div class="toolbar" id="toolbar"></div>
+  <div class="filler" id="filler"></div>
+
+  <h2>1. 可输入的 ARIA combobox（列表就在输入框下面）</h2>
+  <div class="row">
+    <label id="city-label" for="city">城市</label>
+    <div class="field">
+      <input id="city" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="city-list"
+             autocomplete="off" placeholder="输入或选择城市">
+      <ul id="city-list" role="listbox" aria-labelledby="city-label" hidden>
+        <li role="option" id="city-sg" aria-selected="false">新加坡</li>
+        <li role="option" id="city-kl" aria-selected="false">吉隆坡</li>
+        <li role="option" id="city-bkk" aria-selected="false" aria-disabled="true">曼谷（暂停服务）</li>
+        <li role="option" id="city-hk" aria-selected="false">香港</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>2. 只能选的 combobox（120 项长列表渲染在 body 末尾）</h2>
+  <div class="row">
+    <span id="country-label">国家/地区</span>
+    <div id="country" role="combobox" tabindex="0" aria-haspopup="listbox" aria-expanded="false"
+         aria-controls="country-list" aria-labelledby="country-label">请选择国家/地区</div>
+  </div>
+
+  <h2>3. 没有任何 role、只靠 addEventListener 的下拉（菜单也在 body 末尾）</h2>
+  <div class="row">
+    <div id="fruit" class="fake-select"><span class="fake-value">选择水果</span><span class="caret">▾</span></div>
+  </div>
+
+  <h2>4. 原生 select（45 个选项，含禁用项和禁用的 optgroup）</h2>
+  <div class="row">
+    <label for="plan">套餐</label>
+    <select id="plan">
+      <optgroup label="常用">
+        <option value="basic">基础版</option>
+        <option value="std" selected>标准版</option>
+        <option value="pro" disabled>旗舰版（已售罄）</option>
+      </optgroup>
+      <optgroup label="旧版（停售）" disabled>
+        <option value="v1">旧版 v1</option>
+        <option value="v2">旧版 v2</option>
+      </optgroup>
+      <optgroup label="更多" id="plan-more"></optgroup>
+    </select>
+  </div>
+</div>
+
+<!-- Portal layer: popups rendered outside the app root, at the end of <body>. -->
+<div id="portal-root">
+  <ul id="country-list" role="listbox" aria-labelledby="country-label" hidden></ul>
+  <div id="fruit-menu" class="fake-menu" hidden>
+    <div class="fake-opt" data-v="苹果">苹果</div>
+    <div class="fake-opt" data-v="香蕉">香蕉</div>
+    <div class="fake-opt is-disabled" data-v="榴莲">榴莲（缺货）</div>
+    <div class="fake-opt" data-v="芒果"><span class="emoji">🥭</span> <b>芒果</b> <small>当季</small></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var picked = { city: '—', country: '—', fruit: '—', plan: '标准版' };
+  function status() {
+    document.getElementById('status').textContent =
+      '当前选择：城市 ' + picked.city + '；国家/地区 ' + picked.country + '；水果 ' + picked.fruit + '；套餐 ' + picked.plan;
+  }
+
+  // Leading filler: many buttons and paragraphs before the dropdowns.
+  if (params.get('filler') !== '0') {
+    var tb = document.getElementById('toolbar');
+    for (var i = 1; i <= 80; i++) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = '前置按钮 ' + i;
+      tb.appendChild(b);
+    }
+    var fl = document.getElementById('filler');
+    for (var j = 1; j <= 160; j++) {
+      var p = document.createElement('p');
+      p.textContent = '第 ' + j + ' 段前置正文：这段文字只是为了把页面撑长，让读页输出超过一万两千字的上限，' +
+        '这样才能看出截断时展开的下拉列表和弹层里的选项有没有被优先保留下来。';
+      fl.appendChild(p);
+    }
+  }
+
+  // 1. Editable combobox with its listbox in place.
+  var city = document.getElementById('city');
+  var cityList = document.getElementById('city-list');
+  function cityOpen(open) {
+    cityList.hidden = !open;
+    city.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  function cityFilter() {
+    var q = city.value.trim();
+    Array.prototype.forEach.call(cityList.children, function (o) {
+      o.hidden = !!q && o.textContent.indexOf(q) === -1;
+    });
+  }
+  city.addEventListener('click', function () { cityOpen(cityList.hidden); });
+  city.addEventListener('input', function () { cityFilter(); cityOpen(true); });
+  city.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowDown') { cityOpen(true); e.preventDefault(); }
+    if (e.key === 'Escape') cityOpen(false);
+  });
+  cityList.addEventListener('click', function (e) {
+    var o = e.target.closest('[role=option]');
+    if (!o || o.getAttribute('aria-disabled') === 'true') return;
+    Array.prototype.forEach.call(cityList.children, function (x) {
+      x.setAttribute('aria-selected', x === o ? 'true' : 'false');
+    });
+    city.value = o.textContent;
+    picked.city = o.textContent;
+    status();
+    cityOpen(false);
+  });
+
+  // 2. Select-only combobox, 120 options in a portal at the end of <body>.
+  var country = document.getElementById('country');
+  var countryList = document.getElementById('country-list');
+  for (var k = 1; k <= 120; k++) {
+    var li = document.createElement('li');
+    li.setAttribute('role', 'option');
+    li.setAttribute('aria-selected', 'false');
+    li.id = 'country-' + k;
+    li.textContent = '地区 ' + String(k).padStart(3, '0');
+    if (k === 5 || k === 50) {
+      li.setAttribute('aria-disabled', 'true');
+      li.textContent += '（不可选）';
+    }
+    countryList.appendChild(li);
+  }
+  function countryOpen(open) {
+    if (open) {
+      var r = country.getBoundingClientRect();
+      countryList.style.left = (r.left + window.scrollX) + 'px';
+      countryList.style.top = (r.bottom + window.scrollY + 2) + 'px';
+    }
+    countryList.hidden = !open;
+    country.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  country.addEventListener('click', function () { countryOpen(countryList.hidden); });
+  country.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') { countryOpen(true); e.preventDefault(); }
+    if (e.key === 'Escape') countryOpen(false);
+  });
+  countryList.addEventListener('click', function (e) {
+    var o = e.target.closest('[role=option]');
+    if (!o || o.getAttribute('aria-disabled') === 'true') return;
+    Array.prototype.forEach.call(countryList.children, function (x) {
+      x.setAttribute('aria-selected', x === o ? 'true' : 'false');
+    });
+    country.textContent = o.textContent;
+    picked.country = o.textContent;
+    status();
+    countryOpen(false);
+  });
+
+  // 3. No roles at all: listeners only, pointer cursor from CSS.
+  var fruit = document.getElementById('fruit');
+  var fruitMenu = document.getElementById('fruit-menu');
+  function fruitOpen(open) {
+    if (open) {
+      var r = fruit.getBoundingClientRect();
+      fruitMenu.style.left = (r.left + window.scrollX) + 'px';
+      fruitMenu.style.top = (r.bottom + window.scrollY + 2) + 'px';
+    }
+    fruitMenu.hidden = !open;
+  }
+  fruit.addEventListener('click', function () { fruitOpen(fruitMenu.hidden); });
+  Array.prototype.forEach.call(fruitMenu.querySelectorAll('.fake-opt'), function (o) {
+    o.addEventListener('click', function () {
+      if (o.classList.contains('is-disabled')) return;
+      fruit.querySelector('.fake-value').textContent = o.getAttribute('data-v');
+      picked.fruit = o.getAttribute('data-v');
+      status();
+      fruitOpen(false);
+    });
+  });
+
+  // 4. Native select: 40 more options.
+  var more = document.getElementById('plan-more');
+  for (var m = 1; m <= 40; m++) {
+    var op = document.createElement('option');
+    op.value = 'p' + m;
+    op.textContent = '套餐 ' + String(m).padStart(2, '0');
+    more.appendChild(op);
+  }
+  var plan = document.getElementById('plan');
+  plan.addEventListener('change', function () {
+    picked.plan = plan.options[plan.selectedIndex].text;
+    status();
+  });
+
+  // A click anywhere else closes the open popups.
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (!city.contains(t) && !cityList.contains(t)) cityOpen(false);
+    if (!country.contains(t) && !countryList.contains(t)) countryOpen(false);
+    if (!fruit.contains(t) && !fruitMenu.contains(t)) fruitOpen(false);
+  });
+})();
+</script>
+</body>
+</html>

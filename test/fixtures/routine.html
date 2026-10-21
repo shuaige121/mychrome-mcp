@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="mychrome-fixture" content="routine-live-v1">
+<title>MyChrome 本地流程演示</title>
+<style>
+  body { max-width: 760px; margin: 40px auto; padding: 24px; font: 20px/1.5 system-ui; }
+  button { display: block; margin: 18px 0; padding: 14px 22px; font: inherit; }
+  #evidence { display: block; margin-top: 30px; font: 13px/1.4 monospace; white-space: pre-wrap; }
+  .quiet { color: #62666b; font-size: 15px; }
+</style>
+<p class="quiet">本地测试页面，无账号、凭证或外部请求。</p>
+<main id="screen"></main>
+<output id="evidence" aria-label="测试事件记录" translate="no"></output>
+<script>
+(() => {
+  const screen = document.querySelector('#screen');
+  const output = document.querySelector('#evidence');
+  const phases = [[], []];
+  let stage = 'login', phase = 0, resets = 0, untrusted = 0, unrelated = 0;
+  const steps = {
+    login: { title: '本地登录', id: 'login', label: '登录演示', next: 'home' },
+    home: { title: '学习中心', id: 'catalogue', label: '打开课程目录', next: 'catalogue' },
+    catalogue: { title: '课程目录', id: 'lesson', label: '打开第一课', next: 'lesson' },
+  };
+  function report() {
+    output.textContent = JSON.stringify({ fixture: 'routine-live-v1', stage, phase,
+      trustedByPhase: phases.map(events => events.length), events: phases,
+      resetTrusted: resets, untrustedClicks: untrusted, unrelatedTrusted: unrelated }, null, 2);
+  }
+  function button(id, label, action) {
+    const node = document.createElement('button');
+    node.id = id; node.type = 'button'; node.textContent = label;
+    node.addEventListener('click', event => {
+      if (!event.isTrusted) { untrusted++; report(); return; }
+      action(event);
+    });
+    screen.append(node);
+  }
+  function render() {
+    screen.replaceChildren();
+    const heading = document.createElement('h1');
+    heading.textContent = steps[stage]?.title ?? '第一课'; screen.append(heading);
+    // The real reset click adds this before every replay target. Saved marker
+    // numbers are now wrong; only the fresh semantic descriptor can find it.
+    if (phase === 1) button('unrelated', '无关操作按钮', () => { unrelated++; report(); });
+    if (stage === 'lesson') {
+      const text = document.createElement('p'); text.textContent = '已打开本地测试课程。'; screen.append(text);
+      if (phase === 0) button('reset', '重置演示并调整按钮顺序', () => {
+        resets++; phase = 1; stage = 'login'; location.hash = '/login'; render();
+      });
+    } else {
+      const step = steps[stage];
+      button(step.id, step.label, event => {
+        // Observe the fixture's own DOM order, not the bridge's private marker
+        // registry, which is intentionally unavailable to page event handlers.
+        const buttonIndex = [...screen.querySelectorAll('button')].indexOf(event.currentTarget);
+        phases[phase].push({ action: step.id, trusted: event.isTrusted, buttonIndex });
+        stage = step.next; location.hash = '/' + stage; render();
+      });
+    }
+    report();
+  }
+  // Initial state only. Every later transition comes from a trusted click.
+  if (location.hash !== '#/login') location.hash = '/login';
+  render();
+})();
+</script>
+</html>

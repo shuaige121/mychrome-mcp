@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>listing page</title>
+<style>
+body{font:16px system-ui;margin:0 auto;max-width:760px;padding:16px}
+li{margin:14px 0;line-height:1.5}
+.extra{margin-top:28px;display:flex;gap:16px;align-items:center}
+</style>
+<h1>Listings</h1>
+<p>A list of links to the recorder, for "read for a while, then click a link" (plan B7), for Referer /
+Sec-Fetch-* on same-origin navigation, and for tabs that appear during a click (T7).</p>
+<ol id="items">
+  <li><a href="recorder.html?id=1">Listing 1 — two bedrooms near the river, quiet street</a><br>Short description of the first item, long enough to take a moment to read.</li>
+  <li><a href="recorder.html?id=2">Listing 2 — corner unit with a balcony</a><br>Second description; the text is only here to give the eye something to scan.</li>
+  <li><a href="recorder.html?id=3">Listing 3 — ground floor, garden access</a><br>Third description with a few more words than the second one.</li>
+  <li><a href="recorder.html?id=4">Listing 4 — top floor, lift access</a><br>Fourth description.</li>
+  <li><a href="recorder.html?id=5">Listing 5 — near the station</a><br>Fifth description, again of moderate length.</li>
+  <li><a href="recorder.html?id=6">Listing 6 — renovated kitchen</a><br>Sixth description.</li>
+  <li><a href="recorder.html?id=7">Listing 7 — two parking spaces</a><br>Seventh description.</li>
+  <li><a href="recorder.html?id=8">Listing 8 — furnished</a><br>Eighth description.</li>
+  <li><a href="recorder.html?id=9">Listing 9 — pet friendly</a><br>Ninth description.</li>
+  <li><a href="recorder.html?id=10">Listing 10 — available now</a><br>Tenth description.</li>
+</ol>
+<div class="extra">
+  <a id="blank" href="recorder.html?id=blank" target="_blank">Open in a new tab (target=_blank)</a>
+  <button id="popup" type="button">Open with window.open</button>
+</div>
+<script>
+document.getElementById('popup').addEventListener('click', function () {
+  window.open('recorder.html?id=popup');
+});
+</script>
+<script src="/rec.js"></script>

@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>modal overlay</title>
+<style>
+body{font:15px system-ui;margin:0 auto;max-width:860px;padding:16px;padding-bottom:160px}
+[hidden]{display:none!important}
+header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;border-bottom:1px solid #ddd;padding-bottom:12px}
+#bg-count{color:#555}
+main p{line-height:1.6;color:#333}
+.cookie{position:fixed;left:0;right:0;bottom:0;z-index:10;background:#222;color:#fff;padding:14px 20px;
+  display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.cookie button{padding:6px 12px}
+dialog{border:none;border-radius:8px;padding:20px 24px;box-shadow:0 10px 40px rgba(0,0,0,.35);min-width:320px}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog label{display:block;margin:10px 0}
+.backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100}
+.aria-modal{position:fixed;left:50%;top:30%;transform:translateX(-50%);z-index:101;background:#fff;
+  border-radius:8px;padding:20px 24px;box-shadow:0 10px 40px rgba(0,0,0,.35);min-width:300px}
+#log{font:12px ui-monospace,monospace;color:#666;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<header>
+  <h1>弹窗遮挡测试页</h1>
+  <nav><a href="#news">新闻</a> <a href="#about">关于我们</a></nav>
+  <button id="bg-btn" type="button">背景按钮</button>
+  <span id="bg-count">背景按钮被点了 0 次</span>
+  <input id="bg-search" placeholder="背景搜索框">
+  <button id="open-native" type="button">打开原生弹窗</button>
+  <button id="open-aria" type="button">打开 ARIA 弹窗</button>
+</header>
+
+<main>
+  <p>给 read_page 的真机测试用：页面一打开就弹出模态弹窗（<code>?modal=native</code>，默认，用 showModal；
+  <code>?modal=aria</code> 是 role=dialog + aria-modal=true + 遮罩；<code>?modal=none</code> 不弹）。
+  弹窗开着时背景按钮点不到，背景计数不该增加；底部还有一条 Cookie 横幅。</p>
+  <p id="news">新闻：这里是背景正文的第一段，弹窗开着时它被挡住。</p>
+  <p id="about">关于我们：这里是背景正文的第二段。</p>
+</main>
+
+<div id="cookie" class="cookie" role="region" aria-label="Cookie 提示">
+  <span>我们使用 Cookie 改善体验。</span>
+  <button id="cookie-accept" type="button">接受全部</button>
+  <button id="cookie-reject" type="button">仅必要</button>
+</div>
+
+<dialog id="native" aria-labelledby="native-title">
+  <h2 id="native-title">订阅我们的通讯</h2>
+  <label>邮箱 <input id="email" type="email" placeholder="you@example.com"></label>
+  <label><input id="agree" type="checkbox"> 同意条款</label>
+  <button id="subscribe" type="button" disabled>订阅</button>
+  <button id="native-close" type="button">关闭</button>
+</dialog>
+
+<div id="aria-backdrop" class="backdrop" hidden></div>
+<div id="aria-modal" class="aria-modal" role="dialog" aria-modal="true" aria-labelledby="aria-title" hidden>
+  <h2 id="aria-title">确认删除</h2>
+  <p>删除后无法恢复。</p>
+  <button id="aria-cancel" type="button">取消</button>
+  <button id="aria-confirm" type="button">确认删除</button>
+</div>
+
+<p id="log"></p>
+
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var bgClicks = 0;
+  function log(s) { document.getElementById('log').textContent += s + '\n'; }
+
+  document.getElementById('bg-btn').addEventListener('click', function () {
+    bgClicks++;
+    document.getElementById('bg-count').textContent = '背景按钮被点了 ' + bgClicks + ' 次';
+    log('background button clicked');
+  });
+
+  // Cookie banner: either button hides it.
+  function hideCookie(which) { document.getElementById('cookie').hidden = true; log('cookie: ' + which); }
+  document.getElementById('cookie-accept').addEventListener('click', function () { hideCookie('accept'); });
+  document.getElementById('cookie-reject').addEventListener('click', function () { hideCookie('reject'); });
+
+  // Native modal dialog (showModal; jsdom has none, so fall back to the attribute).
+  var dlg = document.getElementById('native');
+  function openNative() {
+    if (dlg.open) return;
+    if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+    log('native dialog opened');
+  }
+  function closeNative(why) {
+    if (typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
+    log('native dialog closed: ' + why);
+  }
+  var agree = document.getElementById('agree');
+  var subscribe = document.getElementById('subscribe');
+  agree.addEventListener('change', function () { subscribe.disabled = !agree.checked; });
+  subscribe.addEventListener('click', function () {
+    log('subscribed: ' + document.getElementById('email').value);
+    closeNative('subscribed');
+  });
+  document.getElementById('native-close').addEventListener('click', function () { closeNative('close button'); });
+  document.getElementById('open-native').addEventListener('click', openNative);
+
+  // ARIA modal: role=dialog + aria-modal=true over a backdrop that eats clicks; Tab stays inside.
+  var am = document.getElementById('aria-modal');
+  var backdrop = document.getElementById('aria-backdrop');
+  function openAria() {
+    am.hidden = false;
+    backdrop.hidden = false;
+    document.getElementById('aria-cancel').focus();
+    log('aria dialog opened');
+  }
+  function closeAria(why) {
+    am.hidden = true;
+    backdrop.hidden = true;
+    log('aria dialog closed: ' + why);
+  }
+  document.getElementById('aria-cancel').addEventListener('click', function () { closeAria('cancel'); });
+  document.getElementById('aria-confirm').addEventListener('click', function () { closeAria('confirm'); });
+  document.getElementById('open-aria').addEventListener('click', openAria);
+  backdrop.addEventListener('click', function () { log('backdrop clicked (background not reached)'); });
+  am.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeAria('escape'); return; }
+    if (e.key !== 'Tab') return;
+    var f = am.querySelectorAll('button');
+    var first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { last.focus(); e.preventDefault(); }
+    else if (!e.shiftKey && document.activeElement === last) { first.focus(); e.preventDefault(); }
+  });
+
+  var mode = params.get('modal') || 'native';
+  if (mode === 'native') openNative();
+  else if (mode === 'aria') openAria();
+})();
+</script>
+</body>
+</html>
