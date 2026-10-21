@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
+import { setupInstructions } from '../src/setup.js';
 
 // Compile the production controller and process runner. Everything uses isolated
 // preferences and a synthetic Node child; no Chrome, user settings, or permission probe.
@@ -12,20 +13,15 @@ const core = source.slice(0, source.indexOf('// MARK: - Native guide'));
 assert.ok(core.includes('final class OnboardingModel'));
 const tmp = mkdtempSync(path.join(tmpdir(), 'mychrome-onboarding-gui-'));
 after(() => rmSync(tmp, { recursive: true, force: true }));
+writeFileSync(path.join(tmp, 'instructions.json'), JSON.stringify({ schemaVersion: 1,
+  ...setupInstructions({ root: '/synthetic/source root', nodePath: process.execPath, appPath: '/synthetic/MyChrome.app' }) }));
 const script = path.join(tmp, 'fixture.mjs');
 writeFileSync(script, `
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 const mode = process.argv[2];
-if (mode === '--open') {
-  fs.writeFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../practice-child.pid'), String(process.pid));
-  console.log(JSON.stringify({ url: process.argv[1].includes('practice-start-timeout') ? 'https://external.invalid/' : 'http://127.0.0.1:12345/', pid: process.pid }));
-  setInterval(() => {}, 200);
-}
-else if (mode === 'invalid') console.log('not json');
+if (mode === 'invalid') console.log('not json');
 else if (mode === 'oversized') console.log(JSON.stringify({ value: 'x'.repeat(300_000) }));
-else if (mode === 'hang') { console.log(JSON.stringify({ pid: process.pid })); setInterval(() => {}, 200); }
+else if (mode === 'hang') { fs.writeFileSync(process.argv[3], String(process.pid)); setInterval(() => {}, 200); }
 else { console.log(JSON.stringify({ schemaVersion: 1, ok: mode === 'ok' })); process.exitCode = mode === 'failed' ? 2 : mode === 'blocked' ? 1 : 0; }
 `);
 const swift = path.join(tmp, 'main.swift');
@@ -59,7 +55,7 @@ func fixture(_ pass: Bool = true) -> [String: Any] {
      "doctor": ["ok": pass, "app": "Synthetic App", "checks": [["id": "helpers", "title": "助手 / Helpers", "required": true, "ok": pass, "detail": "中文说明\\nEnglish detail"]]],
      "connection": ["codexCommand": "literal 'path with space'", "claudeCommand": "literal Claude", "codexNote": "Edit the existing entry in ~/.codex/config.toml. Do not duplicate it."],
      "commands": ["doctor": "literal doctor", "doctorAsk": "literal --ask"],
-     "practice": ["prompt": "Read the local page", "promptZh": "读取本地页"]]
+     "firstTask": ["prompt": "Continue the user's task", "promptZh": "继续用户的任务"]]
 }
 func spin(until condition: () -> Bool, timeout: Double = 4) {
     let deadline = Date().addingTimeInterval(timeout)
@@ -152,7 +148,7 @@ case "language-and-copy":
     precondition(onboardingEnglish(environment: ["CHROME_BRIDGE_LANG": "en"], languages: ["zh-Hans"]))
     precondition(!onboardingEnglish(environment: ["CHROME_BRIDGE_LANG": "zh"], languages: ["en"]))
     model.present(node: node); calls[0].done(fixture(), nil)
-    model.english = false; precondition(model.practicePrompt == "读取本地页")
+    model.english = false; precondition(model.firstTaskPrompt == "继续用户的任务")
     model.dismiss(); precondition(store.stored?["language"] as? String == "zh")
     precondition(model.command("codexCommand", group: "connection") == "literal 'path with space'")
     let check = OnboardingCheck(["title": "助手 / Helpers", "detail": "中文\\nEnglish detail"])
@@ -162,47 +158,28 @@ case "node-selection":
     precondition(onboardingNode(root: ROOT_DIR, connectedNodes: [node], environment: [:], bundled: nil) == node)
     precondition(onboardingNode(root: ROOT_DIR, connectedNodes: [node], environment: [:], bundled: "/missing") == node)
     precondition(onboardingNode(root: ROOT_DIR, connectedNodes: [], environment: ["PATH": (node as NSString).deletingLastPathComponent], bundled: nil) == node)
-case "practice-prompt-exact-url":
-    model.present(node: node); calls[0].done(fixture(), nil)
+case "task-continuation":
+    precondition(model.firstTaskPrompt == nil, "No task is invented before instructions load")
+    let actual = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2] + "/instructions.json"))) as! [String: Any]
+    model.present(node: node); calls[0].done(actual, nil)
+    let task = actual["firstTask"] as! [String: Any]
     precondition(model.command("codexNote", group: "connection")?.contains("~/.codex/config.toml") == true)
-    model.english = true; precondition(model.practicePrompt == "Read the local page")
-    model.english = false; precondition(model.practicePrompt == "读取本地页")
-    let current = "http://127.0.0.1:45678/?practice=synthetic"
-    model.practiceURL = URL(string: current)
-    model.english = true
-    precondition(model.practicePrompt == "Read the local page\\n\\nUse this exact practice page: " + current)
-    model.english = false
-    precondition(model.practicePrompt == "读取本地页\\n\\n请只操作本次练习页面：" + current)
-    model.practiceURL = URL(string: "http://127.0.0.1:45679/")
-    precondition(model.practicePrompt?.contains("45678") == false && model.practicePrompt?.contains("45679") == true)
-    model.stop(); precondition(model.practicePrompt == "读取本地页", "No URL is fabricated after the server stops")
-case "practice-lifecycle", "practice-start-timeout":
-    let practiceDirectory = directory + "/examples/first-task"
-    try FileManager.default.createDirectory(atPath: practiceDirectory, withIntermediateDirectories: true)
-    try FileManager.default.copyItem(atPath: script, toPath: practiceDirectory + "/serve.mjs")
-    let practice = OnboardingModel(root: directory, store: store)
-    if scenario == "practice-start-timeout" {
-        practice.startPractice(node: node, startupTimeout: 0.2)
-        spin(until: { !practice.practiceStarting })
-        precondition(practice.practiceURL == nil && practice.note != nil)
-        let child = Int32(try String(contentsOfFile: directory + "/practice-child.pid", encoding: .utf8))!
-        spin(until: { kill(child, 0) != 0 })
-        break
-    }
-    practice.startPractice(node: node); practice.startPractice(node: node)
-    spin(until: { practice.practiceURL != nil })
-    let pidText = try String(contentsOfFile: directory + "/practice-child.pid", encoding: .utf8)
-    let child = Int32(pidText)!
-    precondition(!practice.practiceStarting && kill(child, 0) == 0)
-    practice.dismiss(); practice.startPractice(node: node)
-    precondition(practice.practiceURL != nil && kill(child, 0) == 0, "Closing the guide keeps practice available")
-    practice.stop()
-    spin(until: { kill(child, 0) != 0 })
-    precondition(practice.practiceURL == nil && !practice.practiceStarting)
-case "practice-missing-server":
-    model.startPractice(node: node)
-    spin(until: { !model.practiceStarting })
-    precondition(model.practiceURL == nil && model.note != nil)
+    model.step = 2; model.english = true
+    precondition(model.firstTaskPrompt == task["prompt"] as? String)
+    model.english = false; precondition(model.firstTaskPrompt == task["promptZh"] as? String)
+    precondition(calls.count == 1 && !calls[0].check && model.report == nil, "The task step only presents instructions; it does not run a task or claim success")
+    model.dismiss(reviewed: true); model.present(node: node)
+    precondition(model.step == 2 && model.firstTaskPrompt == task["promptZh"] as? String && calls.count == 1)
+    precondition(Set(store.stored!.keys) == Set(["kind", "version", "presented", "dismissal", "language"]), "Task text and browser state are not persisted")
+    model.stop(); precondition(!model.visible && !model.loading)
+case "task-language-fallback":
+    model.present(node: node)
+    var value = fixture(); value["firstTask"] = ["prompt": "Continue this conversation"]
+    calls[0].done(value, nil); model.english = false
+    precondition(model.firstTaskPrompt == "Continue this conversation")
+    value.removeValue(forKey: "firstTask")
+    model.request(node: node, check: false); calls[1].done(value, nil)
+    precondition(model.firstTaskPrompt == nil && model.report == nil)
 case "process-ok", "process-blocked", "process-failed", "process-invalid", "process-oversized":
     let mode = String(scenario.dropFirst("process-".count))
     var finished = false, response: [String: Any]?, failure: String?
@@ -212,16 +189,16 @@ case "process-ok", "process-blocked", "process-failed", "process-invalid", "proc
     if ["ok", "blocked"].contains(mode) { precondition(failure == nil && response?["schemaVersion"] as? Int == 1) }
     else { precondition(failure != nil) }
 case "process-cancel", "process-timeout":
-    var finished = false, child: Int32?, failure: String?
+    var finished = false, failure: String?
     let task = OnboardingProcess()
-    task.start(executable: node, arguments: [script, "hang"], timeout: scenario == "process-timeout" ? 0.2 : 5, firstLine: { object in
-        child = (object["pid"] as? NSNumber)?.int32Value
-    }) { _, error in failure = error; finished = true }
-    spin(until: { child != nil })
+    let pidFile = directory + "/child.pid"
+    task.start(executable: node, arguments: [script, "hang", pidFile], timeout: scenario == "process-timeout" ? 0.2 : 5) { _, error in failure = error; finished = true }
+    spin(until: { FileManager.default.fileExists(atPath: pidFile) })
+    let child = Int32(try String(contentsOfFile: pidFile, encoding: .utf8))!
     if scenario == "process-cancel" { task.cancel() }
     spin(until: { finished })
     precondition(failure == (scenario == "process-cancel" ? "cancelled" : "timeout"))
-    spin(until: { kill(child!, 0) != 0 })
+    spin(until: { kill(child, 0) != 0 })
 case "process-unavailable":
     var finished = false, failure: String?
     let task = OnboardingProcess()
@@ -235,7 +212,7 @@ execFileSync('/usr/bin/swiftc', [swift, '-o', binary], { timeout: 60_000, stdio:
 for (const scenario of [
   'first-return-skip-reopen', 'missing-node', 'failed-diagnostics', 'repeated-checks-stale',
   'unknown-preference', 'symlink-preference', 'truthful-readiness', 'language-and-copy', 'node-selection',
-  'practice-prompt-exact-url', 'practice-lifecycle', 'practice-missing-server', 'practice-start-timeout',
+  'task-continuation', 'task-language-fallback',
   'process-ok', 'process-blocked', 'process-failed', 'process-invalid', 'process-oversized',
   'process-cancel', 'process-timeout', 'process-unavailable',
 ]) {
@@ -254,6 +231,6 @@ test('native entry points reopen the guide and quit cancels local work', () => {
   assert.match(source, /read-only|Read-only/);
   assert.match(source, /state\.command\("codexNote", group: "connection"\)/);
   assert.match(source, /~\/\.codex\/config\.toml/);
-  assert.match(source, /\.disabled\(state\.practiceURL == nil\)/);
+  assert.doesNotMatch(source, /startPractice|practiceURL|practiceStarting|examples\/first-task|firstLine:/);
   assert.doesNotMatch(source, /--ask-automation|tccutil|readActivity\(|writeSettingsObject\(/);
 });

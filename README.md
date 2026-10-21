@@ -1,21 +1,34 @@
 # MyChrome
 
-**Your browser is already open. Let your AI help you finish the task.**
+**Keep browsing. Bring in AI when you need a hand.**
 
-MyChrome connects your AI assistant to the Google Chrome you already use on your Mac. Keep your signed-in pages and context. Ask it to read a page, fill a form or work through a task using real mouse and keyboard input, then take over whenever you need to.
+Use Chrome as you normally do. When you want help, ask your AI assistant to join you on the page and carry out the task, using the account, tabs and conversation you already have.
+
+MyChrome gives the assistant access to that Chrome page and real mouse and keyboard input. When a password or verification code needs you, it hands the page back. Handle that step and tell the assistant to continue; it reads the page again and picks up the same task.
 
 [Get started](docs/getting-started.md) · [简体中文](README.zh-CN.md) · [Website](https://shuaige121.github.io/mychrome-mcp/) · [FAQ](docs/faq/README.md)
 
-[![Watch the local practice demo: enter a plan, choose a time, save and verify the result](site/assets/mychrome-practice-poster.webp)](site/assets/mychrome-practice.gif)
+[![Watch the 38-second MyChrome overview](site/assets/mychrome-overview-poster.webp)](https://shuaige121.github.io/mychrome-mcp/#film)
 
-**Click the image to play the real local practice demo.** About 27 seconds · 2× speed · pauses trimmed · browser toolbar cropped. Synthetic practice content. [Watch on the website with a Stop control](https://shuaige121.github.io/mychrome-mcp/#demo).
+[Watch the film](https://shuaige121.github.io/mychrome-mcp/#film) · [MP4](site/assets/mychrome-overview.mp4) · [22-second GIF](site/assets/mychrome-overview.gif) · [English captions](site/assets/mychrome-overview.en.vtt)
 
-## What you can do
+Product UI rendering and animation reconstruction with example content; no real posts were made. The conversation-center sequence uses the supported Codex integration.
 
-- **Continue where you are.** Give your assistant the page and the outcome, without moving your work into a separate browser session.
-- **Get help with everyday steps.** Read information, enter details, choose options and verify the result on the page.
-- **Keep control.** Press **Esc twice quickly** to cancel the active agent. Use **Pause AI actions** to prevent further input across agents.
-- **Reuse suitable steps.** Save a continuous sequence as a website routine, supply fresh values and choose a tab for the next run.
+## At your pace
+
+Choose key-by-key typing or paste, and adjust the pace of typing, mouse movement and scrolling from 0.5× to 3×. Your settings apply to subsequent actions.
+
+For input closer to your own rhythm, **My habits** can optionally sample three minutes of your keyboard and mouse use and fit timing statistics for later input. This experimental feature has a use switch, resampling and deletion controls. It records rhythm statistics, not the text you type or a screen video.
+
+## Tasks you can hand over
+
+These are example requests, not verified case studies for the named platforms:
+
+- **Organize your LinkedIn page.** “Use the LinkedIn page I have open. Tidy its introduction and sections using the wording we agreed on, then show me what changed.”
+- **Check whether someone needs you.** “Look at my open Facebook page and check notifications and messages for people trying to reach me. Tell me who needs a response.”
+- **Distribute an article you've written.** “Use this finished article and the platform versions I've supplied. Publish to the Facebook, 小红书, Reddit and LinkedIn accounts I specify, then report each result and its link.”
+
+Give the page title or URL in your existing AI conversation. The assistant first reads the actual page to identify the target, then carries out the task you've authorized and checks the result. It asks when the target or required information is unclear, or the work needs a new decision.
 
 MyChrome is a local MCP server with a native macOS app. It needs no Chrome extension or debugging port. Website compatibility depends on the page; a login or site challenge may need your help.
 
@@ -31,14 +44,7 @@ bash scripts/setup.sh
 
 Setup checks prerequisites, installs dependencies, builds the native helpers and installs MyChrome in `~/Applications`. It explains any missing permissions and prints the exact commands for connecting your AI client. Keep the checkout in a stable location: the app and client use it.
 
-Follow the [getting-started guide](docs/getting-started.md) to grant permissions, connect a client and complete the included offline practice task. Source installation is the supported route; this release is not published to npm.
-
-<details>
-<summary>Preview the native first-run guide</summary>
-
-![MyChrome first-run guide in its native macOS window](site/assets/mychrome-workspace.webp)
-
-</details>
+Follow the [getting-started guide](docs/getting-started.md) to grant permissions and connect a client. Then return to your AI conversation and the Chrome page you want help with. Source installation is the supported route; this release is not published to npm.
 
 ## Works with your assistant
 
@@ -56,7 +62,7 @@ The getting-started guide supports English and Chinese; the main workspace curre
 
 AI input uses your Mac's real pointer and keyboard. During takeover, ordinary physical input is intercepted. **Double Esc** returns control; the agent must wait for a new instruction before taking over again. Stop does not undo actions already sent. Reads can happen concurrently, while physical actions take turns.
 
-In **Operation settings**, choose **Follow task**, **Type key by key** or **Paste**, and adjust the pace. Your explicit choice applies to the next action, including website routines. Choose Paste for text that key-by-key input cannot represent, such as Chinese.
+Open **Operation settings** for input modes, speed and optional habit sampling. Choose Paste for text that key-by-key input cannot represent, such as Chinese.
 
 In **Website routines**, review recorded steps, save a suitable sequence, enter fresh values and explicitly select an existing tab. Replay stops if the page or target no longer matches. See the [routine guide](docs/routines.md) for supported controls and limits.
 

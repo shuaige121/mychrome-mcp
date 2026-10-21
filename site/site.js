@@ -20,15 +20,3 @@ for (const button of document.querySelectorAll("[data-copy]")) {
     }
   });
 }
-for (const button of document.querySelectorAll("[data-demo]")) {
-  const image = document.getElementById(button.dataset.demo);
-  if (!image) continue;
-  button.hidden = false;
-  button.addEventListener("click", () => {
-    const playing = button.getAttribute("aria-pressed") === "true";
-    image.src = playing ? image.dataset.poster : image.dataset.animation;
-    image.alt = playing ? image.dataset.posterAlt : image.dataset.animationAlt;
-    button.setAttribute("aria-pressed", String(!playing));
-    button.textContent = playing ? button.dataset.play : button.dataset.stop;
-  });
-}

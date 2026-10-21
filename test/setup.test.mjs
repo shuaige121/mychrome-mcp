@@ -92,6 +92,21 @@ test('check-only runs existing doctor without installing, opening, or prompting'
 test('instructions-only does no checks and never claims readiness', async () => {
   const m = machine(); const r = await runSetup({ instructions: true }, m.p);
   assert.equal(r.status, 'instructions'); assert.equal(r.ok, false); assert.equal(m.calls.length, 0); assert.equal(m.diagnostics.length, 0); assert.equal(m.installs.length, 0);
+  assert.equal(r.practice, undefined); assert.equal(r.commands.practice, undefined);
+  assert.equal(r.firstTask.launch, undefined); assert.equal(r.firstTask.url, undefined);
+  for (const key of ['description', 'descriptionZh', 'prompt', 'promptZh']) assert.ok(r.firstTask[key].trim());
+  const text = formatSetupReport(r);
+  assert.ok(text.includes(r.firstTask.description) && text.includes(r.firstTask.prompt));
+  assert.doesNotMatch(text, /examples\/first-task|serve\.mjs|weekend|practice task/);
+});
+
+test('setup check continues without the optional engineering fixture and does not start a task', async () => {
+  const m = machine({ exists: file => !file.includes('examples/first-task') });
+  const r = await runSetup({ check: true }, m.p);
+  assert.equal(r.ok, true); assert.equal(r.preflight.checks.find(c => c.id === 'source').ok, true);
+  assert.equal(r.installed, false); assert.equal(r.opened, false);
+  assert.ok(m.calls.every(c => c.file !== '/usr/bin/open' && c.args.every(arg => !arg.includes('examples/first-task'))));
+  assert.doesNotMatch(formatSetupReport(r), /practice|weekend/);
 });
 
 test('successful source setup uses absolute Node/argv, installs, diagnoses, then opens selected App', async () => {
@@ -149,7 +164,7 @@ test('shell quoting executes literal spaces, apostrophes, dollars, and backticks
   assert.equal(config.mcpServers.mychrome.command, '/tmp/Node tools/node'); assert.equal(config.mcpServers.mychrome.args[0], path.join(values[0], 'src/index.js'));
   assert.match(instructions.connection.codexConfig, /^\[mcp_servers\.mychrome\]/); assert.match(instructions.connection.codexConfig, /\ntool_timeout_sec = 900$/);
   assert.match(instructions.connection.codexNote, /add command alone does not set/);
-  assert.deepEqual(instructions.practice.launch.args.slice(1), ['--open', '--json']);
+  assert.equal(instructions.commands.practice, undefined);
 });
 
 test('CLI rejects ambiguous or relative output paths', () => {

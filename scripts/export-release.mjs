@@ -8,12 +8,12 @@ import { createHash } from 'node:crypto';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MANIFEST = 'docs/release/release-manifest.json';
-// Only these reviewed, synthetic product assets may cross the binary-file boundary.
+// Only these reviewed product assets may cross the binary-file boundary.
 // Adding a name here requires visual privacy review as well as a manifest entry.
 const PUBLIC_MEDIA = new Map([
-  ['site/assets/mychrome-workspace.webp', { format: 'webp', maxBytes: 4 * 1024 * 1024 }],
-  ['site/assets/mychrome-practice-poster.webp', { format: 'webp', maxBytes: 4 * 1024 * 1024 }],
-  ['site/assets/mychrome-practice.gif', { format: 'gif', maxBytes: 12 * 1024 * 1024 }],
+  ['site/assets/mychrome-overview.mp4', { format: 'mp4', maxBytes: 32 * 1024 * 1024 }],
+  ['site/assets/mychrome-overview.gif', { format: 'gif', maxBytes: 12 * 1024 * 1024 }],
+  ['site/assets/mychrome-overview-poster.webp', { format: 'webp', maxBytes: 4 * 1024 * 1024 }],
   ['site/assets/social-card.png', { format: 'png', maxBytes: 4 * 1024 * 1024 }],
 ]);
 const FORBIDDEN = /(^|\/)(?:\.git|\.ssh|\.aws|\.npmrc|\.netrc|node_modules|bin|verification|handover|experiments|sessions?|histories|cache|caches|logs|\.env(?:\..*)?|auth\.json|Codex\.local\.md|settings\.local\.json|[^/]*credentials[^/]*)(?:\/|$)|^docs\/(?:live|research|discussion[^/]*|marketing|routing-eval)(?:\/|$)|\.(?:log|jsonl|db|sqlite\d*|png|jpe?g|gif|webp|mp4|mov|tgz|zip)$/i;
@@ -23,10 +23,87 @@ const CONTENT_RULES = [
   ['npm token', /\bnpm_[A-Za-z0-9]{36,}\b/],
   ['AWS access key', /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/],
 ];
+// Binary fields (for example an mdat payload) can place a credential directly
+// beside a word character. Text-token boundaries are not meaningful there.
+const MEDIA_CONTENT_RULES = CONTENT_RULES.map(([kind, rule]) =>
+  [kind, new RegExp(rule.source.replaceAll('\\b', ''), rule.flags)]);
 
 function within(parent, child) {
   const rel = path.relative(parent, child);
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+// Walk box boundaries without allocating one object per box. Extended sizes are
+// compared as BigInt before conversion, so high bits cannot wrap or lose precision.
+function walkMp4Boxes(bytes, start, end, visit, allowFinalMdat = false) {
+  for (let offset = start; offset < end;) {
+    const remaining = end - offset;
+    if (remaining < 8) return false;
+    let size = bytes.readUInt32BE(offset);
+    const type = bytes.toString('latin1', offset + 4, offset + 8);
+    let header = 8;
+    if (size === 1) {
+      if (remaining < 16) return false;
+      const extended = bytes.readBigUInt64BE(offset + 8);
+      if (extended < 16n || extended > BigInt(remaining)) return false;
+      size = Number(extended);
+      header = 16;
+    } else if (size === 0) {
+      // The release accepts an EOF-sized mdat only at file level, not a child
+      // box that could swallow the rest of its enclosing movie metadata.
+      if (!allowFinalMdat || type !== 'mdat') return false;
+      size = remaining;
+    }
+    if (size < header || size > remaining || !visit(type, offset + header, offset + size, offset)) return false;
+    offset += size;
+  }
+  return true;
+}
+
+function validMp4Movie(bytes, start, end) {
+  let headers = 0;
+  let tracks = 0;
+  const framed = walkMp4Boxes(bytes, start, end, (type, body, stop) => {
+    if (type === 'mvhd') {
+      headers++;
+      return headers === 1 && (bytes[body] === 0 ? stop - body >= 100 : bytes[body] === 1 && stop - body >= 112);
+    }
+    if (type === 'trak') {
+      tracks++;
+      let trackHeaders = 0;
+      return walkMp4Boxes(bytes, body, stop, (child, childBody, childEnd) => {
+        if (child !== 'tkhd') return true;
+        trackHeaders++;
+        return trackHeaders === 1 && (bytes[childBody] === 0 ? childEnd - childBody >= 84 : bytes[childBody] === 1 && childEnd - childBody >= 96);
+      }) && trackHeaders === 1;
+    }
+    return true;
+  });
+  return framed && headers === 1 && tracks > 0;
+}
+
+// Container preflight for the reviewed overview, not a codec or playback test.
+// Release review must still decode/probe the final media independently.
+function validMp4(bytes) {
+  let fileTypes = 0;
+  let movies = 0;
+  let mediaData = 0;
+  const framed = walkMp4Boxes(bytes, 0, bytes.length, (type, body, end, offset) => {
+    if (offset === 0 && type !== 'ftyp') return false;
+    if (type === 'ftyp') {
+      fileTypes++;
+      if (fileTypes !== 1 || end - body < 8 || (end - body - 8) % 4 !== 0) return false;
+      const supported = brand => /^(?:isom|iso[2-9]|mp4[12]|avc1|M4V )$/.test(brand);
+      if (supported(bytes.toString('latin1', body, body + 4))) return true;
+      for (let brand = body + 8; brand < end; brand += 4)
+        if (supported(bytes.toString('latin1', brand, brand + 4))) return true;
+      return false;
+    }
+    if (type === 'moov') return ++movies === 1 && validMp4Movie(bytes, body, end);
+    if (type === 'mdat') { mediaData++; return end > body; }
+    return true;
+  }, true);
+  return framed && fileTypes === 1 && movies === 1 && mediaData > 0;
 }
 
 function validatePublicMedia(name, bytes, mode) {
@@ -46,7 +123,7 @@ function validatePublicMedia(name, bytes, mode) {
     valid = bytes.length >= 30 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
       bytes.readUInt32LE(4) === bytes.length - 8 && bytes.subarray(8, 12).toString('ascii') === 'WEBP' &&
       ['VP8 ', 'VP8L', 'VP8X'].includes(bytes.subarray(12, 16).toString('ascii'));
-  }
+  } else if (rule.format === 'mp4') valid = validMp4(bytes);
   if (!valid) throw new Error(`Invalid ${rule.format} public media: ${name}`);
 }
 
@@ -65,6 +142,14 @@ export async function inspectRelease(root = ROOT, manifestName = MANIFEST) {
     if (!entry) throw new Error(`Not tracked in the Git index; review and stage it first: ${name}`);
     if (entry.mode === '120000') throw new Error(`Symlink is not allowed: ${name}`);
     if (!['100644', '100755'].includes(entry.mode)) throw new Error(`Not a regular source file: ${name}`);
+    const media = PUBLIC_MEDIA.get(name);
+    if (media) {
+      // Check the immutable staged blob before reading it, including files larger
+      // than cat-file's output buffer. Container-declared sizes are not a file cap.
+      const size = Number(execFileSync('git', ['cat-file', '-s', entry.oid], { cwd: root, encoding: 'utf8' }).trim());
+      if (entry.mode !== '100644' || !Number.isSafeInteger(size) || size < 14 || size > media.maxBytes)
+        throw new Error(`Invalid public media size or executable mode: ${name}`);
+    }
     return { bytes: execFileSync('git', ['cat-file', 'blob', entry.oid], { cwd: root, maxBuffer: 32 * 1024 * 1024 }),
       mode: entry.mode === '100755' ? 0o755 : 0o644 };
   };
@@ -88,7 +173,7 @@ export async function inspectRelease(root = ROOT, manifestName = MANIFEST) {
       if (media) validatePublicMedia(name, bytes, mode);
       else if (text.includes('\0') || !Buffer.from(text, 'utf8').equals(bytes))
         throw new Error(`Only UTF-8 source text is allowed: ${name}`);
-      for (const [kind, re] of CONTENT_RULES)
+      for (const [kind, re] of media ? MEDIA_CONTENT_RULES : CONTENT_RULES)
         if (re.test(text)) problems.push(`Potential ${kind} in ${name}; inspect locally before exporting.`);
       files.set(name, { bytes, text: media ? null : text, mode,
         sha256: createHash('sha256').update(bytes).digest('hex') });

@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>MyChrome — AI help in the Chrome you already use</title>
+    <title>MyChrome — Keep browsing. Bring in AI when you need a hand.</title>
     <meta
       name="description"
-      content="Keep your signed-in pages and the context you already have. MyChrome lets your AI assistant help finish everyday tasks in the Chrome you use."
+      content="Keep using your Chrome. Bring in AI on the same page, take over when needed, then ask it to continue. Choose input mode, pace and optional personal rhythm sampling."
     />
     <meta name="theme-color" content="#f7f6f2" />
     <link rel="canonical" href="https://shuaige121.github.io/mychrome-mcp/" />
@@ -29,27 +29,18 @@
     <meta property="og:site_name" content="MyChrome" />
     <meta
       property="og:title"
-      content="MyChrome — AI help in the Chrome you already use"
+      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
     />
     <meta
       property="og:description"
-      content="Keep your signed-in pages and the context you already have. MyChrome lets your AI assistant help finish everyday tasks in the Chrome you use."
+      content="Keep using your Chrome. Bring in AI on the same page, take over when needed, then ask it to continue. Choose input mode, pace and optional personal rhythm sampling."
     />
     <meta
       property="og:url"
       content="https://shuaige121.github.io/mychrome-mcp/"
     />
     <meta property="og:locale" content="en_US" />
-    <meta
-      property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
-    />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta
-      property="og:image:alt"
-      content="MyChrome — AI help in the Chrome you already use"
-    />
+
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="stylesheet" href="./styles.css" />
     <script src="./site.js" defer></script>
@@ -58,23 +49,45 @@
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "MyChrome",
-        "description": "Local MCP server and native macOS app for AI assistance in your existing Google Chrome using real mouse and keyboard input.",
+        "description": "Local MCP server and native macOS app for AI help in your existing Chrome, with shared-page handoffs, adjustable input pace and optional personal rhythm sampling.",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "macOS 13 or later (Apple Silicon)",
         "softwareRequirements": "Google Chrome in /Applications; Node.js 24+ recommended, or 20.19+/22.13+; Git; Xcode Command Line Tools; local stdio MCP client",
         "license": "https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE",
         "url": "https://shuaige121.github.io/mychrome-mcp/",
         "downloadUrl": "https://github.com/shuaige121/mychrome-mcp",
-        "image": "https://shuaige121.github.io/mychrome-mcp/assets/mychrome-workspace.webp",
-        "author": { "@type": "Person", "name": "Leonard Chow" },
+        "author": {
+          "@type": "Person",
+          "name": "Leonard Chow"
+        },
         "offers": {
           "@type": "Offer",
           "price": "0",
           "priceCurrency": "USD",
           "description": "MIT-licensed source. AI client model access may have separate costs."
-        }
+        },
+        "softwareVersion": "0.12.1",
+        "image": "https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
       }
     </script>
+    <meta
+      property="og:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
+    />
+    <meta
+      name="twitter:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
+    />
   </head>
   <body class="home-page">
     <a class="skip-link" href="#main">Skip to content</a>
@@ -91,22 +104,20 @@
     <main id="main">
       <section class="hero wrap">
         <div class="hero-copy">
-          <p class="eyebrow">YOUR CHROME. YOUR AI. YOUR CALL.</p>
+          <p class="eyebrow">YOUR CHROME. YOUR PACE.</p>
           <h1>
-            Your browser<br />
-            is already open.<br />
-            <em>Let AI lend a hand.</em>
+            Keep browsing.<br /><em>Bring in AI</em><br />when you need a hand.
           </h1>
           <p class="intro">
-            Keep your signed-in pages and the context you already have. MyChrome
-            lets your AI assistant help finish everyday tasks in the Chrome you
-            use.
+            Let AI help on the page you're already using. Take over for a
+            password or verification code, then tell it to continue the task.
+            Set the typing and mouse pace to suit you.
           </p>
           <div class="actions">
             <a class="button primary" href="getting-started.html"
-              >Get started<span aria-hidden="true"> ↗</span></a
-            ><a class="text-link" href="#demo"
-              >See it in action<span aria-hidden="true"> ↓</span></a
+              >Connect my Chrome <span aria-hidden="true">↗</span></a
+            ><a class="text-link" href="#film"
+              >Watch the 38-second film <span aria-hidden="true">↓</span></a
             >
           </div>
           <p class="requirements">
@@ -114,101 +125,216 @@
             Node.js + Xcode Command Line Tools
           </p>
         </div>
-        <figure class="hero-figure">
-          <img
-            src="./assets/mychrome-workspace.webp"
-            width="1400"
-            height="1250"
-            alt="The MyChrome first-run guide in its native macOS window"
-            fetchpriority="high"
-          />
-          <figcaption>
-            <span class="caption-label">RIGHT ON YOUR MAC</span>First-run guide
-            · native macOS app
-          </figcaption>
-        </figure>
+        <aside
+          class="handoff-story"
+          aria-label="Working together on the same page"
+        >
+          <p class="story-heading">Right where you're already working.</p>
+          <ol>
+            <li>
+              <span class="story-number" aria-hidden="true">01</span>
+              <div>
+                <h2>Browse as usual</h2>
+                <p>Keep your tabs, signed-in account and work in progress.</p>
+              </div>
+            </li>
+            <li>
+              <span class="story-number" aria-hidden="true">02</span>
+              <div>
+                <h2>Bring in AI when you need it</h2>
+                <p>It reads the current page and works toward your goal.</p>
+              </div>
+            </li>
+            <li>
+              <span class="story-number" aria-hidden="true">03</span>
+              <div>
+                <h2>Take over when it's your turn</h2>
+                <p>Handle passwords, verification codes and personal checks.</p>
+              </div>
+            </li>
+            <li>
+              <span class="story-number" aria-hidden="true">04</span>
+              <div>
+                <h2>Say “continue” and carry on</h2>
+                <p>Your next instruction lets AI pick up the same task.</p>
+              </div>
+            </li>
+          </ol>
+          <p class="story-footer">Same Chrome. Same task.</p>
+        </aside>
       </section>
       <section class="context-strip">
         <div class="wrap">
-          <p>The same browser. A little less back and forth.</p>
-          <span>No extension · No debugging port · Local MCP</span>
+          <p>Your pages. Your way of working.</p>
+          <span>Native macOS app · Existing Chrome · Local MCP</span>
         </div>
       </section>
-      <section class="section wrap" id="everyday">
+      <section
+        class="section wrap film-section"
+        id="film"
+        aria-labelledby="film-title"
+      >
         <div class="section-heading">
-          <p class="eyebrow">START WITH THE WORK IN FRONT OF YOU</p>
-          <h2>
-            Familiar pages.<br />
-            An extra pair of hands.
-          </h2>
+          <p class="eyebrow">38 SECONDS IN YOUR CHROME</p>
+          <h2 id="film-title">A helping hand. On your page.</h2>
+        </div>
+        <figure class="film-figure">
+          <video
+            id="overview-video"
+            controls
+            preload="none"
+            playsinline
+            width="1920"
+            height="1080"
+            poster="./assets/mychrome-overview-poster.webp?v=0.12.1"
+            aria-label="MyChrome 38-second product overview"
+            aria-describedby="film-caption"
+          >
+            <source
+              src="./assets/mychrome-overview.mp4?v=0.12.1"
+              type="video/mp4"
+            />
+            <track
+              kind="subtitles"
+              src="./assets/mychrome-overview.en.vtt?v=0.12.1"
+              srclang="en"
+              label="English"
+              default
+            />
+            <p>If your browser cannot play the film, use the MP4 link below.</p>
+          </video>
+          <figcaption id="film-caption">
+            <p>
+              38 seconds · Product UI rendering and animation reconstruction
+              with sample content. No real posts were made.
+            </p>
+            <div class="film-links">
+              <a href="./assets/mychrome-overview.mp4?v=0.12.1" download
+                >Download MP4</a
+              ><a href="./assets/mychrome-overview.gif?v=0.12.1"
+                >Open 22-second GIF</a
+              >
+            </div>
+          </figcaption>
+        </figure>
+      </section>
+      <section class="section wrap habits-section" id="your-pace">
+        <div class="habits-grid">
+          <div class="section-heading">
+            <p class="eyebrow">YOUR WAY OF WORKING</p>
+            <h2>A helping hand.<br />At your pace.</h2>
+            <p>
+              Choose typing or pasting and set the operating speed. You can also
+              sample your own typing and mouse rhythm to shape later input.
+            </p>
+            <a class="text-link" href="getting-started.html#personal-rhythm"
+              >Set your input habits ↗</a
+            >
+          </div>
+          <div class="habit-features">
+            <article>
+              <p class="feature-value">0.5×–3×</p>
+              <h3>Choose the operating speed</h3>
+              <p>
+                Your pace applies to keyboard and pointer operations. Select
+                Follow task, Type key by key or Paste.
+              </p>
+            </article>
+            <article>
+              <p class="feature-label">
+                Optional personal rhythm sampling <span>Experimental</span>
+              </p>
+              <h3>Use your typing and mouse rhythm</h3>
+              <p>
+                Record for 3 minutes. Statistics with enough samples shape later
+                input. You can turn their use off or delete the sample.
+              </p>
+              <p class="privacy-note">
+                Only a local statistical summary is saved, without typed
+                content, raw pointer paths or screenshots.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section wrap examples-section" id="demo">
+        <span id="everyday"></span>
+        <div class="section-heading">
+          <p class="eyebrow">YOU CAN ASK</p>
+          <h2>Start with what you're already doing.</h2>
+          <p>
+            These are example requests you can give your AI. Open your own page,
+            explain the outcome, and let it help from there.
+          </p>
         </div>
         <div class="task-list">
           <article class="task-row">
             <span class="step-number">01</span>
             <div>
-              <h3>Make sense of this page</h3>
-              <p>
-                Ask your assistant to read the page you have open and find the
-                information you need.
-              </p>
+              <h3>Update your LinkedIn page</h3>
+              <p>Work in your current page using the details you provide.</p>
               <p class="example">
-                “Read this page and tell me what I need to fill in next.”
+                “Use MyChrome to review my LinkedIn page. Update my About and
+                experience sections with these details, then check the changes.”
               </p>
             </div>
           </article>
           <article class="task-row">
             <span class="step-number">02</span>
             <div>
-              <h3>Take care of the details</h3>
+              <h3>See who's reached out on Facebook</h3>
               <p>
-                Enter information, choose options and check what the page shows
-                after the work is done.
+                Check your messages and notifications for what needs a response.
               </p>
               <p class="example">
-                “Fill in these details, then check the saved result.”
+                “Check whether anyone has contacted me on Facebook. List the
+                messages I should reply to and tell me where you need my help.”
               </p>
             </div>
           </article>
           <article class="task-row">
             <span class="step-number">03</span>
             <div>
-              <h3>Keep the useful repetition</h3>
+              <h3>Publish your article where you choose</h3>
               <p>
-                Save suitable consecutive actions as a website routine. Supply
-                fresh values for the next run.
+                Facebook, Xiaohongshu, Reddit or LinkedIn—you specify the
+                destination accounts and publishing scope.
               </p>
-              <p class="example">“Keep these steps so I can use them again.”</p>
+              <p class="example">
+                “Publish this article I've written to the accounts I specify.
+                Fill in what each page requires and check each published
+                result.”
+              </p>
             </div>
           </article>
         </div>
         <p class="section-note">
-          These are example tasks. What works depends on the website,
-          permissions and page state.
+          These are task ideas, not a claim that every workflow on these sites
+          has been verified. What works depends on the website, account
+          permissions and current page.
         </p>
       </section>
       <section class="control-section">
         <div class="wrap control-grid">
           <div>
-            <p class="eyebrow">YOU HAVE THE LAST WORD</p>
-            <h2>
-              A shared desktop.<br />
-              A clear way to stop.
-            </h2>
+            <p class="eyebrow">HAND IT OVER. TAKE IT BACK.</p>
+            <h2>You and AI.<br />Taking turns.</h2>
             <p>
-              MyChrome uses your Mac’s real pointer and keyboard. Ordinary input
-              is intercepted during takeover; press Esc twice quickly when you
-              want control back.
+              AI uses your Mac's real pointer and keyboard. When a step needs
+              you, control comes back. Complete it, then explicitly say
+              “continue” in your AI conversation to carry on.
             </p>
           </div>
           <div class="control-details">
             <div class="key-pair" aria-label="Press Escape twice quickly">
               <kbd>esc</kbd><span>+</span><kbd>esc</kbd>
             </div>
-            <h3>Stop the current agent. Take over.</h3>
+            <h3>Want control back? Press Esc twice.</h3>
             <p>
-              Global pause prevents further input across agents. Stopping does
-              not undo actions already sent. You also choose the input mode and
-              pace.
+              Ordinary input is intercepted during takeover. Double Esc stops
+              the current agent; global pause prevents further input across
+              agents. Stopping does not undo actions already sent.
             </p>
             <a class="text-link" href="getting-started.html#your-controls"
               >Explore the controls ↗</a
@@ -216,57 +342,15 @@
           </div>
         </div>
       </section>
-      <section class="section wrap demo-section" id="demo">
-        <div class="section-heading">
-          <p class="eyebrow">ONE SMALL TASK, START TO FINISH</p>
-          <h2>Read. Fill. Save. Check.</h2>
-          <p>
-            An included offline practice page helps you get comfortable before
-            bringing your own work.
-          </p>
-        </div>
-        <figure class="demo-figure">
-          <img
-            id="practice-demo"
-            src="./assets/mychrome-practice-poster.webp"
-            data-poster="./assets/mychrome-practice-poster.webp"
-            data-animation="./assets/mychrome-practice.gif"
-            width="1080"
-            height="816"
-            loading="lazy"
-            alt="The local MyChrome practice page with a plan field, time selector and save button"
-            data-poster-alt="The local MyChrome practice page with a plan field, time selector and save button"
-            data-animation-alt="Actual local practice: enter a plan, choose a time, save and verify the result"
-          />
-          <figcaption>
-            <button
-              class="button secondary"
-              data-demo="practice-demo"
-              data-play="Play the demo"
-              data-stop="Stop the demo"
-              aria-pressed="false"
-              hidden
-            >
-              Play the demo</button
-            ><a class="demo-download" href="./assets/mychrome-practice.gif"
-              >Open GIF</a
-            >
-            <p class="demo-caption">
-              Actual local task · 2× speed · pauses trimmed · browser toolbar
-              cropped. Synthetic practice content.
-            </p>
-          </figcaption>
-        </figure>
-      </section>
       <section class="section wrap compatibility" id="compatibility">
         <div class="section-heading">
           <p class="eyebrow">BRING YOUR ASSISTANT</p>
           <h2>Your assistant, connected.</h2>
           <p>
             Codex and Claude Code can both use the browser tools. Native
-            conversation features depend on the client.
-            The getting-started guide supports English and Chinese; the main
-            workspace currently uses Chinese labels.
+            conversation features depend on the client. The getting-started
+            guide supports English and Chinese; the main workspace currently
+            uses Chinese labels.
           </p>
         </div>
         <div
@@ -309,8 +393,8 @@
       <section class="install-section" id="get-started">
         <div class="wrap install-grid">
           <div>
-            <p class="eyebrow">MAKE YOURSELF AT HOME</p>
-            <h2>Start with one small task.</h2>
+            <p class="eyebrow">START IN YOUR CHROME</p>
+            <h2>Bring AI into the work at hand.</h2>
             <p>
               Apple Silicon · macOS 13+ · Google Chrome. Node.js 24+
               recommended; 20.19+ and 22.13+ also supported. Git and Xcode
@@ -341,7 +425,7 @@ bash scripts/setup.sh</code></pre>
         <a class="wordmark" href="./"
           >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
         >
-        <p>A little help, right where you work.</p>
+        <p>Your Chrome. A hand when you need one.</p>
       </div>
       <div class="footer-links">
         <a

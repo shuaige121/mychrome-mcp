@@ -100,7 +100,9 @@ For a password, verification code or another field the user must fill, use the o
 {"tab":123,"field":7,"reason":"Enter the verification code and press Return","minutes":10}
 ```
 
-This highlights a standard text input/textarea and waits. It does not focus another application over the user's current work. The user can use the menu-bar button to reach it, type and press Return; multiline fields use Command+Return. A page transition may also end the wait, so read and verify the actual result.
+This highlights a standard text input/textarea and observes without sending input. It does not focus another application over the user's current work. The user can use the menu-bar button to reach it, type and press Return; multiline fields use Command+Return. Return, form submission, navigation, reload or the field disappearing only ends this observation. None confirms the result or grants permission to resume.
+
+After a handoff, resume only once the user has explicitly said “continue” in the original conversation for this handoff. If that instruction has already arrived, do not ask for it again; authorization given before handing control back does not replace it. Use `read_page` on the same tab to verify its current state before resuming the authorized task. This is an agent protocol: the server does not read chat replies or enforce a continuation gate across MCP clients.
 
 For a challenge or a field that cannot be highlighted:
 
@@ -108,7 +110,7 @@ For a challenge or a field that cannot be highlighted:
 {"tab":123,"reason":"Complete the site's verification in Chrome","minutes":3}
 ```
 
-Waits last at most 10 minutes per call. If a wait times out and the user still intends to continue, call again. A timeout does not mean login succeeded or authorize a different login method. Do not ask the user to paste a password or one-time code into chat.
+When a challenge disappears or the page changes, observation can return without any user message. That result does not authorize resuming input; the same explicit-continuation protocol applies. Waits last at most 10 minutes per call. If a wait times out and the user still wants observation to continue, call again. A timeout does not mean login succeeded or authorize a different login method. Do not ask the user to paste a password or one-time code into chat.
 
 ## Recover without duplicating actions
 

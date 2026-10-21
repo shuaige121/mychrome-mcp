@@ -1,11 +1,11 @@
 # MyChrome
 
-> MyChrome is a local MCP server and native macOS app that lets an AI assistant help in the user's existing Google Chrome. It preserves the working page and login context, reads through Chrome Apple Events, and uses real mouse and keyboard input. No extension or debugging port is required.
+> MyChrome is a local MCP server and native macOS app that lets an AI assistant help in the user's existing Google Chrome. The user keeps browsing normally and brings AI into the same page when needed. The user handles passwords or verification and explicitly asks AI to continue the original task. It preserves the working page and login context, reads through Chrome Apple Events, and uses real mouse and keyboard input. No extension or debugging port is required.
 
 ## Product and setup
 
 - [Product website](https://shuaige121.github.io/mychrome-mcp/): purpose, controls, requirements and compatibility.
-- [Getting started](https://shuaige121.github.io/mychrome-mcp/getting-started.html): source installation, permissions, client connection and a local practice task.
+- [Getting started](https://shuaige121.github.io/mychrome-mcp/getting-started.html): source installation, permissions, client connection and continuing the user's actual task on an existing page.
 - [FAQ](https://shuaige121.github.io/mychrome-mcp/faq.html): data handling, clients, controls and website limits.
 - [中文网站](https://shuaige121.github.io/mychrome-mcp/zh/): 中文介绍与安装入口。
 - [Source](https://github.com/shuaige121/mychrome-mcp): MIT-licensed source and release notes.
@@ -17,6 +17,12 @@
 - [Conversation center](https://github.com/shuaige121/mychrome-mcp/blob/main/docs/conversation-center.md): native window and supported Codex association.
 - [Support](https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md): sanitized bug reports.
 - [Security](https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md): private vulnerability reporting.
+
+## Working at the user's pace
+
+- Input mode can follow the task, type key by key, or paste. The user can select an operating speed from 0.5× to 3× for keyboard and pointer operations.
+- Optional personal input habit sampling is experimental. A 3-minute recording saves a local statistical summary, without typed content, raw key/pointer events or screenshots. Statistics with enough samples shape later input; defaults remain for insufficient samples. Users can disable or delete the sample. This is not full behavioral cloning or a guarantee against detection.
+- Example requests include updating the user's LinkedIn page, checking their Facebook messages, or publishing their own article to explicitly selected accounts on Facebook, Xiaohongshu, Reddit or LinkedIn. These are user needs, not claims of verified compatibility across all workflows.
 
 ## Capability boundaries
 

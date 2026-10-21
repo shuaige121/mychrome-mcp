@@ -2,6 +2,21 @@
 
 Release notes describe changes in this source tree. A source version, an npm publication, a GitHub push and a successful live test are separate events.
 
+## 0.12.1 — 2026-10-22
+
+- Replace the first-run practice server with a short continuation request for the user's existing Chrome page and AI conversation. Opening the guide never starts a sample task or leaves a localhost tab behind.
+- Center the product introduction on same-page collaboration: AI takes over when asked, hands the page back for steps requiring the user, and resumes the original task after an explicit continuation.
+- Refresh the selectable continuation request immediately when the first-run guide language changes.
+- Explain configurable typing, pointer and scrolling pace and optional personal habit sampling alongside the handoff controls. Keep experimental and client-specific capabilities explicit.
+- Align handoff notifications, field hints, tool results and agent guidance: detecting Return or a page change ends observation, not authorization to resume input. The assistant should wait for the user’s explicit continuation for that handoff and reread the same page. This is a client/agent protocol, not a server-enforced chat gate.
+- Replace the previous practice demonstration with an edited product explainer using current native views and labelled animation reconstruction. Example social tasks do not claim verified platform compatibility or actual publication.
+
+### Validation scope
+
+- An isolated 201-file export built all three native helpers and passed all 66 default test scripts. After the final handoff wording changes, the refreshed export was rebuilt and passed the affected ask (23), block (12), ledger (67), peer-routing (6) and public-site (511) checks. The package dry run contained 96 files; no npm publication was performed.
+- Real native-window checks covered Chinese/English request copying and closing, guide reopening, immediate language switching and the Operation Settings destination. Existing client configuration and macOS approvals were not changed.
+- All six site pages passed 18 desktop/mobile layouts. Browser playback, pause, seeking, subtitles, download, reduced-motion behavior, navigation and copy actions passed. Final MP4/GIF decoding and media privacy review passed. The film is a labelled reconstruction with synthetic content, not evidence of completed social-platform transactions.
+
 ## 0.12.0 — 2026-10-22
 
 - Add one guided source setup command with prerequisite checks, an owned App destination, exact-path client instructions and actionable permission diagnostics. Existing client configuration is never silently rewritten.

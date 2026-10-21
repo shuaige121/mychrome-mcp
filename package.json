@@ -1,6 +1,6 @@
 {
   "name": "mychrome-mcp",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Let your AI help in the Chrome you already use. Local macOS MCP tools, real mouse and keyboard input, an interruptible native GUI, and reusable website routines.",
   "keywords": [
     "mcp",

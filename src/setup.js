@@ -73,24 +73,25 @@ export async function installGuiApp({ root = SOURCE_ROOT, appPath = path.join(os
 
 export function setupInstructions({ root = SOURCE_ROOT, nodePath = process.execPath, appPath = path.join(os.homedir(), 'Applications/MyChrome.app') } = {}) {
   if (!path.isAbsolute(root) || !path.isAbsolute(nodePath)) throw new Error('Source and Node paths must be absolute.');
-  const entry = path.join(root, 'src/index.js'), setup = path.join(root, 'scripts/setup.mjs'), serve = path.join(root, 'examples/first-task/serve.mjs');
+  const entry = path.join(root, 'src/index.js'), setup = path.join(root, 'scripts/setup.mjs');
   const doctor = shellCommand(nodePath, [entry, 'doctor']);
   return {
     root, nodePath, appPath,
     commands: { setup: shellCommand(nodePath, [setup, '--app-path', appPath]), check: shellCommand(nodePath, [setup, '--check', '--app-path', appPath]), doctor,
-      doctorAsk: `${doctor} --ask --open`, practice: shellCommand(nodePath, [serve, '--open']), openApp: shellCommand('/usr/bin/open', [appPath]) },
+      doctorAsk: `${doctor} --ask --open`, openApp: shellCommand('/usr/bin/open', [appPath]) },
     connection: {
       claudeCommand: shellCommand('claude', ['mcp', 'add', '--scope', 'user', 'mychrome', '--', nodePath, entry]),
       codexCommand: shellCommand('codex', ['mcp', 'add', 'mychrome', '--', nodePath, entry]),
       codexConfig: `[mcp_servers.mychrome]\ncommand = ${JSON.stringify(nodePath)}\nargs = [${JSON.stringify(entry)}]\nstartup_timeout_sec = 30\ntool_timeout_sec = 900`,
       codexNote: 'After registering, edit the existing [mcp_servers.mychrome] entry in ~/.codex/config.toml to match this block. Do not add a duplicate section. The add command alone does not set the required 900-second tool timeout.',
       claudeDesktopConfig: JSON.stringify({ mcpServers: { mychrome: { command: nodePath, args: [entry] } } }, null, 2),
-      note: 'Register once per client. Review an existing mychrome entry before replacing it. Setup does not read or rewrite client configuration. Start a new client session, then ask it to use MyChrome.',
+      note: 'Register once per client. Review an existing mychrome entry before replacing it. Setup does not read or rewrite client configuration. Reconnect MCP in your client, then return to your conversation and ask it to use MyChrome.',
     },
-    practice: {
-      url: null, launch: { command: nodePath, args: [serve, '--open', '--json'] },
-      prompt: 'Use MyChrome on the open MyChrome practice page. Read the weekend ideas, enter "Visit the weekend market" in Plan name, choose "Saturday morning" in When, and press "Save practice plan". Read the saved result and confirm both values. Use select_option for the dropdown. Stop when I cancel; I can press Esc twice quickly to stop and take control.',
-      promptZh: '请用 MyChrome 操作已打开的 MyChrome 练习页。先读周末安排，把 Plan name 填为 Visit the weekend market，把 When 选为 Saturday morning，然后点击 Save practice plan。读取保存结果，确认这两项都正确。下拉选项用 select_option；我取消时请停止；我可以快速按两次 Esc 停止操作并接管。',
+    firstTask: {
+      description: 'Browse Chrome as usual. When you need help, return to the AI conversation connected to MyChrome and state your goal and the open page title or URL. If you already described the task, use the continuation request below. The AI can hand that page back when it needs you, then resume after you explicitly ask it to continue.',
+      descriptionZh: '照常使用 Chrome，需要帮忙时回到已连接 MyChrome 的 AI 对话，说明目标和已打开页面的标题或 URL。如果之前已说清楚任务，可使用下面的接续请求。需要你操作时，AI 会交回同一页面；你明确说继续后，它再接着原任务做。',
+      prompt: 'Use MyChrome on my current Chrome page to continue the task we have been discussing. If the page or goal is unclear, ask me. Use my input preferences. Hand the page back for anything I need to do, and wait for me to say "continue" before resuming. Check the result when finished.',
+      promptZh: '请用 MyChrome 在我当前的 Chrome 页面上，继续我们刚才讨论的任务。页面或目标不明确时再问我。按我设置的输入习惯操作；需要我处理时交回页面，等我说“继续”再接着做。完成后核对实际结果。',
     },
   };
 }
@@ -147,7 +148,7 @@ export async function runSetup(options = {}, overrides = {}) {
   const swift = xcode.code === 0 ? await p.run('/usr/bin/xcrun', ['--find', 'swiftc']) : null;
   checks.push(check('swift', 'Swift compiler', swift?.code === 0, swift?.stdout?.trim() || 'Swift compiler is unavailable.', 'Install the Xcode Command Line Tools using xcode-select --install.'));
   checks.push(check('chrome', 'Google Chrome', p.exists(CHROME_APP), CHROME_APP, 'Install Google Chrome from https://www.google.com/chrome/ and move it to /Applications.'));
-  const required = ['package.json', 'package-lock.json', 'src/index.js', 'src/helper.swift', 'src/chromectl.swift', 'src/menubar.swift', 'scripts/install-gui.mjs', 'examples/first-task/serve.mjs'];
+  const required = ['package.json', 'package-lock.json', 'src/index.js', 'src/helper.swift', 'src/chromectl.swift', 'src/menubar.swift', 'scripts/install-gui.mjs'];
   const missing = required.filter(name => !p.exists(path.join(p.root, name)));
   checks.push(check('source', 'Complete source checkout', missing.length === 0, missing.length ? `Missing: ${missing.join(', ')}` : p.root,
     'Use the complete source release or Git checkout, keep it in a stable directory, and run scripts/setup.sh from there.'));
@@ -190,14 +191,14 @@ export async function runSetup(options = {}, overrides = {}) {
 export const SETUP_USAGE = `Usage: bash scripts/setup.sh [--check | --instructions] [--json] [--app-path ABSOLUTE.app] [--no-open]
   Default         Check prerequisites, npm ci, build, install, diagnose, then open MyChrome.
   --check         Diagnose only; no install, permission prompts, or client-config changes.
-  --instructions  Render exact-path client and practice instructions without running checks.
+  --instructions  Render exact-path client setup and task continuation instructions without running checks.
   --json          Print one JSON object. Build progress goes to stderr.
   --app-path      Install/check an explicit App destination (default: ~/Applications/MyChrome.app).
   --no-open       Leave the installed App closed.
   --help          Show this help.
 Keep this source directory in place. Existing client configuration is never rewritten.
 Exit 0: required checks passed (or instructions/help requested); 1: action still needed; 2: usage error.
-Passing checks does not prove that an AI client is connected or that the practice task succeeded.`;
+Passing checks does not prove that an AI client is connected or that your task is complete.`;
 
 export function parseSetupArgs(args) {
   const o = {};
@@ -223,12 +224,12 @@ export function formatSetupReport(report) {
   if (report.doctor) lines.push('', formatReport(report.doctor));
   if (report.error) lines.push('', `Stopped at ${report.error.step}: ${report.error.detail}`, report.error.fix);
   if (report.installed) lines.push('', `App installed: ${report.appPath}`, report.opened ? 'MyChrome was opened. Continue in its welcome guide.' : `Open it when ready: ${report.commands.openApp}`);
-  if (report.status !== 'instructions') lines.push('', report.ok ? 'Required checks passed for this app. Connect your AI client, then complete the local practice task to verify the full workflow.' : 'Setup is not fully ready. Complete the required steps above, then run the check again.');
+  if (report.status !== 'instructions') lines.push('', report.ok ? 'Required checks passed for this app. Connect your AI client, then return to your conversation to continue your task. Verify its actual result before calling it complete.' : 'Setup is not fully ready. Complete the required steps above, then run the check again.');
   lines.push('', 'Connect Claude Code (register once):', report.connection.claudeCommand,
     '', 'Connect Codex (register once):', report.connection.codexCommand, report.connection.codexNote, report.connection.codexConfig,
     '', report.connection.note, 'Permissions belong to the app launching MyChrome; run doctor from your actual AI client host too.',
     'Claude supports browser tools and handoff. Live conversation text and direct GUI replies require a supported Codex host.',
-    '', 'Try a local practice task (server stops after 30 minutes; Ctrl-C stops it sooner):', report.commands.practice, report.practice.prompt,
+    '', 'Bring AI into your page:', report.firstTask.description, 'Continuation request (copy into the same AI conversation):', report.firstTask.prompt,
     '', `Recheck: ${report.commands.check}`);
   return lines.join('\n') + '\n';
 }

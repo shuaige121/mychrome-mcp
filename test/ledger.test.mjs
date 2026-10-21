@@ -152,7 +152,7 @@ console.log('wording: list section, reminder line, recovery line, owner names');
   assert.match(sec.join('\n'), /tab=2 stale .*\n {6}→ 网址在你上次 read_page 之后变了，编号已失效：先 read_page\(tab=2\)/);
   assert.match(sec.join('\n'), /tab=3 taken_over .*\n {6}→ 可能被用户动过（它现在的网址不是 agent 打开或点出来的）：先 read_page\(tab=3\) 看现在的页面；确认用户已交回后在这个标签继续/);
   assert.match(sec.join('\n'), /tab=6 taken_over .*\n {6}→ 可能已被用户接手（它被移到了别的窗口）：先不要点击、输入或关闭；可 read_page 查看现状。用户明确交回后在原标签继续，不要另开标签替代/);
-  assert.match(sec.join('\n'), /tab=7 taken_over .*\n {6}→ 用户按你的请求（wait_for_user）处理过它：先 read_page\(tab=7\) 看现在的页面，再接着做/);
+  assert.match(sec.join('\n'), /tab=7 taken_over .*\n {6}→ 用户按你的请求（wait_for_user）处理过它，这不代表收到继续授权：若用户尚未在本次交接后于原对话明确说“继续”，先等待；收到后先 read_page\(tab=7\) 核对同一页面，再恢复原任务/);
   assert.match(sec.join('\n'), /tab=4 gone\n {6}→ 已经不在 Chrome 里了/);
   assert.match(sec.join('\n'), /tab=5 ready .*（tab=1 点击弹出）/);
   assert.ok(!sec.some(l => /tab=1 ready.*\n.*→/.test(l)), 'a ready tab got a next step');
@@ -160,8 +160,8 @@ console.log('wording: list section, reminder line, recovery line, owner names');
   ok('list section: one line per tab, a next step only for non-ready ones, popups say where they came from');
   assert.deepEqual([e(3, 'taken_over', { why: 'url_changed' }), e(6, 'taken_over', { why: 'moved_window' }), e(7, 'taken_over', { why: 'moved_window', helped: true }),
     e(8, 'taken_over', { why: 'user_interrupted' })].map(x => L.shortItem(x).replace(/「.*$/, '')),
-    ['tab=3 taken_over·先 read_page 确认', 'tab=6 taken_over·别再操作', 'tab=7 taken_over·用户处理过，先 read_page', 'tab=8 taken_over·先 read_page 确认']);
-  ok('taken over: leave it when dragged away / watched by the user; read first when it may be a slow navigation or a bumped mouse; carry on after wait_for_user');
+    ['tab=3 taken_over·先 read_page 确认', 'tab=6 taken_over·别再操作', 'tab=7 taken_over·用户处理过，等继续后读页', 'tab=8 taken_over·先 read_page 确认']);
+  ok('taken over: leave it when dragged away / watched by the user; read first when uncertain; explicit continuation required after wait_for_user');
   assert.match(L.mineSection([])[0], /没有。open_tab 打开的/);
 
   const many = [1, 2, 3, 4, 5, 6, 7].map(i => e(i, 'ready', { title: 'x'.repeat(200) }));
@@ -573,7 +573,7 @@ console.log('popups: a tab my click opened is registered to me');
   ok('not registered: a click on my tab the user may have taken over');
 }
 
-console.log('wait_for_user hands my tab to the user: afterwards, read it and carry on');
+console.log('wait_for_user hands my tab to the user: afterwards, wait for explicit continuation, then read it');
 {
   await world();
   await call('list_tabs');
@@ -583,14 +583,15 @@ console.log('wait_for_user hands my tab to the user: afterwards, read it and car
     chrome.windows[1].tabs.find(t => t.id === 10).url = 'https://mine.test/dashboard';
   }, 50);
   const wr = await call('wait_for_user', { tab: 10, reason: '请在这个页面登录', minutes: 0.05 });
-  // The reply itself says to read the page and carry on: no reminder line, and nothing telling it to drop the tab.
+  // Observation ends without a chat reply; instructions require explicit continuation, without dropping the tab.
   assert.equal(wr.text, wr.text.split('\n')[0]);
-  assert.match(wr.text, /^✅ 页面已经变了（mine\.test），等了 \d+ 秒。先 read_page 看现在的页面，再接着做。$/);
+  assert.match(wr.text, /^✅ 页面已经变了（mine\.test），等了 \d+ 秒。/);
+  assert.match(wr.text, /本次观察已结束，这不代表收到继续授权。若用户尚未在本次交接后于原对话明确说“继续”，先等待；收到后先 read_page 核对同一页面，再恢复原任务/);
   assert.equal(LEDGER.get(10).state, 'taken_over');
   assert.match((await call('list_tabs', { mine: true })).text, /tab=10 taken_over .*\n {6}→ 用户按你的请求（wait_for_user）处理过它/);
   const rp = await call('read_page', { tab: 10 });
   assert.doesNotMatch(rp.text, /别再操作/);
-  assert.match(rp.text, /（tab=10 是你这个会话开的 agent 标签，已标记为「可能已被用户接手」。用户按你的请求（wait_for_user）处理过它：先 read_page\(tab=10\) 看现在的页面，再接着做；它不会再被自动关闭。）/);
+  assert.match(rp.text, /（tab=10 是你这个会话开的 agent 标签，已标记为「可能已被用户接手」。用户按你的请求（wait_for_user）处理过它，这不代表收到继续授权：若用户尚未在本次交接后于原对话明确说“继续”，先等待；收到后先 read_page\(tab=10\) 核对同一页面，再恢复原任务；它不会再被自动关闭。）/);
   idx.__setWaitPollForTests(3000);
   ok('after wait_for_user the takeover marks do not tell the agent to drop its tab');
 }
@@ -758,13 +759,13 @@ console.log('Codex r2 B1: after a wait, a click after it ended means the user is
   idx.__setWaitPollForTests(3000);
   assert.match(wr.text, /^✅ 页面已经变了/);
   const during = await call('list_tabs', { mine: true });
-  assert.match(during.text, /tab=10 taken_over .*\n {6}→ 用户按你的请求（wait_for_user）处理过它：先 read_page/);
+  assert.match(during.text, /tab=10 taken_over .*\n {6}→ 用户按你的请求（wait_for_user）处理过它，这不代表收到继续授权：若用户尚未在本次交接后于原对话明确说“继续”，先等待；收到后先 read_page/);
   await new Promise(r => setTimeout(r, 5));
   chrome.clickIdle = 0;                                  // a click after the wait: the user is using the page now
   const after = await call('list_tabs', { mine: true });
   assert.match(after.text, /tab=10 taken_over .*\n {6}→ 可能已被用户接手（用户当时正在看它）：先不要点击、输入或关闭/);
   assert.doesNotMatch(after.text, /用户按你的请求/);
-  ok('login redirect: clicks while logging in keep "read then continue"; a click after the wait wins over url_changed ("leave it")');
+  ok('login redirect keeps explicit continuation instructions; a click after the wait wins over url_changed ("leave it")');
 
   // A check solved in place (the URL stays): the clicks that solved it do not make the tab the user's.
   await world();

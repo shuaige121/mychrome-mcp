@@ -43,19 +43,28 @@
       content="https://shuaige121.github.io/mychrome-mcp/faq.html"
     />
     <meta property="og:locale" content="en_US" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./site.js" defer></script>
     <meta
       property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="MyChrome — AI help in the Chrome you already use"
+      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
     />
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="stylesheet" href="./styles.css" />
-    <script src="./site.js" defer></script>
+    <meta
+      name="twitter:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
+    />
   </head>
   <body class="docs-page">
     <a class="skip-link" href="#main">Skip to content</a>
@@ -82,10 +91,11 @@
         <article class="prose">
           <h2 id="what-is-mychrome">What is MyChrome?</h2>
           <p>
-            A local MCP server and native macOS app that let an AI assistant
-            read and operate the Google Chrome you already use. It uses Chrome
-            Apple Events for page access and real mouse and keyboard input for
-            actions. No Chrome extension or debugging port is needed.
+            MyChrome is a local MCP server and native macOS app. Keep using
+            Chrome as usual and bring in AI on the same page when you need help.
+            Take over when a step needs you, then tell it to continue. It uses
+            your real pointer and keyboard, with adjustable pace and optional
+            personal rhythm sampling.
           </p>
           <h2 id="which-computers-and-clients-work">
             Which computers and clients work?
@@ -116,14 +126,29 @@
             Does it work on every website?
           </h2>
           <p>
-            No. Compatibility depends on the site&#x27;s controls, permissions
-            and current page state. A site may require you to log in or handle a
-            challenge. Named-platform compatibility needs a real test of that
-            workflow; the local practice demo does not establish it.
-            <a
-              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/faq/what-happens-at-a-captcha.md"
-              >Site challenges</a
-            >.
+            What works depends on the site’s controls, account permissions and
+            current page. You may need to take over for login or verification.
+            The task examples on this website describe requests you can make;
+            they do not establish compatibility with every workflow.
+          </p>
+          <h2 id="personal-rhythm">Can it use my input habits?</h2>
+          <p>
+            Choose an input mode and pace from 0.5× to 3×. The optional My input
+            habits feature samples your rhythm for 3 minutes, then uses typing
+            and pointer statistics with enough samples to shape later input.
+            Sampling is experimental; you can turn it off or delete its data.
+            Only a local statistical summary is saved, without typed content,
+            raw paths or screenshots.
+          </p>
+          <h2 id="continue-after-handoff">
+            How does AI continue after I take over?
+          </h2>
+          <p>
+            The handoff instructions tell the AI to wait for your request to
+            continue. After handling the step, say “continue” in the original
+            conversation; it should read the page again before proceeding.
+            Page-change or input detection only ends the observation; your AI
+            client must follow the handoff instructions.
           </p>
           <h2 id="how-do-i-stop-it">How do I stop it?</h2>
           <p>
@@ -144,14 +169,14 @@
           </p>
           <h2 id="what-stays-on-my-mac">What stays on my Mac?</h2>
           <p>
-            MyChrome&#x27;s settings, operation records and website routine
-            metadata are local. Routine recording is enabled by default and can
-            be turned off. It records filtered page/target descriptions and
-            action order; typed and selected values are not saved as replay
-            defaults. Paths, labels and routine names may still reveal usage
-            context. Page content returned through MCP goes to your AI client
-            and is handled under its settings. Do not share runtime directories
-            or account screenshots.
+            MyChrome's settings, operation records and website routine metadata
+            are local. Routine recording is enabled by default and can be turned
+            off. It records filtered page/target descriptions and action order;
+            typed and selected values are not saved as replay defaults. Paths,
+            labels and routine names may still reveal usage context. Page
+            content returned through MCP goes to your AI client and is handled
+            under its settings. Do not share runtime directories or account
+            screenshots.
           </p>
           <h2 id="what-are-website-routines">What are website routines?</h2>
           <p>
@@ -202,8 +227,7 @@
         <aside class="help-note">
           <h2>Ready to try it?</h2>
           <p>
-            Start with the included offline practice task and get comfortable
-            with the controls.
+            Connect the Chrome you already use and start with the work at hand.
           </p>
           <a class="button primary" href="getting-started.html"
             >Get started ↗</a
@@ -216,7 +240,7 @@
         <a class="wordmark" href="./"
           >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
         >
-        <p>A little help, right where you work.</p>
+        <p>Your Chrome. A hand when you need one.</p>
       </div>
       <div class="footer-links">
         <a

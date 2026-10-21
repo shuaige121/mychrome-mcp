@@ -95,7 +95,7 @@ final class OnboardingProcess: OnboardingCancellable {
         if let child, child.isRunning { child.terminate() }
     }
     func start(executable: String, arguments: [String], timeout: Double = 45,
-               firstLine: (([String: Any]) -> Void)? = nil, done: @escaping ([String: Any]?, String?) -> Void) {
+               done: @escaping ([String: Any]?, String?) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let child = Process(), output = Pipe()
             child.executableURL = URL(fileURLWithPath: executable); child.arguments = arguments
@@ -106,18 +106,13 @@ final class OnboardingProcess: OnboardingCancellable {
             catch { self.lock.unlock(); DispatchQueue.main.async { done(nil, "unavailable") }; return }
             let dataLock = NSLock()
             let drained = DispatchSemaphore(value: 0)
-            var data = Data(), deliveredLine = false, oversized = false
+            var data = Data(), oversized = false
             output.fileHandleForReading.readabilityHandler = { handle in
                 let chunk = handle.availableData
                 if chunk.isEmpty { handle.readabilityHandler = nil; drained.signal(); return }
                 dataLock.lock()
                 if data.count + chunk.count <= 262_144 { data.append(chunk) } else { oversized = true }
-                let line = !deliveredLine ? data.firstIndex(of: 10).map { data.prefix(upTo: $0) } : nil
-                if line != nil { deliveredLine = true }
                 dataLock.unlock()
-                if let line, let firstLine, let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] {
-                    DispatchQueue.main.async { firstLine(object) }
-                }
             }
             let deadline = Date().addingTimeInterval(timeout)
             while child.isRunning && Date() < deadline {
@@ -159,15 +154,11 @@ final class OnboardingModel: ObservableObject {
     @Published var instructions: [String: Any] = [:]
     @Published var note: String?
     @Published var persistenceFailed = false
-    @Published var practiceURL: URL?
-    @Published var practiceStarting = false
     let root: String
     let store: OnboardingPreferenceStore
     private let runner: OnboardingRunner
     private var generation = 0
     private var diagnostic: OnboardingCancellable?
-    private var practice: OnboardingCancellable?
-    private var practiceGeneration = 0
     private(set) var visible = false
     private(set) var presentedThisSession = false
     init(root: String = ROOT_DIR, store: OnboardingPreferenceStore = OnboardingPreferenceStore(),
@@ -192,7 +183,6 @@ final class OnboardingModel: ObservableObject {
     }
     func stop() {
         visible = false; generation += 1; diagnostic?.cancel(); diagnostic = nil; checking = false; loading = false
-        practiceGeneration += 1; practice?.cancel(); practice = nil; practiceURL = nil; practiceStarting = false
     }
     func request(node: String?, check: Bool) {
         guard visible, !loading else { return }
@@ -220,35 +210,9 @@ final class OnboardingModel: ObservableObject {
         }
     }
     func command(_ key: String, group: String = "commands") -> String? { (instructions[group] as? [String: Any])?[key] as? String }
-    var practicePrompt: String? {
-        let values = instructions["practice"] as? [String: Any]
-        guard let prompt = values?[english ? "prompt" : "promptZh"] as? String ?? values?["prompt"] as? String else { return nil }
-        guard let practiceURL else { return prompt }
-        return prompt + "\n\n" + t("请只操作本次练习页面：", "Use this exact practice page: ") + practiceURL.absoluteString
-    }
-    func startPractice(node: String?, startupTimeout: Double = 15) {
-        guard !practiceStarting, practiceURL == nil, let node, node.hasPrefix("/") else { return }
-        practiceGeneration += 1; let request = practiceGeneration
-        practice?.cancel(); practiceStarting = true; note = nil
-        let process = OnboardingProcess(); practice = process
-        process.start(executable: node, arguments: [root + "/examples/first-task/serve.mjs", "--open", "--json"], timeout: 1810, firstLine: { [weak self] object in
-            guard let self, self.practiceGeneration == request,
-                  let value = object["url"] as? String, let url = URL(string: value),
-                  url.scheme == "http", url.host == "127.0.0.1" || url.host == "localhost" else { return }
-            self.practiceURL = url; self.practiceStarting = false
-        }, done: { [weak self] _, error in
-            guard let self, self.practiceGeneration == request else { return }
-            let hadPage = self.practiceURL != nil
-            self.practice = nil; self.practiceStarting = false; self.practiceURL = nil
-            if error != "cancelled" { self.note = hadPage
-                ? self.t("本地练习已结束。可重新打开，再做一次。", "The local practice server has stopped. Open it again to retry.")
-                : self.t("练习页未能打开。请先完成安装检查，然后重试。", "The practice page could not open. Finish the installation check, then retry.") }
-        })
-        DispatchQueue.main.asyncAfter(deadline: .now() + startupTimeout) { [weak self] in
-            guard let self, self.practiceGeneration == request, self.practiceStarting else { return }
-            self.practiceGeneration += 1; self.practice?.cancel(); self.practice = nil; self.practiceStarting = false
-            self.note = self.t("练习页启动超时，请重新打开。", "The practice page took too long to start. Please try opening it again.")
-        }
+    var firstTaskPrompt: String? {
+        let values = instructions["firstTask"] as? [String: Any]
+        return values?[english ? "prompt" : "promptZh"] as? String ?? values?["prompt"] as? String
     }
 }
 
@@ -260,13 +224,13 @@ struct OnboardingView: View {
     let close: (Bool) -> Void
     @State private var copied: String?
     var node: String? { onboardingNode(root: state.root, connectedNodes: model.servers.filter { sameRoot($0.root) }.compactMap(\.node)) }
-    var stageNames: [String] { [state.t("安装与权限", "Installation"), state.t("连接 AI", "Connect AI"), state.t("第一次练习", "First task"), state.t("控制与接手", "Stay in control")] }
+    var stageNames: [String] { [state.t("安装与权限", "Installation"), state.t("连接 AI", "Connect AI"), state.t("随时叫 AI 接手", "AI on your page"), state.t("接手与习惯", "Handoff & habits")] }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(state.t("让 AI 帮你完成眼前的任务", "Your browser is already open.")).font(.system(size: 25, weight: .semibold))
-                    Text(state.t("从连接自己的 Chrome 开始，随时接手。", "Let your AI help you finish the task.")).foregroundStyle(.secondary)
+                    Text(state.t("需要时，让 AI 接手", "Bring AI in when you need it.")).font(.system(size: 25, weight: .semibold))
+                    Text(state.t("在你当前的 Chrome 页面继续任务，按你的节奏操作。", "Continue on your current Chrome page, at your pace.")).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Picker("Language", selection: $state.english) { Text("中文").tag(false); Text("English").tag(true) }
@@ -365,36 +329,30 @@ struct OnboardingView: View {
             command("claudeCommand", label: "Claude Code", group: "connection")
             command("claudeDesktopConfig", label: "Claude Desktop", group: "connection")
             Text(state.t("Claude：浏览器工具和网页接手可用；当前不支持在此 GUI 显示实时对话或直接回复 Claude 终端会话。", "Claude: browser tools and page handoff are supported. Live conversation text and direct replies to Claude terminal sessions are currently unsupported in this GUI.")).font(.callout).foregroundStyle(.secondary)
-            Text(state.t("保存后重新打开客户端的 MCP 连接，确认 MyChrome 工具出现，再进行练习。", "After saving, reopen your client's MCP connection and confirm that MyChrome tools appear, then try the practice task.")).font(.callout)
+            Text(state.t("保存后重新连接客户端的 MCP，确认 MyChrome 工具出现，再回到原有 AI 对话继续你的任务。", "After saving, reconnect MCP in your client and confirm that MyChrome tools appear, then return to your existing AI conversation to continue your task.")).font(.callout)
             Button(state.t("重新读取安装说明", "Reload setup instructions")) { state.request(node: node, check: false) }.disabled(state.loading)
         }
     }
     var firstTask: some View {
         VStack(alignment: .leading, spacing: 16) {
-            heading(state.t("用本地练习页完成一次真实操作", "Try one real task on a local page"), state.t("练习页只在本机运行，无账号、无外部提交。打开后，把练习提示发给已连接的 AI。", "The practice page runs on this Mac, with no account or external submission. Open it, then send the practice prompt to your connected AI."))
-            HStack {
-                Button(state.practiceStarting ? state.t("正在打开…", "Opening…") : state.practiceURL == nil ? state.t("在 Chrome 打开本地练习", "Open local practice in Chrome") : state.t("再次查看练习页", "Show practice page")) {
-                    if let url = state.practiceURL {
-                        NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: "/Applications/Google Chrome.app"), configuration: NSWorkspace.OpenConfiguration())
-                    } else { state.startPractice(node: node) }
-                }.buttonStyle(.borderedProminent).disabled(node == nil || state.practiceStarting)
-                if let prompt = state.practicePrompt {
-                    Button(state.t("复制练习提示", "Copy practice prompt")) { copy(prompt, label: state.t("练习提示", "Practice prompt")) }
-                        .disabled(state.practiceURL == nil)
-                        .help(state.t("先打开本地练习，再复制包含本次页面地址的提示。", "Open local practice first, then copy a prompt with this page's exact address."))
-                }
+            heading(state.t("随时叫 AI 接手", "Bring AI into your page"), state.t("照常使用 Chrome，需要帮忙时回到已连接 MyChrome 的 AI 对话。说明想完成什么，并指明已打开页面的标题或 URL；如果之前已说清楚任务，可直接使用下面的接续请求。", "Browse Chrome as usual. When you need help, return to the AI conversation connected to MyChrome. State your goal and identify the open page by title or URL. If you already described the task, use the continuation request below."))
+            if let prompt = state.firstTaskPrompt {
+                Text(prompt).id(state.english).font(.callout).textSelection(.enabled).padding(14).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+                Button(state.t("复制接续请求并关闭引导", "Copy request and close guide")) {
+                    copy(prompt, label: state.t("接续请求", "Continuation request")); close(true)
+                }.buttonStyle(.borderedProminent)
+                Text(state.t("复制后切回原有 AI 对话并发送。引导不会替你发送请求。", "Switch back to your existing AI conversation and send the copied request. The guide does not send it for you.")).font(.caption).foregroundStyle(.secondary)
             }
-            if let url = state.practiceURL { Text(url.absoluteString).font(.caption.monospaced()).textSelection(.enabled) }
-            if let prompt = state.practicePrompt { Text(prompt).font(.callout).textSelection(.enabled).padding(14).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9)) }
-            heading(state.t("完成标准", "What success looks like"), state.t("AI 读取页面 → 输入无敏感信息的文字 → 选择一个选项 → 本地保存 → 再次读取可见结果，核对文字和选项。", "The AI reads the page, types non-sensitive text, chooses an option, saves locally, then reads the visible result again to verify both values."))
-            Text(state.t("打开页面或复制提示不等于练习完成。只有页面显示正确结果，并由 AI 再次核对，才算这次操作成功。练习服务最多运行 30 分钟，退出 MyChrome 时停止。", "Opening the page or copying the prompt does not complete the task. Confirm success from the correct visible result and the AI's follow-up check. The practice server stops after 30 minutes or when you quit MyChrome.")).font(.callout).foregroundStyle(.secondary)
+            heading(state.t("AI 操作，需要你时交回同一页", "AI works, then hands the same page back when needed"), state.t("AI 先读取实际页面并核对目标，再在授权范围内做事。密码、验证码等需要你时，把该页面交回给你；你明确说继续后，它重新读取同一页并接着原任务做。目标或授权不明确、页面受阻时也会暂停，无需每一步确认。", "The AI reads the actual page, checks your goal, and works within your authorization. When a password, verification code or another step needs you, it hands that page back. After you explicitly ask it to continue, it rereads the same page and resumes the original task. It also pauses for unclear targets or authorization and blocked pages; you do not need to confirm every step."))
+            Text(state.t("任务是否完成，以真实结果和你的目标为准。连接成功或复制请求不代表任务完成。操作中可快速连按两次 Esc 停止并接手。", "Check completion against your goal and the actual result. A connection or copied request does not complete the task. Press Esc twice quickly during an action to stop and take over.")).font(.callout).foregroundStyle(.secondary)
+            Button(state.t("关闭引导", "Close guide")) { close(true) }
         }
     }
     var controls: some View {
         VStack(alignment: .leading, spacing: 20) {
             heading(state.t("停止：0.8 秒内连按两次 Esc", "Stop: press Esc twice within 0.8 seconds"), state.t("真实鼠标键盘被接管时，用键盘立即停止当前操作。空闲时可在会话中心点「暂停 AI 操作」，阻止后续操作。", "During mouse and keyboard takeover, use the keyboard to stop the current action immediately. While idle, Pause AI operations in the workspace blocks further actions."))
-            heading(state.t("输入方式与速度由你决定", "Choose typing mode and speed"), state.t("在「操作设置」选择自动、按键或粘贴，并调整速度。粘贴使用剪贴板；不希望使用粘贴时选择按键。环境变量固定的设置会注明，当前界面不能覆盖。", "In Operation Settings, choose automatic, keys or paste and adjust speed. Paste uses the clipboard; choose keys when you do not want pasting. Settings fixed by environment variables are labeled and cannot be overridden here."))
-            heading(state.t("遇到登录或验证，由你接手", "Take over for sign-in or verification"), state.t("收到接手提示后点「去处理」，前往该会话正在等待的页面。自行完成需要你的步骤，再明确告诉 AI 继续；看到阻挡时不要反复重试。", "When a handoff appears, use Go handle it to reach the exact page waiting for you. Complete the step yourself, then explicitly ask the AI to continue. Do not repeatedly retry a blocked page."))
+            heading(state.t("按你的打字和鼠标习惯操作", "Use your typing and mouse habits"), state.t("在「操作设置」选择自动、按键或粘贴，并调整按键、鼠标与滚动速度。在「我的操作习惯」录制并启用你的打字和鼠标节奏。粘贴会使用剪贴板；环境变量固定的设置会注明，当前界面不能覆盖。", "In Operation Settings, choose automatic, keys or paste and adjust keyboard, mouse and scrolling speed. In My operation habits, record and enable your typing and mouse rhythm. Paste uses the clipboard. Settings fixed by environment variables are labeled and cannot be overridden here."))
+            heading(state.t("需要本人处理时，交回同一页面", "Take over on the same page when needed"), state.t("密码、验证码等需要你时，AI 交回鼠标和键盘。点「去处理」回到该会话正在等待的确切页面，自行完成后，在原 AI 对话明确说继续；AI 再读取同一页面，接着原任务做。看到阻挡时不要反复重试。", "For passwords, verification codes or other steps that need you, the AI releases the mouse and keyboard. Use Go handle it to reach the exact page waiting for you. Complete the step, then explicitly ask the AI to continue in your original conversation. It rereads the same page and resumes the original task. Do not repeatedly retry a blocked page."))
             heading(state.t("连接不见了", "If a connection disappears"), state.t("在 AI 客户端重新连接 MCP，再查看会话中心。需要实时回复时重新关联具体 Codex 对话。随时从顶部问号或菜单的「入门引导」回到这里。", "Reconnect MCP in your AI client, then check the workspace. For live replies, link the specific Codex conversation again. Reopen this guide from the question mark or Getting started in the menu."))
             Button(state.t("打开操作设置", "Open operation settings")) { model.openConversations?(nil); model.workspaceDestination = "settings"; close(true) }
         }

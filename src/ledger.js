@@ -192,7 +192,7 @@ export const TAKEOVER_WHY = {
 };
 
 /**
- * How sure the takeover is: 'helped' (the agent handed it to the user: carry on after reading it),
+ * How sure the takeover is: 'helped' (the agent handed it to the user: wait for explicit continuation, then read it),
  * 'check' (could also be a slow navigation or a bumped mouse: read it first), 'leave' (dragged away,
  * the user looking at it: do not operate it).
  */
@@ -208,7 +208,7 @@ export function nextAction(e) {
     case 'taken_over': {
       const why = TAKEOVER_WHY[e.why] || '原因不明';
       const k = takeoverKind(e);
-      if (k === 'helped') return `用户按你的请求（wait_for_user）处理过它：先 read_page(tab=${e.tabId}) 看现在的页面，再接着做；它不会再被自动关闭`;
+      if (k === 'helped') return `用户按你的请求（wait_for_user）处理过它，这不代表收到继续授权：若用户尚未在本次交接后于原对话明确说“继续”，先等待；收到后先 read_page(tab=${e.tabId}) 核对同一页面，再恢复原任务；它不会再被自动关闭`;
       if (k === 'check') return `可能被用户动过（${why}）：先 read_page(tab=${e.tabId}) 看现在的页面；确认用户已交回后在这个标签继续，未确认时先问用户。不要另开标签替代；它不会再被自动关闭`;
       return `可能已被用户接手（${why}）：先不要点击、输入或关闭；可 read_page 查看现状。用户明确交回后在原标签继续，不要另开标签替代`;
     }
@@ -252,7 +252,7 @@ export function mineSection(entries, { pid = null } = {}) {
 
 /** One tab in a footer or a recovery line, at most `width` characters. */
 export function shortItem(e, width = 80) {
-  const TK = { helped: '·用户处理过，先 read_page', check: '·先 read_page 确认', leave: '·别再操作' };
+  const TK = { helped: '·用户处理过，等继续后读页', check: '·先 read_page 确认', leave: '·别再操作' };
   const note = e.state === 'stale' ? '·先 read_page' : e.state === 'taken_over' ? TK[takeoverKind(e)] : e.state === 'gone' ? '·已不在' : '';
   const from = e.from != null && e.state === 'ready' ? `（tab=${e.from} 点出）` : '';
   const head = `tab=${e.tabId} ${e.state}${note}${from}`;

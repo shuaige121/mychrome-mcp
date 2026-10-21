@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>MyChrome — 让 AI 在你正在使用的 Chrome 里帮忙</title>
+    <title>MyChrome — 你的 Chrome，随时多一双手</title>
     <meta
       name="description"
-      content="保留已经登录的页面和工作上下文。MyChrome 让 AI 助手用真实鼠标和键盘，在你熟悉的 Chrome 里把事情做完。"
+      content="照常浏览，需要时让 AI 在同一页帮忙。需要本人时接回控制，说声继续，再接着原任务。输入方式、操作速度和可选习惯采样，让操作更合你的节奏。"
     />
     <meta name="theme-color" content="#f7f6f2" />
     <link
@@ -30,29 +30,17 @@
     />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="MyChrome" />
-    <meta
-      property="og:title"
-      content="MyChrome — 让 AI 在你正在使用的 Chrome 里帮忙"
-    />
+    <meta property="og:title" content="MyChrome — 你的 Chrome，随时多一双手" />
     <meta
       property="og:description"
-      content="保留已经登录的页面和工作上下文。MyChrome 让 AI 助手用真实鼠标和键盘，在你熟悉的 Chrome 里把事情做完。"
+      content="照常浏览，需要时让 AI 在同一页帮忙。需要本人时接回控制，说声继续，再接着原任务。输入方式、操作速度和可选习惯采样，让操作更合你的节奏。"
     />
     <meta
       property="og:url"
       content="https://shuaige121.github.io/mychrome-mcp/zh/"
     />
     <meta property="og:locale" content="zh_CN" />
-    <meta
-      property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
-    />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta
-      property="og:image:alt"
-      content="MyChrome — AI help in the Chrome you already use"
-    />
+
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="stylesheet" href="../styles.css" />
     <script src="../site.js" defer></script>
@@ -61,23 +49,45 @@
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "MyChrome",
-        "description": "Local MCP server and native macOS app for AI assistance in your existing Google Chrome using real mouse and keyboard input.",
+        "description": "Local MCP server and native macOS app for AI help in your existing Chrome, with shared-page handoffs, adjustable input pace and optional personal rhythm sampling.",
         "applicationCategory": "UtilitiesApplication",
         "operatingSystem": "macOS 13 or later (Apple Silicon)",
         "softwareRequirements": "Google Chrome in /Applications; Node.js 24+ recommended, or 20.19+/22.13+; Git; Xcode Command Line Tools; local stdio MCP client",
         "license": "https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE",
         "url": "https://shuaige121.github.io/mychrome-mcp/zh/",
         "downloadUrl": "https://github.com/shuaige121/mychrome-mcp",
-        "image": "https://shuaige121.github.io/mychrome-mcp/assets/mychrome-workspace.webp",
-        "author": { "@type": "Person", "name": "Leonard Chow" },
+        "author": {
+          "@type": "Person",
+          "name": "Leonard Chow"
+        },
         "offers": {
           "@type": "Offer",
           "price": "0",
           "priceCurrency": "USD",
           "description": "MIT-licensed source. AI client model access may have separate costs."
-        }
+        },
+        "softwareVersion": "0.12.1",
+        "image": "https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
       }
     </script>
+    <meta
+      property="og:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="MyChrome — 你的 Chrome，随时多一双手"
+    />
+    <meta
+      name="twitter:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="MyChrome — 你的 Chrome，随时多一双手"
+    />
   </head>
   <body class="home-page">
     <a class="skip-link" href="#main">跳到正文</a>
@@ -95,144 +105,223 @@
     <main id="main">
       <section class="hero wrap">
         <div class="hero-copy">
-          <p class="eyebrow">你的 Chrome · 你的 AI · 你的控制权</p>
-          <h1>
-            浏览器已经打开。<br /><em>让 AI 帮你<br />把事情做完。</em>
-          </h1>
+          <p class="eyebrow">YOUR CHROME. YOUR PACE.</p>
+          <h1>你的 Chrome，<br /><em>随时多一双手。</em></h1>
           <p class="intro">
-            保留已经登录的页面和工作上下文。MyChrome 让 AI
-            助手用真实鼠标和键盘，在你熟悉的 Chrome 里把事情做完。
+            照常浏览，需要时让 AI
+            在同一页帮你做事。密码或验证码由你接手，处理完说声继续，AI
+            再接着原来的任务。打字节奏、鼠标速度，也能按你的习惯来。
           </p>
           <div class="actions">
             <a class="button primary" href="getting-started.html"
-              >开始使用<span aria-hidden="true"> ↗</span></a
-            ><a class="text-link" href="#demo"
-              >看看实际操作<span aria-hidden="true"> ↓</span></a
+              >接上我的 Chrome <span aria-hidden="true">↗</span></a
+            ><a class="text-link" href="#film"
+              >看 38 秒介绍 <span aria-hidden="true">↓</span></a
             >
           </div>
           <p class="requirements">
-            Apple Silicon · macOS 13+ · Google Chrome<br />源码安装 · 需要
-            Node.js 与 Xcode Command Line Tools
+            Apple Silicon · macOS 13+ · Google Chrome<br />源码安装 · Node.js +
+            Xcode Command Line Tools
           </p>
         </div>
-        <figure class="hero-figure">
-          <img
-            src="../assets/mychrome-workspace.webp"
-            width="1400"
-            height="1250"
-            alt="MyChrome 原生 macOS 窗口中的首次使用引导"
-            fetchpriority="high"
-          />
-          <figcaption>
-            <span class="caption-label">就在你的 Mac 上</span>首次使用引导 ·
-            原生 macOS 界面
-          </figcaption>
-        </figure>
+        <aside class="handoff-story" aria-label="同一页面中的协作方式">
+          <p class="story-heading">还是你正在用的那一页。</p>
+          <ol>
+            <li>
+              <span class="story-number" aria-hidden="true">01</span>
+              <div>
+                <h2>你照常浏览</h2>
+                <p>保留现有标签页、登录状态和手头的事。</p>
+              </div>
+            </li>
+            <li>
+              <span class="story-number" aria-hidden="true">02</span>
+              <div>
+                <h2>需要时，AI 来帮忙</h2>
+                <p>读当前页面，按你的目标继续操作。</p>
+              </div>
+            </li>
+            <li>
+              <span class="story-number" aria-hidden="true">03</span>
+              <div>
+                <h2>需要本人，你来接手</h2>
+                <p>密码、验证码等环节交回给你。</p>
+              </div>
+            </li>
+            <li>
+              <span class="story-number" aria-hidden="true">04</span>
+              <div>
+                <h2>说声继续，接着做</h2>
+                <p>收到你的继续指令，再接着原任务。</p>
+              </div>
+            </li>
+          </ol>
+          <p class="story-footer">同一个 Chrome，同一件事。</p>
+        </aside>
       </section>
       <section class="context-strip">
         <div class="wrap">
-          <p>同一个浏览器。少一点来回折腾。</p>
-          <span>无需扩展 · 无需调试端口 · 本机 MCP</span>
+          <p>网页是你的，节奏也可以是你的。</p>
+          <span>原生 macOS App · 现有 Chrome · 本机 MCP</span>
         </div>
       </section>
-      <section class="section wrap" id="everyday">
+      <section
+        class="section wrap film-section"
+        id="film"
+        aria-labelledby="film-title"
+      >
         <div class="section-heading">
-          <p class="eyebrow">从一件小事开始</p>
-          <h2>熟悉的页面，<br />多一个帮手。</h2>
+          <p class="eyebrow">38 SECONDS IN YOUR CHROME</p>
+          <h2 id="film-title">同一页，接着帮你做。</h2>
+        </div>
+        <figure class="film-figure">
+          <video
+            id="overview-video"
+            controls
+            preload="none"
+            playsinline
+            width="1920"
+            height="1080"
+            poster="../assets/mychrome-overview-poster.webp?v=0.12.1"
+            aria-label="MyChrome 38 秒产品介绍"
+            aria-describedby="film-caption"
+          >
+            <source
+              src="../assets/mychrome-overview.mp4?v=0.12.1"
+              type="video/mp4"
+            />
+            <track
+              kind="subtitles"
+              src="../assets/mychrome-overview.en.vtt?v=0.12.1"
+              srclang="en"
+              label="English"
+            />
+            <p>浏览器无法播放时，可通过下方链接打开 MP4。</p>
+          </video>
+          <figcaption id="film-caption">
+            <p>38 秒 · 产品界面渲染与动画重建 · 示例内容 · 未实际发布。</p>
+            <div class="film-links">
+              <a href="../assets/mychrome-overview.mp4?v=0.12.1" download
+                >下载 MP4</a
+              ><a href="../assets/mychrome-overview.gif?v=0.12.1"
+                >打开 22 秒 GIF</a
+              >
+            </div>
+          </figcaption>
+        </figure>
+      </section>
+      <section class="section wrap habits-section" id="your-pace">
+        <div class="habits-grid">
+          <div class="section-heading">
+            <p class="eyebrow">YOUR WAY OF WORKING</p>
+            <h2>让 AI 动手，<br />按你的节奏来。</h2>
+            <p>
+              在“操作设置”选择逐字输入或粘贴，调整操作速度。还可以录制自己的打字和鼠标节奏，应用到后续输入。
+            </p>
+            <a class="text-link" href="getting-started.html#personal-rhythm"
+              >设置我的操作习惯 ↗</a
+            >
+          </div>
+          <div class="habit-features">
+            <article>
+              <p class="feature-value">0.5×–3×</p>
+              <h3>操作速度由你调</h3>
+              <p>
+                键盘和鼠标操作使用你选择的速度；输入方式可选跟随任务、逐字键盘输入或直接粘贴。
+              </p>
+            </article>
+            <article>
+              <p class="feature-label">
+                可选个人习惯采样 <span>实验功能</span>
+              </p>
+              <h3>用自己的打字与鼠标节奏</h3>
+              <p>
+                录制 3
+                分钟，样本足够的节奏统计用于后续输入。你可以关闭使用或删除样本。
+              </p>
+              <p class="privacy-note">
+                仅保存本机统计摘要，不保存输入内容、原始轨迹或截图。
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section wrap examples-section" id="demo">
+        <span id="everyday"></span>
+        <div class="section-heading">
+          <p class="eyebrow">YOU CAN ASK</p>
+          <h2>就从你正在做的事开始。</h2>
+          <p>
+            下面是可以向 AI
+            提出的任务请求示例。打开自己的页面，说明目标，让它接着帮你做。
+          </p>
         </div>
         <div class="task-list">
           <article class="task-row">
             <span class="step-number">01</span>
             <div>
-              <h3>读懂当前页面</h3>
-              <p>让助手读取已打开的页面，找出你需要的信息。</p>
-              <p class="example">“看看这个页面，帮我找出下一步要填什么。”</p>
+              <h3>整理自己的 LinkedIn 页面</h3>
+              <p>沿用当前页面和你提供的资料，继续编辑。</p>
+              <p class="example">
+                “用 MyChrome 查看我的 LinkedIn
+                页面，按我给的新资料整理简介和经历，并核对改动。”
+              </p>
             </div>
           </article>
           <article class="task-row">
             <span class="step-number">02</span>
             <div>
-              <h3>把细节填完整</h3>
-              <p>输入内容、选择选项，并在完成后检查页面结果。</p>
-              <p class="example">“把这些资料填进表格，保存后核对内容。”</p>
+              <h3>看看 Facebook 有没有人找你</h3>
+              <p>查看你自己的消息与通知，找出需要回应的内容。</p>
+              <p class="example">
+                “看看我 Facebook
+                上有没有人找我，列出要回复的消息；需要我处理的地方告诉我。”
+              </p>
             </div>
           </article>
           <article class="task-row">
             <span class="step-number">03</span>
             <div>
-              <h3>下次少重复几步</h3>
-              <p>将合适的连续操作保存为网站流程，下次填写新参数后运行。</p>
-              <p class="example">“把这段固定步骤留下，下次继续用。”</p>
+              <h3>把写好的文章发到指定平台</h3>
+              <p>
+                Facebook、小红书、Reddit、LinkedIn——由你明确选择目标账号和发布范围。
+              </p>
+              <p class="example">
+                “把这篇我写好的文章发到我指定的账号，按各页要求填写，并逐个检查发布结果。”
+              </p>
             </div>
           </article>
         </div>
         <p class="section-note">
-          这些是任务示例。实际能力取决于网站、权限和页面状态。
+          这些是使用需求示例，不代表上述网站的所有流程均已验证；实际操作取决于网站、账号权限和当前页面。
         </p>
       </section>
       <section class="control-section">
         <div class="wrap control-grid">
           <div>
-            <p class="eyebrow">随时接回来</p>
-            <h2>让 AI 操作，<br />也让你放心接手。</h2>
+            <p class="eyebrow">HAND IT OVER. TAKE IT BACK.</p>
+            <h2>你和 AI，<br />轮流接着做。</h2>
             <p>
-              MyChrome 使用 Mac
-              的真实鼠标和键盘。接管期间普通输入会被拦截；需要接手时，快速连按两次
-              Esc。
+              AI 使用 Mac
+              的真实鼠标和键盘。需要你本人处理时交回控制；你完成后，在原 AI
+              对话中明确说“继续”，再接着任务。
             </p>
           </div>
           <div class="control-details">
-            <div class="key-pair" aria-label="快速按两次 Escape">
+            <div class="key-pair" aria-label="快速连按两次 Escape">
               <kbd>esc</kbd><span>+</span><kbd>esc</kbd>
             </div>
-            <h3>停下当前 AI，收回控制。</h3>
+            <h3>想接手，快速连按两次 Esc。</h3>
             <p>
-              全局暂停可阻止各连接继续输入。停止不会撤销已发出的操作。输入方式和速度也由你选择。
+              接管期间普通键鼠输入会被拦截。双 Esc 停止当前 AI；“暂停 AI
+              操作”可阻止所有连接继续输入。停止不会撤销已经发出的操作。
             </p>
             <a class="text-link" href="getting-started.html#随时接回控制"
-              >了解操作控制 ↗</a
+              >查看控制方式 ↗</a
             >
           </div>
         </div>
-      </section>
-      <section class="section wrap demo-section" id="demo">
-        <div class="section-heading">
-          <p class="eyebrow">第一步，亲眼看见</p>
-          <h2>读取。填写。保存。核对。</h2>
-          <p>内置离线练习，让你先熟悉操作，再用到自己的工作。</p>
-        </div>
-        <figure class="demo-figure">
-          <img
-            id="practice-demo"
-            src="../assets/mychrome-practice-poster.webp"
-            data-poster="../assets/mychrome-practice-poster.webp"
-            data-animation="../assets/mychrome-practice.gif"
-            width="1080"
-            height="816"
-            loading="lazy"
-            alt="MyChrome 本地练习页面，包含计划名称、时间选择和保存按钮"
-            data-poster-alt="MyChrome 本地练习页面，包含计划名称、时间选择和保存按钮"
-            data-animation-alt="实际本地练习：填写计划、选择时间、保存并核对结果"
-          />
-          <figcaption>
-            <button
-              class="button secondary"
-              data-demo="practice-demo"
-              data-play="播放演示"
-              data-stop="停止演示"
-              aria-pressed="false"
-              hidden
-            >
-              播放演示</button
-            ><a class="demo-download" href="../assets/mychrome-practice.gif"
-              >打开 GIF</a
-            >
-            <p class="demo-caption">
-              真实本地操作 · 2 倍速 · 删去等待间隔 ·
-              裁掉浏览器工具栏。使用虚构练习内容。
-            </p>
-          </figcaption>
-        </figure>
       </section>
       <section class="section wrap compatibility" id="compatibility">
         <div class="section-heading">
@@ -282,8 +371,8 @@
       <section class="install-section" id="get-started">
         <div class="wrap install-grid">
           <div>
-            <p class="eyebrow">准备好开始了吗</p>
-            <h2>从一个小任务开始。</h2>
+            <p class="eyebrow">START IN YOUR CHROME</p>
+            <h2>让 AI 接上你手头的事。</h2>
             <p>
               Apple Silicon · macOS 13+ · Google Chrome。推荐 Node.js
               24+，也支持 20.19+、22.13+；需要 Git 和 Xcode Command Line Tools。
@@ -311,7 +400,7 @@ bash scripts/setup.sh</code></pre>
         <a class="wordmark" href="./"
           >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
         >
-        <p>在你熟悉的浏览器里，把事情做完。</p>
+        <p>你的 Chrome，随时多一双手。</p>
       </div>
       <div class="footer-links">
         <a

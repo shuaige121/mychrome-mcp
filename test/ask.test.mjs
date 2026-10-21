@@ -24,6 +24,7 @@ process.env.CHROME_BRIDGE_NOTIFY = '0';
 process.env.CHROME_BRIDGE_AGENT_NAME = 'ask-test';
 process.env.CHROME_BRIDGE_HABITS = 'off';
 process.env.CHROME_BRIDGE_MENUBAR = '0';
+process.env.CHROME_BRIDGE_LANG = 'zh';
 await mkdir(path.join(tmp, 'lock'));
 await writeFile(process.env.CHROME_BRIDGE_AGENT_STATE, JSON.stringify({ byProfile: { Default: { windowId: 7, name: 'Me' } } }));
 
@@ -31,6 +32,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const readSrc = await readFile(path.join(ROOT, 'src/page/read.js'), 'utf8');
 const askSrc = await readFile(path.join(ROOT, 'src/page/ask.js'), 'utf8');
 const afterSrc = await readFile(path.join(ROOT, 'src/page/after.js'), 'utf8');
+const blockSrc = await readFile(path.join(ROOT, 'src/page/block.js'), 'utf8');
 let passed = 0;
 const ok = (name) => { passed++; console.log(`  ok  ${name}`); };
 
@@ -85,7 +87,7 @@ const ask = (w, a) => {
   return r;
 };
 const markerOf = (w, sel) => w.__chromeBridge.markers.indexOf(w.document.querySelector(sel));
-const TEXT = { title: '需要你输入：登录密码', hint: '输入完按回车，AI 会接着做', hintMulti: '输入完按 ⌘+回车，AI 会接着做', brand: 'MyChrome · AI 在等你', tab: '【需要你输入】' };
+const TEXT = { title: '需要你输入：登录密码', hint: '输入完成后按回车，再回到原 AI 对话说“继续”', hintMulti: '输入完成后按 ⌘+回车，再回到原 AI 对话说“继续”', brand: 'MyChrome · AI 在等你', tab: '【需要你输入】' };
 const host = (w) => w.document.querySelectorAll('[data-mychrome-ask]');
 const noteText = (w) => [...host(w)].map(h => h.shadowRoot ? h.shadowRoot.textContent : '').join('|');
 
@@ -125,7 +127,7 @@ console.log('src/page/ask.js (jsdom)');
   assert.equal(w.__scrolled, 'pw', 'the field was not scrolled into view');
   assert.equal(host(w).length, 1);
   assert.equal(w.__shadowMode, 'closed');
-  assert.match(noteText(w), /需要你输入：登录密码.*输入完按回车，AI 会接着做.*MyChrome · AI 在等你/);
+  assert.match(noteText(w), /需要你输入：登录密码.*输入完成后按回车，再回到原 AI 对话说“继续”.*MyChrome · AI 在等你/);
   assert.equal(host(w)[0].style.pointerEvents, 'none', 'the highlight would catch the user\'s clicks');
   // Spotlight: the rest of the page dimmed around the field; the tab title says it too.
   const spot = host(w)[0].shadowRoot.firstElementChild;
@@ -386,7 +388,7 @@ function fakeBridge() {
     evalInPage: async (s, tab) => {
       log.push(`eval ${s.name} ${tab} ${JSON.stringify(s.vars.ASK || {}).slice(0, 40)}`);
       if (page.gone) { const { BridgeError } = await import('../src/bridge.js'); throw new BridgeError('no_such_tab', '找不到标签'); }
-      if (s.name === 'block') return { ok: true, blocked: null, target: target() };
+      if (s.name === 'block') return { ...JSON.parse(page.eval(blockSrc)), target: target() };
       if (s.name !== 'ask') throw new Error(`unexpected page script ${s.name}`);
       const r = askRaw(page, s.vars.ASK);   // as the server gets it (entered.at included)
       if (!r.ok) { const { BridgeError } = await import('../src/bridge.js'); throw new BridgeError(r.error, r.message); }
@@ -423,6 +425,14 @@ const call = async (name, args = {}) => {
   const r = await idx.callTool({ params: { name, arguments: args } }, {});
   return { text: r.content.filter(c => c.type === 'text').map(c => c.text).join('\n'), isError: !!r.isError };
 };
+function assertContinuationRequired(text) {
+  assert.match(text, /观察已结束/);
+  assert.match(text, /不代表收到继续授权/);
+  assert.match(text, /若用户尚未在本次交接后于原对话明确说“继续”，先等待/);
+  assert.match(text, /收到后先 read_page 核对同一页面，再恢复原任务/);
+  assert.match(text, /此前的任务授权不能替代本次继续指令/);
+  assert.doesNotMatch(text, /自动接着做|自己接着做|不用回去|再接着做|用户应该已经提交|用户可能已经提交/);
+}
 const taskFile = path.join(tmp, 'lock', 'tasks', `${process.pid}.json`);
 const readTask = async () => JSON.parse(await readFile(taskFile, 'utf8').catch(() => 'null'));
 const later = (ms, f) => setTimeout(f, ms);
@@ -434,41 +444,120 @@ const later = (ms, f) => setTimeout(f, ms);
   later(60, async () => {
     menu = await readTask();
     assert.equal(host(page).length, 1, 'no highlight while waiting');
+    assert.match(noteText(page), /输入完成后按回车，再回到原 AI 对话说“继续”/);
     page.document.querySelector('#pw').value = 'my-secret-pass';
     key(page, page.document.querySelector('#pw'));
   });
   const r = await call('wait_for_user', { tab: 10, field: m, reason: '登录密码', minutes: 0.05 });
   assert.equal(r.isError, false, r.text);
-  assert.match(r.text, new RegExp(`^✅ 用户在 \\[${m}\\] 输入完按了回车，等了 \\d+ 秒。先 read_page 看现在的页面，再接着做；不要在回复里复述用户输入的内容。`));
+  assertContinuationRequired(r.text);
+  assert.match(r.text, new RegExp(`^✅ 用户在 \\[${m}\\] 输入完按了回车，等了 \\d+ 秒。`));
   assert.doesNotMatch(r.text, /my-secret-pass/);
   assert.ok(log.includes('select 10'), log.join('\n'));
   assert.equal(notes.length, 1);
-  assert.match(notes[0], /^需要你输入：登录密码（shop\.test）。在 Chrome 里高亮的框中输入，按回车后 AI 会自己接着做/);
+  assert.match(notes[0], /完成后按回车，再回到原 AI 对话说“继续”/);
+  assert.doesNotMatch(notes[0], /观察|自动|自己接着做/);
   assert.equal(menu && menu.alert, '需要你处理：shop.test 在高亮的框里输入：登录密码');
   assert.equal(menu && menu.alertTab, 10, 'the menu bar does not know which tab waits (「带我去」)');
   assert.ok(!log.some(l => l.startsWith('activate')), 'the wait brought Chrome forward by itself');
   assert.equal(host(page).length, 0, 'the highlight stayed');
   assert.equal(await readTask(), null, 'the menu-bar alert stayed after the user was done');
-  ok('the user types and presses Return: the call returns ✅ (no value in it); tab selected, notification and menu-bar alert say what to type, both cleared after');
+  ok('Return ends observation without a chat reply: result, page hint and notification require explicit continue before reading and resuming; no private value returned');
+}
+{
+  await world();
+  process.env.CHROME_BRIDGE_LANG = 'en';
+  try {
+    let hint;
+    later(60, () => {
+      hint = noteText(page);
+      const button = page.document.querySelector('#go');
+      button.addEventListener('click', event => event.preventDefault());
+      trusted(button, new page.MouseEvent('click', { bubbles: true, cancelable: true }));
+      trusted(page.document.querySelector('#login'), new page.Event('submit', { bubbles: true, cancelable: true }));
+    });
+    const result = await call('wait_for_user', { tab: 10, field: markerOf(page, '#pw'), reason: 'login password', minutes: 0.05 });
+    assert.equal(result.isError, false, result.text);
+    assert.match(result.text, /提交了表单/);
+    assertContinuationRequired(result.text);
+    assert.match(hint, /Press Return when done, then say "continue" in your original AI conversation/);
+    assert.match(notes[0], /Press Return when done, then say "continue" in your original AI conversation/);
+    assert.doesNotMatch(hint + notes[0], /observation|carries on|automatically/);
+    assert.equal(host(page).length, 0);
+    assert.equal(await readTask(), null);
+  } finally { process.env.CHROME_BRIDGE_LANG = 'zh'; }
+  ok('trusted form submit ends the real field wait; English page hint and notification ask for continue in the original AI conversation');
+}
+{
+  // Run the production detector and wait loop against a real jsdom page; no chat signal is supplied.
+  for (const language of ['zh', 'en']) {
+    await world();
+    process.env.CHROME_BRIDGE_LANG = language;
+    try {
+      const challenge = page.document.createElement('iframe');
+      challenge.src = 'https://www.google.com/recaptcha/api2/anchor?size=normal';
+      challenge.getBoundingClientRect = () => ({ x: 10, y: 100, width: 304, height: 78, left: 10, top: 100, right: 314, bottom: 178 });
+      page.document.body.appendChild(challenge);
+      assert.equal(JSON.parse(page.eval(blockSrc)).blocked?.kind, 'captcha');
+      later(60, () => challenge.remove());
+      const result = await call('wait_for_user', { tab: 10, minutes: 0.05 });
+      assert.equal(result.isError, false, result.text);
+      assert.match(result.text, /^✅ 验证\/拦截已经没有了/);
+      assertContinuationRequired(result.text);
+      assert.equal(notes.length, 1);
+      assert.match(notes[0], language === 'en'
+        ? /Handle this yourself, then say "continue" in your original AI conversation/
+        : /请自行处理，完成后回到原 AI 对话说“继续”/);
+      assert.doesNotMatch(notes[0], /观察|observation|carries on|自动接着做|处理完它会接着做/);
+      assert.equal(idx.__blocksForTests().size, 0);
+      assert.equal(await readTask(), null);
+      assert.ok(log.every(entry => entry.startsWith('eval block ')), 'challenge observation sent an action');
+    } finally { process.env.CHROME_BRIDGE_LANG = 'zh'; }
+  }
+  ok('a challenge disappearing ends observation without a chat gate; both notification languages and results require explicit continuation');
+}
+{
+  for (const language of ['zh', 'en']) {
+    await world();
+    process.env.CHROME_BRIDGE_LANG = language;
+    try {
+      later(60, () => page.history.replaceState({}, '', '/signed-in'));
+      const result = await call('wait_for_user', { tab: 10, reason: 'Finish signing in', minutes: 0.05 });
+      assert.equal(result.isError, false, result.text);
+      assert.match(result.text, /^✅ 页面已经变了/);
+      assertContinuationRequired(result.text);
+      assert.match(notes[0], language === 'en'
+        ? /Handle this yourself, then say "continue" in your original AI conversation/
+        : /请自行处理，完成后回到原 AI 对话说“继续”/);
+      assert.doesNotMatch(notes[0], /观察|observation|carries on|自动接着做/);
+      assert.equal(await readTask(), null);
+      assert.ok(log.every(entry => entry.startsWith('eval block ')), 'plain observation sent an action');
+    } finally { process.env.CHROME_BRIDGE_LANG = 'zh'; }
+  }
+  ok('reason-only navigation returns an observation result, with natural bilingual notifications and no inferred continuation authorization');
 }
 {
   // The Return submits the form: the page navigates before the next look; then it reloads in place.
   await world();
   later(40, () => { page = makeDom('<p>欢迎</p>', 'https://shop.test/home'); });
   const r = await call('wait_for_user', { tab: 10, field: markerOf(page, '#pw'), reason: '登录密码', minutes: 0.05 });
-  assert.match(r.text, /^✅ 页面已经跳转（shop\.test），用户应该已经提交了，等了 \d+ 秒。先 read_page/);
+  assert.match(r.text, /^✅ 页面已经跳转（shop\.test），尚未确认提交结果，等了 \d+ 秒。/);
+  assertContinuationRequired(r.text);
   await world();
   later(40, () => { page = makeDom(); });
   const r2 = await call('wait_for_user', { tab: 10, field: markerOf(page, '#pw'), reason: '登录密码', minutes: 0.05 });
-  assert.match(r2.text, /^✅ 页面重新加载了（用户可能已经提交）/);
+  assert.match(r2.text, /^✅ 页面重新加载了，尚未确认提交结果/);
+  assertContinuationRequired(r2.text);
   await world();
   later(40, () => { page.document.querySelector('#login').remove(); });
   const r3 = await call('wait_for_user', { tab: 10, field: markerOf(page, '#pw'), reason: '登录密码', minutes: 0.05 });
-  assert.match(r3.text, /^⚠️ \[\d+\] 这个框不在页面上了，用户没有在里面按回车（等了 \d+ 秒）。先 read_page：页面已经往下走了就接着做；那个框还在、用户还没填完，就再调用 wait_for_user。/);
+  assert.match(r3.text, /^⚠️ \[\d+\] 这个框不在页面上了，用户没有在里面按回车（等了 \d+ 秒）。/);
+  assertContinuationRequired(r3.text);
   await world();
   later(40, () => { page.gone = true; });
   const r4 = await call('wait_for_user', { tab: 10, field: markerOf(page, '#pw'), reason: '登录密码', minutes: 0.05 });
   assert.match(r4.text, /^❌ 这个标签已经不在了/);
+  assertContinuationRequired(r4.text);
   // The field in a same-origin frame that goes away / loads another page: like a reload, not "the field is gone".
   await world();
   page = makeDom('<iframe id="fr"></iframe>');
@@ -477,8 +566,9 @@ const later = (ms, f) => setTimeout(f, ms);
   page.__chromeBridge = { markers: [null, fr.contentDocument.querySelector('input')], url: page.location.href, stamp: Date.now() };
   later(40, () => fr.remove());
   const r5 = await call('wait_for_user', { tab: 10, field: 1, reason: '验证码', minutes: 0.05 });
-  assert.match(r5.text, /^✅ 页面重新加载了（用户可能已经提交）/);
-  ok('navigated (form submitted), reloaded, the field gone (⚠️, not ✅), the tab gone, its frame gone: each ends the wait and says so');
+  assert.match(r5.text, /^✅ 页面重新加载了，尚未确认提交结果/);
+  assertContinuationRequired(r5.text);
+  ok('navigation, reload, missing field and missing frame only end observation; no submission or continuation authorization inferred');
 }
 {
   // Live run 2026-10-12: the page navigated 1.5 s after the Return (a login redirect); the agent then took
@@ -491,7 +581,8 @@ const later = (ms, f) => setTimeout(f, ms);
     later(120, () => { page = makeDom('<h1>已提交</h1>', 'https://shop.test/home'); });
   });
   const r = await call('wait_for_user', { tab: 10, field: m, reason: '登录密码', minutes: 0.05 });
-  assert.match(r.text, new RegExp(`^✅ 用户在 \\[${m}\\] 输入完按了回车，等了 \\d+ 秒，页面已经变了（shop\\.test）。先 read_page`), r.text);
+  assert.match(r.text, new RegExp(`^✅ 用户在 \\[${m}\\] 输入完按了回车，等了 \\d+ 秒，页面已经变了（shop\\.test）。`), r.text);
+  assertContinuationRequired(r.text);
   const rec = await T.getTab(10);
   assert.deepEqual([rec.expectedUrl, !!rec.takenOver], ['https://shop.test/home', false], 'the redirect after the Return counts as a takeover');
   const chk = T.checkTakeover(rec, { id: 10, url: 'https://shop.test/home', windowId: 7 });
@@ -512,12 +603,14 @@ const later = (ms, f) => setTimeout(f, ms);
   });
   const r3 = await call('wait_for_user', { tab: 10, field: m, reason: '登录密码', minutes: 0.05 });
   assert.match(r3.text, new RegExp(`^✅ 用户在 \\[${m}\\] 输入完按了回车（?.*页面已经跳转（shop\\.test）`), r3.text);
+  assertContinuationRequired(r3.text);
   assert.equal((await T.getTab(10)).expectedUrl, 'https://shop.test/home');
   // Codex r3 B1: the page moved on with no Return seen (the user went elsewhere themselves): not the agent's.
   await world();
   later(40, () => { page = makeDom('<p>别处</p>', 'https://shop.test/elsewhere'); });
   const r4 = await call('wait_for_user', { tab: 10, field: m, reason: '登录密码', minutes: 0.05 });
-  assert.match(r4.text, /页面已经跳转（shop\.test），用户应该已经提交了/);
+  assert.match(r4.text, /页面已经跳转（shop\.test），尚未确认提交结果/);
+  assertContinuationRequired(r4.text);
   assert.equal((await T.getTab(10)).expectedUrl, 'https://shop.test/login');
   // The Return, then a click of theirs while the page moves: they went somewhere else, not the agent's.
   await world();
@@ -587,8 +680,9 @@ const later = (ms, f) => setTimeout(f, ms);
   const m = markerOf(page, '#pw');
   const r = await call('wait_for_user', { tab: 10, field: m, reason: '短信验证码', minutes: 0.003 });
   assert.match(r.text, new RegExp(`^⏳ 等了 [\\d.]+ 分钟，用户还没在 \\[${m}\\] 输入完（短信验证码）。高亮已撤掉`));
-  // The user may be away: wait again, never ask for it in the chat (owner 2026-10-11: no need to go back to the agent).
-  assert.match(r.text, /用户可能暂时不在电脑前：直接再调用 wait_for_user（同样的 field 和 reason），高亮会重新出现；不要改到对话里向用户要这项内容。/);
+  // Observing again does not authorize resuming input or asking for a secret in chat.
+  assertContinuationRequired(r.text);
+  assert.match(r.text, /若用户仍希望等待，可再调用 wait_for_user 观察；不要在对话里索要这项私密内容/);
   assert.equal(host(page).length, 0, 'a highlight left on the page after the wait gave up');
   assert.equal(await readTask(), null);
   later(40, () => key(page, page.document.querySelector('#pw')));
@@ -853,7 +947,7 @@ const later = (ms, f) => setTimeout(f, ms);
   ok('「带我去」: exact worker/alert identity, atomic queued/final acknowledgements, duplicate idempotence, bounded queue and late-result isolation; stale/replaced/paused/changed-page requests and own jobs never activate');
 }
 {
-  // Owner 2026-10-11: no need to go back to the agent. A field only they can fill waits 10 minutes unless told otherwise.
+  // A field only the user can fill is observed for 10 minutes unless told otherwise.
   assert.deepEqual([idx.waitMinutes(undefined, 5), idx.waitMinutes(null, null), idx.waitMinutes(0.05, 5), idx.waitMinutes(50, null), idx.waitMinutes(0, 5)],
     [10, 3, 0.05, 10, 10]);
   const w = idx.__toolsForTests().find(t => t.name === 'wait_for_user');
@@ -865,8 +959,16 @@ const later = (ms, f) => setTimeout(f, ms);
   const tools = idx.__toolsForTests();
   const w = tools.find(t => t.name === 'wait_for_user');
   assert.ok(w.inputSchema.properties.field, 'wait_for_user has no field');
-  assert.match(idx.serverInstructions({ home: '/nonexistent-home', execPath: '/nonexistent/node' }), /instead of asking in chat, call wait_for_user/);
-  ok('the tool takes `field`; the server instructions say to use it instead of asking in chat');
+  assert.match(w.description, /has not already explicitly said continue in the original conversation after this handoff, wait/);
+  assert.match(w.description, /Once they have, read_page on the same tab before resuming/);
+  assert.match(w.inputSchema.properties.field.description, /Return ends observation, not permission to resume/);
+  const instructions = idx.serverInstructions({ home: '/nonexistent-home', execPath: '/nonexistent/node' });
+  assert.match(instructions, /instead of asking in chat, call wait_for_user/);
+  assert.match(instructions, /explicitly said "continue" in the original conversation after this handoff/);
+  assert.match(instructions, /if already received, do not ask them to repeat it/);
+  assert.match(instructions, /Earlier task authorization does not replace this continuation instruction/);
+  assert.match(instructions, /server does not read chat replies or enforce a cross-client continuation gate/);
+  ok('tool schema and server instructions require explicit continuation as an agent protocol, without claiming a server chat gate');
 }
 
 console.log(`\nask tests passed (${passed}).`);

@@ -6,7 +6,7 @@
     <title>Get started with MyChrome — MyChrome</title>
     <meta
       name="description"
-      content="Install, connect, and finish your first local task. Apple Silicon · macOS 13+ · Google Chrome."
+      content="Install, connect, then return to the page you are using."
     />
     <meta name="theme-color" content="#f7f6f2" />
     <link
@@ -33,26 +33,35 @@
     <meta property="og:title" content="Get started with MyChrome — MyChrome" />
     <meta
       property="og:description"
-      content="Install, connect, and finish your first local task. Apple Silicon · macOS 13+ · Google Chrome."
+      content="Install, connect, then return to the page you are using."
     />
     <meta
       property="og:url"
       content="https://shuaige121.github.io/mychrome-mcp/getting-started.html"
     />
     <meta property="og:locale" content="en_US" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./site.js" defer></script>
     <meta
       property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="MyChrome — AI help in the Chrome you already use"
+      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
     />
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="stylesheet" href="./styles.css" />
-    <script src="./site.js" defer></script>
+    <meta
+      name="twitter:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
+    />
   </head>
   <body class="docs-page">
     <a class="skip-link" href="#main">Skip to content</a>
@@ -72,27 +81,29 @@
       <div class="wrap doc-header">
         <p class="eyebrow">GETTING STARTED</p>
         <h1>Get started with MyChrome</h1>
-        <p class="intro">Install, connect, and finish your first local task.</p>
+        <p class="intro">
+          Install, connect, then return to the page you are using.
+        </p>
       </div>
       <div class="wrap doc-layout">
         <aside class="toc">
           <p class="eyebrow">ON THIS PAGE</p>
           <nav aria-label="Page sections">
-            <a href="#1-check-your-mac">1. Check your Mac</a
-            ><a href="#2-install-from-source">2. Install from source</a
-            ><a href="#3-allow-chrome-access">3. Allow Chrome access</a
-            ><a href="#4-connect-your-ai-client">4. Connect your AI client</a
-            ><a href="#5-finish-one-local-task">5. Finish one local task</a
+            <a href="#1-check-your-mac">Before you start</a
+            ><a href="#2-install-from-source">1. Install MyChrome</a
+            ><a href="#connect-your-client">2. Allow access and connect</a
+            ><a href="#start-your-task">3. Continue your task</a
+            ><a href="#personal-rhythm">Your input habits</a
             ><a href="#your-controls">Your controls</a
             ><a href="#troubleshooting">Troubleshooting</a>
           </nav>
         </aside>
         <article class="prose">
           <p>
-            Install MyChrome, connect your AI client, then try one task on the
-            included offline practice page.
+            Keep using Chrome as usual. Once MyChrome is connected, return to
+            your AI conversation and explain what you want done on the page.
           </p>
-          <h2 id="1-check-your-mac">1. Check your Mac</h2>
+          <h2 id="1-check-your-mac">Before you start: check your Mac</h2>
           <ul>
             <li>Apple Silicon Mac running macOS 13 or later.</li>
             <li>
@@ -114,7 +125,7 @@
               model access.
             </li>
           </ul>
-          <h2 id="2-install-from-source">2. Install from source</h2>
+          <h2 id="2-install-from-source">1. Install MyChrome</h2>
           <p>Choose a permanent folder for the checkout, then run:</p>
           <pre><code>git clone https://github.com/shuaige121/mychrome-mcp.git
 cd mychrome-mcp
@@ -123,10 +134,9 @@ bash scripts/setup.sh</code></pre>
             Setup checks prerequisites, runs the dependency installation and
             build, installs the native MyChrome app in
             <code>~/Applications</code>, and checks permissions. It does not
-            change your AI client&#x27;s configuration or grant macOS
-            permissions for you. If it reports that installation succeeded but
-            permissions need attention, complete the next step before trying a
-            task.
+            change your AI client's configuration or grant macOS permissions for
+            you. If it reports that installation succeeded but permissions need
+            attention, complete the next step before trying a task.
           </p>
           <p>
             Setup opens MyChrome after installation. On first use, its
@@ -143,7 +153,10 @@ bash scripts/setup.sh</code></pre>
             settings:
           </p>
           <pre><code>bash scripts/setup.sh --check</code></pre>
-          <h2 id="3-allow-chrome-access">3. Allow Chrome access</h2>
+          <h2 id="connect-your-client">
+            2. Allow access and connect your AI client
+          </h2>
+          <h3 id="3-allow-chrome-access">Allow Chrome access</h3>
           <p>
             Open Chrome and enable
             <strong
@@ -204,7 +217,7 @@ bash scripts/setup.sh</code></pre>
             <code>--open</code> opens the relevant settings page. These commands
             do not grant approval automatically.
           </p>
-          <h2 id="4-connect-your-ai-client">4. Connect your AI client</h2>
+          <h3 id="4-connect-your-ai-client">Connect your AI client</h3>
           <p>Print the commands using your actual Node and checkout paths:</p>
           <pre><code>bash scripts/setup.sh --instructions</code></pre>
           <p>
@@ -224,9 +237,9 @@ bash scripts/setup.sh</code></pre>
             handoffs finish.
           </p>
           <p>
-            Start a new AI client session and ask it to list Chrome tabs with
-            MyChrome. If you closed MyChrome, reopen it from Spotlight or Finder
-            to see its native window.
+            If your client needs a restart or new session to load MyChrome, do
+            that first, then continue your task in the client with its original
+            context. If you closed MyChrome, reopen it from Spotlight or Finder.
           </p>
           <div
             class="table-scroll"
@@ -277,37 +290,63 @@ bash scripts/setup.sh</code></pre>
             >
             for Codex thread association.
           </p>
-          <h2 id="5-finish-one-local-task">5. Finish one local task</h2>
-          <p>Start the included practice page and open it in Chrome:</p>
-          <pre><code>node examples/first-task/serve.mjs --open</code></pre>
+          <h2 id="start-your-task">
+            3. Return to your conversation and continue the task
+          </h2>
           <p>
-            The command starts a server only on <code>127.0.0.1</code>, opens
-            Chrome and prints the exact local URL. Keep the terminal open while
-            you practice; Control-C stops the server, and it also stops after 30
-            minutes. The page uses synthetic content and sends nothing to an
-            external service. Copy the request shown on the page, which includes
-            this run&#x27;s URL, or ask your assistant:
+            Open the page you already wanted to work on in Chrome, keeping your
+            existing login. Return to the AI conversation connected to MyChrome
+            and identify the tab and the outcome you want. For example:
           </p>
           <blockquote>
             <p>
-              Use MyChrome on the open local practice page. Read the weekend
-              plan. Enter “Visit the weekend market”, choose “Saturday morning”,
-              and click “Save practice plan”. Then read the visible saved result
-              and tell me exactly what it says.
+              Use MyChrome to help with my current Chrome page. Read its actual
+              content and continue toward the goal we've agreed on. If the goal
+              is unclear or a step needs me personally, stop and tell me.
             </p>
           </blockquote>
           <p>
-            Watch the page as the assistant works. Completion means the visible
-            saved result contains the requested plan and time. Refreshing the
-            practice page resets it. For a website you use, give the assistant
-            the specific tab and desired outcome, confirm the active website
-            account, and have it verify the result after any change.
+            You might update your own LinkedIn page using details you provide,
+            check Facebook messages needing a reply, or publish an article
+            you've written to accounts you explicitly choose. For edits or
+            publishing, specify the account, content and scope. The assistant
+            should continue within that authorization and read the page to
+            verify the result.
+          </p>
+          <p>
+            Take over for passwords, verification codes or site checks. When
+            you're done, explicitly say “continue” in the same AI conversation.
+            The assistant reads the current page and picks up the original task.
+            You can also use double Esc whenever you want control back.
+          </p>
+          <h2 id="personal-rhythm">Make the input pace yours</h2>
+          <p>
+            Open <strong>操作设置 (Operation settings)</strong> and choose
+            <strong>跟随任务 (Follow task)</strong>,
+            <strong>逐字键盘输入 (Type key by key)</strong> or
+            <strong>直接粘贴 (Paste)</strong>. Set the pace from 0.5× to 3× for
+            keyboard and pointer operations. Use Paste for Chinese or other text
+            unsupported by key-by-key input.
+          </p>
+          <p>
+            <strong>我的操作习惯 (My input habits)</strong> is an optional
+            experimental feature. Record 3 minutes of your own input rhythm.
+            Typing, pointer and other timing statistics with enough samples
+            shape later input; other values keep their defaults. You can turn
+            its use off or delete the sample. Recording requires Input
+            Monitoring permission.
+          </p>
+          <p>
+            Habit sampling saves only a local statistical summary, without typed
+            content, raw keyboard or pointer events, or screenshots. It does not
+            replay your complete behavior.
           </p>
           <h2 id="your-controls">Your controls</h2>
           <p>
             The getting-started guide supports English and Chinese; the main
             workspace currently uses Chinese labels. Open
-            <strong>对话 (Conversations)</strong> to see your connected conversations.
+            <strong>对话 (Conversations)</strong> to see your connected
+            conversations.
           </p>
           <ul>
             <li>
@@ -318,16 +357,17 @@ bash scripts/setup.sh</code></pre>
             </li>
             <li>
               <strong>Pause everyone:</strong> after control is returned, use
-              <strong>暂停 AI 操作 (Pause AI actions)</strong> in MyChrome to prevent further
-              input across connections.
+              <strong>暂停 AI 操作 (Pause AI actions)</strong> in MyChrome to
+              prevent further input across connections.
             </li>
             <li>
               <strong>Choose input:</strong> in
               <strong>操作设置 (Operation settings)</strong>, use
-              <strong>跟随任务 (Follow task)</strong>, <strong>逐字键盘输入 (Type key by key)</strong> or
-              <strong>直接粘贴 (Paste)</strong>, with a pace from 0.5× to 3×. Your explicit
-              choice overrides the agent for the next action. Use Paste for
-              Chinese or other text unsupported by key-by-key input.
+              <strong>跟随任务 (Follow task)</strong>,
+              <strong>逐字键盘输入 (Type key by key)</strong> or
+              <strong>直接粘贴 (Paste)</strong>, with a pace from 0.5× to 3×.
+              Your explicit choice overrides the agent for the next action. Use
+              Paste for Chinese or other text unsupported by key-by-key input.
             </li>
             <li>
               <strong>Handle a private field:</strong> take over for passwords,
@@ -336,9 +376,9 @@ bash scripts/setup.sh</code></pre>
             </li>
             <li>
               <strong>Reuse a sequence:</strong> open
-              <strong>网站流程 (Website routines)</strong>, inspect suitable recorded steps
-              and save a continuous range. Supply fresh values and select an
-              existing tab for each run.
+              <strong>网站流程 (Website routines)</strong>, inspect suitable
+              recorded steps and save a continuous range. Supply fresh values
+              and select an existing tab for each run.
               <a
                 href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/routines.md"
                 >Routine guide</a
@@ -424,8 +464,8 @@ bash scripts/setup.sh</code></pre>
                   <td>Chinese or other text is refused in key mode</td>
                   <td>
                     Choose <strong>直接粘贴 (Paste)</strong> in
-                    <strong>操作设置 (Operation settings)</strong>, then
-                    retry only after reading the current field.
+                    <strong>操作设置 (Operation settings)</strong>, then retry
+                    only after reading the current field.
                   </td>
                 </tr>
                 <tr>
@@ -462,7 +502,7 @@ bash scripts/setup.sh</code></pre>
         <a class="wordmark" href="./"
           >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
         >
-        <p>A little help, right where you work.</p>
+        <p>Your Chrome. A hand when you need one.</p>
       </div>
       <div class="footer-links">
         <a

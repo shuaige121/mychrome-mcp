@@ -40,19 +40,28 @@
       content="https://shuaige121.github.io/mychrome-mcp/zh/faq.html"
     />
     <meta property="og:locale" content="zh_CN" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="../styles.css" />
+    <script src="../site.js" defer></script>
     <meta
       property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="MyChrome — AI help in the Chrome you already use"
+      content="MyChrome — 你的 Chrome，随时多一双手"
     />
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="stylesheet" href="../styles.css" />
-    <script src="../site.js" defer></script>
+    <meta
+      name="twitter:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="MyChrome — 你的 Chrome，随时多一双手"
+    />
   </head>
   <body class="docs-page">
     <a class="skip-link" href="#main">跳到正文</a>
@@ -79,9 +88,9 @@
         <article class="prose">
           <h2 id="mychrome-是什么">MyChrome 是什么？</h2>
           <p>
-            MyChrome 是本机 MCP server 和原生 macOS App，让 AI
-            助手读取并操作你正在使用的 Google Chrome。读取通过 Apple
-            Events，操作使用真实鼠标和键盘，无需 Chrome 扩展或调试端口。
+            MyChrome 是本机 MCP server 和原生 macOS App。你照常使用
+            Chrome，需要时让 AI
+            在同一页帮你做事；需要本人操作时交回控制，收到你的继续指令后再接着原任务。它使用真实鼠标和键盘，支持调整操作速度和可选的个人节奏采样。
           </p>
           <h2 id="支持哪些电脑和客户端">支持哪些电脑和客户端？</h2>
           <p>
@@ -99,7 +108,18 @@
           </p>
           <h2 id="每个网站都能用吗">每个网站都能用吗？</h2>
           <p>
-            不能保证。实际能力取决于网站控件、权限和页面状态。登录或网站验证可能需要你接手。某个平台的具体流程需要实际测试，本地练习成功并不证明该网站兼容。
+            实际能力取决于网站控件、账号权限和页面状态。登录或网站验证可能需要你接手。网站上的任务示例是需求说明，不是所有相关流程已经验证的兼容性承诺。
+          </p>
+          <h2 id="personal-rhythm">能按我的操作习惯来吗？</h2>
+          <p>
+            可以选择输入方式和 0.5×–3× 的操作速度。“我的操作习惯”还提供可选的 3
+            分钟个人节奏采样，用样本足够的打字与指针统计调整后续输入。采样是实验功能，可以关闭使用或删除数据；仅保存本机统计摘要，不保存输入内容、原始轨迹或截图。
+          </p>
+          <h2 id="continue-after-handoff">我接手之后，AI 怎么继续？</h2>
+          <p>
+            交接提示会要求 AI 等待你的继续指令。处理完后，在原对话告诉它继续，AI
+            再读取页面核对。页面变化或输入完成的检测只表示观察结束；后续操作由
+            AI 客户端遵守交接指令。
           </p>
           <h2 id="怎么停止-ai">怎么停止 AI？</h2>
           <p>
@@ -144,7 +164,7 @@
         </article>
         <aside class="help-note">
           <h2>准备开始？</h2>
-          <p>从内置离线练习开始，熟悉控制方式。</p>
+          <p>接上你正在使用的 Chrome，从手头的事开始。</p>
           <a class="button primary" href="getting-started.html">开始使用 ↗</a>
         </aside>
       </div>
@@ -154,7 +174,7 @@
         <a class="wordmark" href="./"
           >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
         >
-        <p>在你熟悉的浏览器里，把事情做完。</p>
+        <p>你的 Chrome，随时多一双手。</p>
       </div>
       <div class="footer-links">
         <a

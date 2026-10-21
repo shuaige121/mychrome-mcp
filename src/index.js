@@ -298,12 +298,12 @@ const TOOLS = [
   },
   {
     name: 'wait_for_user',
-    description: "A human is needed: a CAPTCHA / bot check / block (other tools stop with site_blocked), or a step that is the user's (log in, pay, a field only they fill: pass `field`). Waits, sending no input, until done or `minutes` pass. Never solve a CAPTCHA yourself.",
+    description: "A human is needed: a CAPTCHA / bot check / block (other tools stop with site_blocked), or a step that is the user's (log in, pay, a field only they fill: pass `field`). Observes without input until the page changes, the user submits a field, or `minutes` pass. A return only ends observation, not permission to resume. If the user has not already explicitly said continue in the original conversation after this handoff, wait. Once they have, read_page on the same tab before resuming. Earlier task authorization does not replace this instruction. Never solve a CAPTCHA yourself.",
     inputSchema: {
       type: 'object',
       properties: {
         reason: { type: 'string', description: 'What the user must do (not needed for a check on the page)' },
-        field: { type: 'integer', minimum: 1, description: 'That field\'s marker: highlighted with `reason`, done when they press Return in it' },
+        field: { type: 'integer', minimum: 1, description: 'That field\'s marker: highlighted with `reason`; Return ends observation, not permission to resume. Resume only after explicit continue for this handoff in the original conversation.' },
         minutes: { type: 'number', minimum: 0.1, maximum: 10, description: 'Default 3 (10 with field), at most 10; call again to wait longer' },
         tab: TAB
       },
@@ -1584,8 +1584,8 @@ async function markBlocked(c, { newWait = false } = {}) {
   if (Date.now() - b.toldAt > TELL_EVERY_MS) {
     b.toldAt = Date.now();
     tellUser(/^en/i.test(process.env.CHROME_BRIDGE_LANG || '')
-      ? `Needs you: ${b.site} is showing ${b.kind === 'user' ? b.evidence : b.vendor ? `a ${b.vendor} check` : (BLOCK_KIND_EN[b.kind] || 'a page that needs a person')}. The AI has paused and given the keyboard and mouse back; it carries on once you are done.`
-      : `需要你处理：${b.site} 出现了${blockText(b)}。AI 已暂停并交还键盘鼠标，你处理完它会接着做。`);
+      ? `Needs you: ${b.site} is showing ${b.kind === 'user' ? b.evidence : b.vendor ? `a ${b.vendor} check` : (BLOCK_KIND_EN[b.kind] || 'a page that needs a person')}. The AI has given the keyboard and mouse back. Handle this yourself, then say "continue" in your original AI conversation.`
+      : `需要你处理：${b.site} 出现了${blockText(b)}。AI 已交还键盘鼠标。请自行处理，完成后回到原 AI 对话说“继续”。`);
   }
   writeTaskState();
   debugLog({ label: `site blocked tab ${c.tabId}`, blocked: c.blocked, site: b.site });
@@ -1601,7 +1601,7 @@ async function siteGate(tab) {
   throw new BridgeError('site_blocked',
     `⏸️ ${b.site} 出现了${blockText(b)}（${c.blocked.evidence}）。这是网站要求真人处理的环节，MyChrome 不代做、也不绕过。\n` +
     `已经提醒用户（系统通知 + 菜单栏），键盘鼠标已交还。\n` +
-    `不要重试，也不要换别的工具去绕过。调用 wait_for_user（tab=${c.tabId}）等用户处理完再继续；或者结束任务，告诉用户卡在哪里。`);
+    `不要重试，也不要换别的工具去绕过。可调用 wait_for_user（tab=${c.tabId}）观察页面；观察结束不表示收到继续授权。若用户尚未在本次交接后于原对话明确说“继续”，先等待；收到后先 read_page 核对同一页面，再恢复原任务；或者结束任务，告诉用户卡在哪里。`);
 }
 
 let WAIT_POLL_MS = 3000;
@@ -1616,7 +1616,7 @@ export function __setWaitPollForTests(ms, askMs = null, followMs = null) {
 }
 export function __blocksForTests() { return BLOCKS; }
 
-/** wait_for_user: the user has been told; read the page every few seconds (no input) until they are done. */
+/** wait_for_user observes the page without input. Its return never supplies the user's permission to resume. */
 /** A reply that is not an error but not done either (a wait that ran out, a tab gone): the activity log says 没做成. */
 function notDone(code, text) {
   const st = CALL.getStore();
@@ -1628,6 +1628,8 @@ function notDone(code, text) {
 export function waitMinutes(minutes, field) {
   return Math.min(10, Math.max(0.01, Number(minutes) || (field != null ? 10 : 3)));
 }
+
+const HANDOFF_NEXT = '本次观察已结束，这不代表收到继续授权。若用户尚未在本次交接后于原对话明确说“继续”，先等待；收到后先 read_page 核对同一页面，再恢复原任务。此前的任务授权不能替代本次继续指令；不要复述用户输入的内容。';
 
 async function waitForUserTool({ tab = null, reason = '', minutes = null, field = null } = {}, { signal = null, waitReady = null } = {}) {
   const ms = waitMinutes(minutes, field) * 60_000;
@@ -1649,14 +1651,16 @@ async function waitForUserTool({ tab = null, reason = '', minutes = null, field 
     BLOCKS.set(tabId, { kind: 'user', vendor: '', evidence: `在高亮的框里输入：${why}`, site: siteOf(startUrl), url: startUrl, since: Date.now(), toldAt: Date.now(), alertToken });
     writeTaskState();
     tellUser(/^en/i.test(process.env.CHROME_BRIDGE_LANG || '')
-      ? `Needs you: type ${why} in the highlighted field (${siteOf(startUrl)}) and press Return; the AI carries on by itself.`
-      : `需要你输入：${why}（${siteOf(startUrl)}）。在 Chrome 里高亮的框中输入，按回车后 AI 会自己接着做，不用回去找它。`);
+      ? `Needs you: type ${why} in the highlighted field (${siteOf(startUrl)}). Press Return when done, then say "continue" in your original AI conversation.`
+      : `需要你输入：${why}（${siteOf(startUrl)}）。在 Chrome 里高亮的框中输入，完成后按回车，再回到原 AI 对话说“继续”。`);
   } else {
     if (!String(reason).trim()) return '现在页面上没有验证码或拦截，不需要等。若下一步只能由用户来做（登录、确认付款等），带上 reason 再调用。';
     alertToken = randomUUID();
     plainAlert = { kind: 'user', vendor: '', evidence: String(reason).trim().slice(0, 80), site: siteOf(startUrl), url: startUrl, since: Date.now(), toldAt: Date.now(), alertToken };
     BLOCKS.set(tabId, plainAlert);
-    tellUser(`需要你处理：${String(reason).trim().slice(0, 80)}（${siteOf(startUrl)}）。AI 在等你，处理完它会接着做。`);
+    tellUser(/^en/i.test(process.env.CHROME_BRIDGE_LANG || '')
+      ? `Needs you: ${why} (${siteOf(startUrl)}). Handle this yourself, then say "continue" in your original AI conversation.`
+      : `需要你处理：${why}（${siteOf(startUrl)}）。请自行处理，完成后回到原 AI 对话说“继续”。`);
   }
   // A tab of mine handed to the user, and actually waited on: a takeover seen while waiting is at the agent's request.
   // `until` is set when the wait ends; a takeover seen after that (dragged away, viewed) wins again (src/ledger.js).
@@ -1690,8 +1694,8 @@ async function waitForUserTool({ tab = null, reason = '', minutes = null, field 
 /** Highlight `field` (a read_page marker) in the tab with what to type; throws stale / no_such_marker / not_a_field. */
 async function armAsk(tabId, field, why) {
   const text = /^en/i.test(process.env.CHROME_BRIDGE_LANG || '')
-    ? { title: `Needs you: ${why}`, hint: 'Press Return when done; the AI carries on.', hintMulti: 'Press ⌘+Return when done; the AI carries on.', brand: 'MyChrome · the AI is waiting for you', tab: '[Input needed] ' }
-    : { title: `需要你输入：${why}`, hint: '输入完按回车，AI 会接着做', hintMulti: '输入完按 ⌘+回车，AI 会接着做', brand: 'MyChrome · AI 在等你', tab: '【需要你输入】' };
+    ? { title: `Needs you: ${why}`, hint: 'Press Return when done, then say "continue" in your original AI conversation.', hintMulti: 'Press ⌘+Return when done, then say "continue" in your original AI conversation.', brand: 'MyChrome · the AI is waiting for you', tab: '[Input needed] ' }
+    : { title: `需要你输入：${why}`, hint: '输入完成后按回车，再回到原 AI 对话说“继续”', hintMulti: '输入完成后按 ⌘+回车，再回到原 AI 对话说“继续”', brand: 'MyChrome · AI 在等你', tab: '【需要你输入】' };
   const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const r = await B.evalInPage(await B.pageScript('ask', { ASK: { arm: token, marker: Number(field), text } }), tabId, { lean: true });
   return { token, kind: r.kind, password: !!r.password, done: false };
@@ -1699,7 +1703,7 @@ async function armAsk(tabId, field, why) {
 
 /**
  * Wait for the user's Return in the highlighted field (or its form's submit, a navigation, a reload,
- * the field leaving the page). The reply never repeats what they typed.
+ * the field leaving the page). The reply never repeats what they typed or authorizes resuming input.
  */
 async function waitForFieldLoop({ tabId, startUrl, field, why, ask, ms, t0, signal }) {
   const observer = await B.openNavigationObserver({ maxMs: ms + 10_000 }).catch(() => null);
@@ -1720,7 +1724,7 @@ async function waitForFieldObserved({ tabId, startUrl, field, why, ask, ms, t0, 
     return text;
   };
   const secs = () => Math.round((Date.now() - t0) / 1000);
-  const next = '先 read_page 看现在的页面，再接着做；不要在回复里复述用户输入的内容。';
+  const next = HANDOFF_NEXT;
   while (Date.now() - t0 < ms) {
     if (signal && signal.aborted) break;
     pausedCheck('（在等用户输入时）');
@@ -1729,7 +1733,7 @@ async function waitForFieldObserved({ tabId, startUrl, field, why, ask, ms, t0, 
     let r;
     try { r = await B.evalInPage(await B.pageScript('ask', { ASK: { read: ask.token } }), tabId, { lean: true }); }
     catch (e) {
-      if (e && e.code === 'no_such_tab') return notDone('tab_gone', await done(`❌ 这个标签已经不在了（被关掉或移走），用户没在 [${field}] 输入完。list_tabs 看看现在的标签。`));
+      if (e && e.code === 'no_such_tab') return notDone('tab_gone', await done(`❌ 这个标签已经不在了（被关掉或移走），用户没在 [${field}] 输入完。${next} 原标签不存在时先确认目标，不要另开入口页替代。`));
       continue;   // a dialog open, the page busy: ask again
     }
     const url = (r.target && r.target.url) || '';
@@ -1757,12 +1761,12 @@ async function waitForFieldObserved({ tabId, startUrl, field, why, ask, ms, t0, 
       // The page moved on before the agent looked: r.carried is the Return / submit the old page saw (same origin only).
       const c = r.carried;
       if (c && moved) return done(`✅ 用户在 [${field}] ${c.how === 'submit' ? '提交了表单' : '输入完按了回车'}，页面已经跳转（${siteOf(to)}），等了 ${s} 秒。${next}`, to, await ownSince(c.at));
-      return done(`✅ ${moved ? `页面已经跳转（${siteOf(to)}），用户应该已经提交了` : '页面重新加载了（用户可能已经提交）'}，等了 ${s} 秒。${next}`, to);
+      return done(`✅ ${moved ? `页面已经跳转（${siteOf(to)}）` : '页面重新加载了'}，尚未确认提交结果，等了 ${s} 秒。${next}`, to);
     }
     // Gone without a Return: the page moved on, or re-drew the field in a way it cannot be followed.
-    if (!r.connected) return notDone('field_gone', await done(`⚠️ [${field}] 这个框不在页面上了${moved}，用户没有在里面按回车（等了 ${secs()} 秒）。先 read_page：页面已经往下走了就接着做；那个框还在、用户还没填完，就再调用 wait_for_user。`, url));
+    if (!r.connected) return notDone('field_gone', await done(`⚠️ [${field}] 这个框不在页面上了${moved}，用户没有在里面按回车（等了 ${secs()} 秒）。${next}`, url));
   }
-  return notDone(signal && signal.aborted ? 'cancelled' : 'wait_timeout', `⏳ 等了 ${Math.round((Date.now() - t0) / 60_000 * 10) / 10} 分钟，用户还没在 [${field}] 输入完（${why}）。高亮已撤掉。用户可能暂时不在电脑前：直接再调用 wait_for_user（同样的 field 和 reason），高亮会重新出现；不要改到对话里向用户要这项内容。只有用户说过不用等，才结束任务并告诉用户卡在哪里。`);
+  return notDone(signal && signal.aborted ? 'cancelled' : 'wait_timeout', `⏳ 等了 ${Math.round((Date.now() - t0) / 60_000 * 10) / 10} 分钟，用户还没在 [${field}] 输入完（${why}）。高亮已撤掉。${HANDOFF_NEXT} 若用户仍希望等待，可再调用 wait_for_user 观察；不要在对话里索要这项私密内容。`);
 }
 
 /** The page's navigation after the user's Return, followed until it settles (null: none within SUBMIT_FOLLOW_MS). */
@@ -1792,14 +1796,14 @@ async function waitForUserLoop({ tabId, startUrl, first, reason, ms, t0, signal,
     const gone = first ? !c.blocked : (c.url && c.url !== startUrl && !c.blocked);
     if (gone) {
       clearBlock(tabId, alertToken);
-      // This reply says the page changed and to read it first.
+      // A changed page ends observation, but the agent must still wait for explicit continuation.
       if (c.url) ledgerNavigated(tabId, c.url, { reported: true });
       const s = Math.round((Date.now() - t0) / 1000);
-      return `✅ ${first ? '验证/拦截已经没有了' : `页面已经变了（${siteOf(c.url)}）`}，等了 ${s} 秒。先 read_page 看现在的页面，再接着做。`;
+      return `✅ ${first ? '验证/拦截已经没有了' : `页面已经变了（${siteOf(c.url)}）`}，等了 ${s} 秒。${HANDOFF_NEXT}`;
     }
   }
   const still = first ? blockText(BLOCKS.get(tabId) || { ...first }) : String(reason).trim();
-  return notDone(signal && signal.aborted ? 'cancelled' : 'wait_timeout', `⏳ 等了 ${Math.round((Date.now() - t0) / 60_000 * 10) / 10} 分钟，用户还没处理（${still}）。可以再调用 wait_for_user 继续等，或者结束任务并告诉用户卡在哪里。不要自己去点验证码。`);
+  return notDone(signal && signal.aborted ? 'cancelled' : 'wait_timeout', `⏳ 等了 ${Math.round((Date.now() - t0) / 60_000 * 10) / 10} 分钟，用户还没处理（${still}）。${HANDOFF_NEXT} 若用户仍希望等待，可再调用 wait_for_user 观察，或者结束任务并告诉用户卡在哪里。不要自己去点验证码。`);
 }
 
 /** Several failures in a row: the agent may be stuck; the user hears about it (at most every 5 minutes). */
@@ -4595,8 +4599,10 @@ async function scroll(args, { signal = null } = {}) {
 
 /* ---------------------------------------------------------------- server */
 
-// Instructions: the routing rule, said once, with the browser tools this user already has (src/peers.js).
-export function serverInstructions(o) { return routingInstructions(detectPeers(o)); }
+// Routing and handoff instructions are agent contracts, not a cross-client chat authorization gate.
+export function serverInstructions(o) {
+  return routingInstructions(detectPeers(o)) + '\nAfter handing a page to the user, resume input only if they have explicitly said "continue" in the original conversation after this handoff. If not, wait; if already received, do not ask them to repeat it. Earlier task authorization does not replace this continuation instruction. Return, submit, navigation, reload, a missing field or a cleared challenge only ends wait_for_user observation; none supplies permission to resume. After their explicit instruction, use read_page on the same tab to verify the current state, then resume the authorized task. This is an agent protocol: the server does not read chat replies or enforce a cross-client continuation gate.';
+}
 const server = new Server(
   { name: 'mychrome-mcp', version: PACKAGE_VERSION },
   { capabilities: { tools: { listChanged: true } }, instructions: serverInstructions() }

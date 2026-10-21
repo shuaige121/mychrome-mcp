@@ -1,21 +1,34 @@
 # MyChrome
 
-**浏览器已经打开，让 AI 帮你把事情做完。**
+**你的 Chrome，随时多一双手。**
 
-MyChrome 把 AI 助手连接到你 Mac 上正在使用的 Google Chrome。保留已登录的页面和工作上下文，让 AI 用真实鼠标和键盘帮你读页面、填表、完成操作；需要时，随时接回来。
+你照常用 Chrome，需要帮忙时，随时让 AI 介入同一个页面办事。正在用的账号、已开的标签页和原来的对话都能接着用。
+
+MyChrome 让助手读取页面，用真实鼠标和键盘完成操作。遇到需要你本人输入的密码、验证码，就把页面交回给你；你处理好并明确说“继续”后，AI 重新读取页面，接着原来的任务做。
 
 [开始使用](docs/getting-started.zh-CN.md) · [English](README.md) · [产品网站](https://shuaige121.github.io/mychrome-mcp/zh/) · [常见问题](https://shuaige121.github.io/mychrome-mcp/zh/faq.html)
 
-[![观看本地练习演示：填写计划、选择时间、保存并核对结果](site/assets/mychrome-practice-poster.webp)](site/assets/mychrome-practice.gif)
+[![观看 38 秒 MyChrome 演示](site/assets/mychrome-overview-poster.webp)](https://shuaige121.github.io/mychrome-mcp/zh/#film)
 
-**点击图片播放真实本地练习。** 约 27 秒 · 2 倍速 · 剪去等待间隔 · 裁掉浏览器工具栏。使用虚构练习内容。[在网站中观看，可随时停止播放](https://shuaige121.github.io/mychrome-mcp/zh/#demo)。
+[观看短片](https://shuaige121.github.io/mychrome-mcp/zh/#film) · [MP4](site/assets/mychrome-overview.mp4) · [22 秒 GIF](site/assets/mychrome-overview.gif) · [英文字幕](site/assets/mychrome-overview.en.vtt)
 
-## 帮你完成日常工作
+产品界面渲染与动画重建，使用示例内容，未实际发布。片中的会话中心展示受支持的 Codex 集成。
 
-- **接着当前页面做。** 告诉助手要用哪个页面、完成什么，不必把工作搬到另一个浏览器会话。
-- **少做重复操作。** 读取信息、填写内容、选择选项，并在操作后核对页面结果。
-- **控制权留在手里。** 快速连按两次 **Esc** 停止当前 AI；**暂停 AI 操作** 阻止所有连接继续输入。
-- **把合适的步骤留下。** 将连续操作保存为网站流程，下次提供新参数、明确选择标签页后运行。
+## 贴近你的操作习惯
+
+选择逐字输入或粘贴，把打字、鼠标移动和滚动的节奏调到 0.5×–3×。你的设置会应用到后续操作。
+
+还可以在**我的操作习惯**中自选采样三分钟键鼠节奏，拟合成后续输入使用的节奏统计。这是实验功能，可以启用、关闭、重新采样或删除；只记录节奏统计，不保存你打的正文，也不录屏。
+
+## 需要时，把这些事交给 AI
+
+以下是可以提出的需求示例，不代表这些平台流程已经逐一验证：
+
+- **整理自己的 LinkedIn page。** “用我已打开的 LinkedIn 页面，按我们定好的文案整理介绍和栏目，完成后告诉我改了哪里。”
+- **看看有没有人找我。** “看一下我打开的 Facebook，检查通知和消息，告诉我有哪些人需要回复。”
+- **分发已经写好的文章。** “按我提供的各平台文案，把这篇文章发到我指定的 Facebook、小红书、Reddit、LinkedIn 账号，完成后给我每条结果和链接。”
+
+在原来的 AI 对话里给出页面标题或 URL。助手先读实际页面、识别目标，再推进你已授权的任务并核对结果；目标不明、缺少资料或需要新的决定时再问你。
 
 MyChrome 是本机运行的 MCP server，带原生 macOS 界面，无需 Chrome 扩展或调试端口。具体网站能否完成任务取决于页面；登录和网站验证可能需要你接手。
 
@@ -31,14 +44,7 @@ bash scripts/setup.sh
 
 安装程序检查环境、安装依赖、编译原生辅助程序，并将 MyChrome 安装到 `~/Applications`。它会指出缺失权限，给出当前路径对应的客户端连接命令。请保留源码目录的位置，App 和 AI 客户端会继续使用它。
 
-按[首次使用指南](docs/getting-started.zh-CN.md)完成授权、连接客户端和内置离线练习。当前版本通过源码安装，尚未发布到 npm。
-
-<details>
-<summary>查看原生首次使用引导</summary>
-
-![MyChrome 原生 macOS 窗口中的首次使用引导](site/assets/mychrome-workspace.webp)
-
-</details>
+按[首次使用指南](docs/getting-started.zh-CN.md)完成授权和客户端连接，再回到原来的 AI 对话与想处理的 Chrome 页面。当前版本通过源码安装，尚未发布到 npm。
 
 ## 客户端支持
 
@@ -56,7 +62,7 @@ MyChrome 必须运行在 Chrome 所在的 Mac 上。模型及其账号或订阅�
 
 AI 使用这台 Mac 的真实鼠标和键盘。接管期间，普通物理输入会被拦截；**快速连按两次 Esc** 可收回控制。停止后，AI 必须等你的新指令才能再次接管。停止不会撤销已发出的操作。页面读取可以并行，实际键鼠操作依次进行。
 
-在**操作设置**中选择**跟随任务**、**逐字输入**或**粘贴**，并调整速度。你的明确选择对下一次操作生效，包括网站流程。输入中文等逐字模式不支持的文字时，选择粘贴。
+在**操作设置**调整输入方式、速度和可选的习惯采样。输入中文等逐字模式不支持的文字时，选择粘贴。
 
 在**网站流程**中检查已记录步骤、保存连续片段、填写新参数，再明确选择现有标签页。页面或目标不匹配时会停止。支持的控件及限制见[网站流程指南](docs/routines.md)。
 

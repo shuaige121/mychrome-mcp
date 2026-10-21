@@ -1,7 +1,7 @@
-# What happens at a CAPTCHA or site challenge?
+# How do passwords, verification and access restrictions work?
 
-MyChrome stops when it detects a CAPTCHA, bot check or access restriction and hands control back to you. It does not solve or bypass site challenges.
+When a password, verification code or site challenge needs you, the assistant can use `wait_for_user` to hand the page back. Complete the site's normal step yourself, then explicitly tell the assistant to continue. It should read the current page again, check what changed and pick up the original task.
 
-The assistant can use `wait_for_user` to request your help. Complete the site's normal steps yourself if permitted, then decide whether the task can continue. A login, verification code or challenge is not proof that the original action succeeded; the assistant should reread the page before continuing.
+MyChrome stops when it detects a CAPTCHA, bot check or access restriction. A 403 response, denied access or rate limit means the assistant should stop and report what happened. It must not retry or switch tools to get around the restriction. Personal input timing is not a guarantee against detection or blocking.
 
-Detection is a safeguard, not a guarantee that every challenge will be recognized. You can always stop the active agent by pressing Esc twice quickly. See [your controls](../getting-started.md#your-controls).
+Detection cannot recognize every challenge. You can stop the active agent by pressing Esc twice quickly. See [your controls](../getting-started.md#your-controls).
