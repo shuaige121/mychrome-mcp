@@ -4,10 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>开始使用 MyChrome — MyChrome</title>
-    <meta
-      name="description"
-      content="安装、授权、连接，再完成第一个本地任务。 Apple Silicon · macOS 13+ · Google Chrome."
-    />
+    <meta name="description" content="安装、连接，再回到你正在使用的页面。" />
     <meta name="theme-color" content="#f7f6f2" />
     <link
       rel="canonical"
@@ -33,26 +30,35 @@
     <meta property="og:title" content="开始使用 MyChrome — MyChrome" />
     <meta
       property="og:description"
-      content="安装、授权、连接，再完成第一个本地任务。 Apple Silicon · macOS 13+ · Google Chrome."
+      content="安装、连接，再回到你正在使用的页面。"
     />
     <meta
       property="og:url"
       content="https://shuaige121.github.io/mychrome-mcp/zh/getting-started.html"
     />
     <meta property="og:locale" content="zh_CN" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="../styles.css" />
+    <script src="../site.js" defer></script>
     <meta
       property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="MyChrome — AI help in the Chrome you already use"
+      content="MyChrome — 你的 Chrome，随时多一双手"
     />
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="stylesheet" href="../styles.css" />
-    <script src="../site.js" defer></script>
+    <meta
+      name="twitter:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="MyChrome — 你的 Chrome，随时多一双手"
+    />
   </head>
   <body class="docs-page">
     <a class="skip-link" href="#main">跳到正文</a>
@@ -71,24 +77,27 @@
       <div class="wrap doc-header">
         <p class="eyebrow">首次使用</p>
         <h1>开始使用 MyChrome</h1>
-        <p class="intro">安装、授权、连接，再完成第一个本地任务。</p>
+        <p class="intro">安装、连接，再回到你正在使用的页面。</p>
       </div>
       <div class="wrap doc-layout">
         <aside class="toc">
           <p class="eyebrow">本页内容</p>
           <nav aria-label="页面章节">
-            <a href="#1-检查环境">1. 检查环境</a
-            ><a href="#2-安装源码">2. 安装源码</a
-            ><a href="#3-允许访问-chrome">3. 允许访问 Chrome</a
-            ><a href="#4-连接-ai-客户端">4. 连接 AI 客户端</a
-            ><a href="#5-完成一个本地任务">5. 完成一个本地任务</a
+            <a href="#1-检查环境">开始前：检查环境</a
+            ><a href="#2-安装源码">1. 安装 MyChrome</a
+            ><a href="#connect-your-client">2. 授权并连接</a
+            ><a href="#start-your-task">3. 继续当前任务</a
+            ><a href="#personal-rhythm">我的操作习惯</a
             ><a href="#随时接回控制">随时接回控制</a
             ><a href="#常见故障">常见故障</a>
           </nav>
         </aside>
         <article class="prose">
-          <p>安装 MyChrome、连接 AI 客户端，再用内置离线页面完成一次小任务。</p>
-          <h2 id="1-检查环境">1. 检查环境</h2>
+          <p>
+            你照常使用 Chrome。连接好 MyChrome 后，回到原来的 AI
+            对话，告诉它要在哪个页面做什么。
+          </p>
+          <h2 id="1-检查环境">开始前：检查环境</h2>
           <ul>
             <li>Apple Silicon Mac，macOS 13 或更新版本。</li>
             <li>
@@ -106,7 +115,7 @@
             </li>
             <li>Codex、Claude Code 等本机 MCP 客户端及其模型访问权限。</li>
           </ul>
-          <h2 id="2-安装源码">2. 安装源码</h2>
+          <h2 id="2-安装源码">1. 安装 MyChrome</h2>
           <p>选一个准备长期保留的目录，运行：</p>
           <pre><code>git clone https://github.com/shuaige121/mychrome-mcp.git
 cd mychrome-mcp
@@ -127,7 +136,8 @@ bash scripts/setup.sh</code></pre>
           </p>
           <p>仅检查现有目录，不安装或更改设置：</p>
           <pre><code>bash scripts/setup.sh --check</code></pre>
-          <h2 id="3-允许访问-chrome">3. 允许访问 Chrome</h2>
+          <h2 id="connect-your-client">2. 授权并连接 AI 客户端</h2>
+          <h3 id="3-允许访问-chrome">允许访问 Chrome</h3>
           <p>
             在 Chrome 中开启
             <strong
@@ -167,7 +177,7 @@ bash scripts/setup.sh</code></pre>
                 </tr>
                 <tr>
                   <td>输入监控</td>
-                  <td>可选的个人操作节奏录制；首次练习不需要</td>
+                  <td>可选的个人操作节奏录制；浏览器基本操作不需要</td>
                 </tr>
               </tbody>
             </table>
@@ -184,7 +194,7 @@ bash scripts/setup.sh</code></pre>
             >
             打开相关设置页。授权由你在系统界面中完成。
           </p>
-          <h2 id="4-连接-ai-客户端">4. 连接 AI 客户端</h2>
+          <h3 id="4-连接-ai-客户端">连接 AI 客户端</h3>
           <p>生成适合当前 Node 和源码目录的准确命令：</p>
           <pre><code>bash scripts/setup.sh --instructions</code></pre>
           <p>
@@ -202,9 +212,9 @@ bash scripts/setup.sh</code></pre>
             >，不要建立同名重复项。较长的超时让排队与人工接手有时间完成。
           </p>
           <p>
-            新开一个 AI 客户端会话，让它用 MyChrome 列出 Chrome
-            标签页。如果已关闭 MyChrome，可通过 Spotlight 或 Finder
-            重新打开原生窗口。
+            如果客户端需要重启或新开会话才能加载
+            MyChrome，先完成这一步，再带着原任务上下文继续。如果已关闭
+            MyChrome，可通过 Spotlight 或 Finder 重新打开原生窗口。
           </p>
           <div
             class="table-scroll"
@@ -245,24 +255,39 @@ bash scripts/setup.sh</code></pre>
               >会话窗口指南</a
             >。
           </p>
-          <h2 id="5-完成一个本地任务">5. 完成一个本地任务</h2>
-          <p>启动内置练习页并在 Chrome 中打开：</p>
-          <pre><code>node examples/first-task/serve.mjs --open</code></pre>
+          <h2 id="start-your-task">3. 回到原对话，继续当前任务</h2>
           <p>
-            命令只在 <code>127.0.0.1</code> 启动服务，打开 Chrome
-            并打印本次准确的 URL。练习期间保持终端打开；Control-C 可停止服务，30
-            分钟后也会自动停止。页面只用虚构内容，不向外部服务发送信息。可复制页面下方附带本次
-            URL 的请求，或告诉助手：
+            在 Chrome 打开你本来要处理的页面，保留现有登录状态。回到已连接
+            MyChrome 的 AI
+            对话，说明目标标签页和你希望完成的事。你可以这样提出请求：
           </p>
           <blockquote>
             <p>
-              用 MyChrome 操作当前打开的本地练习页。先读周末计划，把内容填成
-              “Visit the weekend market”，选择 “Saturday morning”，点击 “Save
-              practice plan”。再读取页面上保存后的结果，准确告诉我保存了什么。
+              用 MyChrome 接着帮我处理当前 Chrome
+              页面。先读实际内容，按我们已经确定的目标继续；如果目标不清楚或需要我本人处理，再停下来告诉我。
             </p>
           </blockquote>
           <p>
-            观察页面变化。只有保存结果显示了指定内容和时间，才算完成；刷新练习页即可重置。用到真实网站时，明确标签页和目标，先确认网站当前账号，再让助手在变更后核对结果。
+            例如：按你提供的资料更新自己的 LinkedIn 页面，查看 Facebook
+            上需要回复的消息，或把已经写好的文章发布到你明确指定的账号。涉及编辑或发布时，说明账号、内容和操作范围；AI
+            应在当前授权内继续，并读取页面核对结果。
+          </p>
+          <p>
+            遇到密码、验证码或网站验证时，由你接手处理。完成后在原对话明确说“继续”；AI
+            再读取当前页面，接着原来的任务。你也可以随时用双 Esc 接回控制。
+          </p>
+          <h2 id="personal-rhythm">按你的节奏操作</h2>
+          <p>
+            打开<strong>操作设置</strong>，选择<strong>跟随任务</strong>、<strong>逐字键盘输入</strong>或<strong>直接粘贴</strong>，并设置
+            0.5×–3×
+            操作速度。速度影响键盘和鼠标操作；中文等逐字模式不支持的文字请选择粘贴。
+          </p>
+          <p>
+            <strong>我的操作习惯（可选实验功能）</strong>可以录制 3
+            分钟个人输入节奏。样本足够的打字、指针等节奏统计用于后续输入，样本不足的部分沿用默认值。你可以关闭使用或删除样本；这项录制需要输入监控权限。
+          </p>
+          <p>
+            习惯采样仅保存本机统计摘要，不保存输入内容、原始键鼠事件或截图；它不会完整重放你的行为。
           </p>
           <h2 id="随时接回控制">随时接回控制</h2>
           <ul>
@@ -276,7 +301,7 @@ bash scripts/setup.sh</code></pre>
             </li>
             <li>
               <strong>选择输入方式：</strong>
-              在<strong>操作设置</strong>中选择<strong>跟随任务</strong>、<strong>逐字输入</strong>或<strong>粘贴</strong>，速度可调为
+              在<strong>操作设置</strong>中选择<strong>跟随任务</strong>、<strong>逐字键盘输入</strong>或<strong>直接粘贴</strong>，速度可调为
               0.5×–3×。明确选择对下一次操作生效，优先于 AI
               参数。中文等逐字模式不支持的文字请选择粘贴。
             </li>
@@ -361,7 +386,7 @@ bash scripts/setup.sh</code></pre>
                 <tr>
                   <td>中文被逐字模式拒绝</td>
                   <td>
-                    在操作设置选择<strong>粘贴</strong>，读取当前输入框后再重试。
+                    在操作设置选择<strong>直接粘贴</strong>，读取当前输入框后再重试。
                   </td>
                 </tr>
                 <tr>
@@ -392,7 +417,7 @@ bash scripts/setup.sh</code></pre>
         <a class="wordmark" href="./"
           >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
         >
-        <p>在你熟悉的浏览器里，把事情做完。</p>
+        <p>你的 Chrome，随时多一双手。</p>
       </div>
       <div class="footer-links">
         <a
