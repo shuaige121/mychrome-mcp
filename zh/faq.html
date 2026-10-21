@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MyChrome 常见问题</title>
+    <meta
+      name="description"
+      content="客户端支持、登录状态、隐私、控制方式和网站适用范围。"
+    />
+    <meta name="theme-color" content="#f7f6f2" />
+    <link
+      rel="canonical"
+      href="https://shuaige121.github.io/mychrome-mcp/zh/faq.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="en"
+      href="https://shuaige121.github.io/mychrome-mcp/faq.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="zh-CN"
+      href="https://shuaige121.github.io/mychrome-mcp/zh/faq.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="x-default"
+      href="https://shuaige121.github.io/mychrome-mcp/faq.html"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="MyChrome" />
+    <meta property="og:title" content="MyChrome 常见问题" />
+    <meta
+      property="og:description"
+      content="客户端支持、登录状态、隐私、控制方式和网站适用范围。"
+    />
+    <meta
+      property="og:url"
+      content="https://shuaige121.github.io/mychrome-mcp/zh/faq.html"
+    />
+    <meta property="og:locale" content="zh_CN" />
+    <meta
+      property="og:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="MyChrome — AI help in the Chrome you already use"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="../styles.css" />
+    <script src="../site.js" defer></script>
+  </head>
+  <body class="docs-page">
+    <a class="skip-link" href="#main">跳到正文</a>
+    <header class="site-header wrap">
+      <a class="wordmark" href="./" aria-label="MyChrome 首页"
+        >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
+      >
+      <nav aria-label="主导航">
+        <a href="getting-started.html">开始使用</a
+        ><a href="faq.html">常见问题</a
+        ><a href="https://github.com/shuaige121/mychrome-mcp">GitHub</a
+        ><a class="language" href="../faq.html" lang="en">EN</a>
+      </nav>
+    </header>
+    <main id="main">
+      <div class="wrap doc-header">
+        <p class="eyebrow">FAQ</p>
+        <h1>常见问题</h1>
+        <p class="intro">
+          客户端支持、登录状态、隐私、控制方式和网站适用范围。
+        </p>
+      </div>
+      <div class="wrap faq-layout">
+        <article class="prose">
+          <h2 id="mychrome-是什么">MyChrome 是什么？</h2>
+          <p>
+            MyChrome 是本机 MCP server 和原生 macOS App，让 AI
+            助手读取并操作你正在使用的 Google Chrome。读取通过 Apple
+            Events，操作使用真实鼠标和键盘，无需 Chrome 扩展或调试端口。
+          </p>
+          <h2 id="支持哪些电脑和客户端">支持哪些电脑和客户端？</h2>
+          <p>
+            支持 Apple Silicon Mac、macOS 13+、Google Chrome，需要受支持的
+            Node.js 和 Xcode Command Line Tools。Codex 和 Claude Code
+            都能使用浏览器工具；其他本机 stdio MCP
+            客户端可用生成的路径连接。原生窗口的实时文字和回复需要支持的 Codex
+            集成与已关联会话，Claude 暂不支持这两项功能。
+          </p>
+          <h2 id="能用我现有的登录状态吗">能用我现有的登录状态吗？</h2>
+          <p>
+            可以，操作发生在你的 Chrome
+            中。告诉助手使用哪个现有标签页，变更前确认网站显示的账号。Chrome
+            profile 和网站账号不一定是同一个身份。
+          </p>
+          <h2 id="每个网站都能用吗">每个网站都能用吗？</h2>
+          <p>
+            不能保证。实际能力取决于网站控件、权限和页面状态。登录或网站验证可能需要你接手。某个平台的具体流程需要实际测试，本地练习成功并不证明该网站兼容。
+          </p>
+          <h2 id="怎么停止-ai">怎么停止 AI？</h2>
+          <p>
+            在 0.8 秒内连按两次 Esc，取消当前 AI 并收回键鼠。AI
+            需要你的新指令才能再次接管。收回控制后，打开“暂停 AI
+            操作”可阻止所有连接继续输入。停止不会撤销已发出的操作。
+          </p>
+          <h2 id="ai-操作时我能使用鼠标吗">AI 操作时，我能使用鼠标吗？</h2>
+          <p>
+            接管期间普通物理输入会被拦截。桌面只有一套真实鼠标和键盘，多个 AI
+            的输入依次进行；读取可以并行。需要接手时使用双 Esc。
+          </p>
+          <h2 id="数据保存在什么地方">数据保存在什么地方？</h2>
+          <p>
+            MyChrome
+            的设置、操作记录和网站流程元数据保存在本机。流程记录默认开启，可以关闭；记录筛选后的页面与控件描述及操作顺序，不把输入正文和选项值保存为重放默认值。路径、标签和流程名仍可能反映使用情况。通过
+            MCP 返回的页面内容会交给 AI
+            客户端，并按其设置处理。不要公开运行目录或账号截图。
+          </p>
+          <h2 id="网站流程是什么">网站流程是什么？</h2>
+          <p>
+            把符合条件的连续操作保存下来。每次运行先检查步骤、填写新参数并明确选择现有标签页。运行仍使用原有输入保护，步骤之间不调用模型；页面或目标不匹配时停止。它不支持所有控件，完成步骤也不代表外部业务一定成功。
+          </p>
+          <h2 id="免费吗">免费吗？</h2>
+          <p>
+            MyChrome 采用 MIT License 开源。模型访问由 AI
+            客户端提供，其费用或订阅可能另计。当前版本通过源码安装，未发布到
+            npm。
+          </p>
+          <h2 id="所有网页都需要用-mychrome-吗">
+            所有网页都需要用 MyChrome 吗？
+          </h2>
+          <p>
+            公开信息通常可以直接用 API 或 web fetch；不依赖现有登录的 JavaScript
+            页面可用 headless browser。工作依赖当前 Chrome
+            上下文，或需要和助手共用同一个页面时，适合使用 MyChrome。
+          </p>
+          <h2 id="一定能节省-token-吗">一定能节省 token 吗？</h2>
+          <p>
+            没有统一的节省保证。页面读取可以返回提纲和局部文字，而不总是使用整页或图片；实际用量取决于页面、客户端和任务。
+          </p>
+        </article>
+        <aside class="help-note">
+          <h2>准备开始？</h2>
+          <p>从内置离线练习开始，熟悉控制方式。</p>
+          <a class="button primary" href="getting-started.html">开始使用 ↗</a>
+        </aside>
+      </div>
+    </main>
+    <footer class="site-footer wrap">
+      <div>
+        <a class="wordmark" href="./"
+          >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
+        >
+        <p>在你熟悉的浏览器里，把事情做完。</p>
+      </div>
+      <div class="footer-links">
+        <a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md"
+          >帮助</a
+        ><a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md"
+          >安全</a
+        ><a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/CONTRIBUTING.md"
+          >参与贡献</a
+        ><a href="../llms.txt">llms.txt</a
+        ><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE"
+          >MIT License</a
+        >
+      </div>
+      <p class="legal">
+        © 2026 Leonard Chow. 独立项目，与 Google 无隶属或背书关系。Chrome 是
+        Google LLC 的商标。
+      </p>
+    </footer>
+  </body>
+</html>

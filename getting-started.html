@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Get started with MyChrome — MyChrome</title>
+    <meta
+      name="description"
+      content="Install, connect, and finish your first local task. Apple Silicon · macOS 13+ · Google Chrome."
+    />
+    <meta name="theme-color" content="#f7f6f2" />
+    <link
+      rel="canonical"
+      href="https://shuaige121.github.io/mychrome-mcp/getting-started.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="en"
+      href="https://shuaige121.github.io/mychrome-mcp/getting-started.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="zh-CN"
+      href="https://shuaige121.github.io/mychrome-mcp/zh/getting-started.html"
+    />
+    <link
+      rel="alternate"
+      hreflang="x-default"
+      href="https://shuaige121.github.io/mychrome-mcp/getting-started.html"
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="MyChrome" />
+    <meta property="og:title" content="Get started with MyChrome — MyChrome" />
+    <meta
+      property="og:description"
+      content="Install, connect, and finish your first local task. Apple Silicon · macOS 13+ · Google Chrome."
+    />
+    <meta
+      property="og:url"
+      content="https://shuaige121.github.io/mychrome-mcp/getting-started.html"
+    />
+    <meta property="og:locale" content="en_US" />
+    <meta
+      property="og:image"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="MyChrome — AI help in the Chrome you already use"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./site.js" defer></script>
+  </head>
+  <body class="docs-page">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header wrap">
+      <a class="wordmark" href="./" aria-label="MyChrome home"
+        >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
+      >
+      <nav aria-label="Main navigation">
+        <a href="getting-started.html">Get started</a><a href="faq.html">FAQ</a
+        ><a href="https://github.com/shuaige121/mychrome-mcp">GitHub</a
+        ><a class="language" href="zh/getting-started.html" lang="zh-CN"
+          >中文</a
+        >
+      </nav>
+    </header>
+    <main id="main">
+      <div class="wrap doc-header">
+        <p class="eyebrow">GETTING STARTED</p>
+        <h1>Get started with MyChrome</h1>
+        <p class="intro">Install, connect, and finish your first local task.</p>
+      </div>
+      <div class="wrap doc-layout">
+        <aside class="toc">
+          <p class="eyebrow">ON THIS PAGE</p>
+          <nav aria-label="Page sections">
+            <a href="#1-check-your-mac">1. Check your Mac</a
+            ><a href="#2-install-from-source">2. Install from source</a
+            ><a href="#3-allow-chrome-access">3. Allow Chrome access</a
+            ><a href="#4-connect-your-ai-client">4. Connect your AI client</a
+            ><a href="#5-finish-one-local-task">5. Finish one local task</a
+            ><a href="#your-controls">Your controls</a
+            ><a href="#troubleshooting">Troubleshooting</a>
+          </nav>
+        </aside>
+        <article class="prose">
+          <p>
+            Install MyChrome, connect your AI client, then try one task on the
+            included offline practice page.
+          </p>
+          <h2 id="1-check-your-mac">1. Check your Mac</h2>
+          <ul>
+            <li>Apple Silicon Mac running macOS 13 or later.</li>
+            <li>
+              <a href="https://www.google.com/chrome/">Google Chrome</a>
+              installed at <code>/Applications/Google Chrome.app</code>.
+            </li>
+            <li>
+              <a href="https://nodejs.org/en/download">Node.js</a> 24 or later
+              recommended, using the native Apple Silicon (arm64) build with
+              npm. Node 20.19+ and 22.13+ are also supported.
+            </li>
+            <li>
+              Git and Xcode Command Line Tools. Run
+              <code>xcode-select --install</code> if the tools are missing, then
+              finish the macOS installer.
+            </li>
+            <li>
+              A local MCP client such as Codex or Claude Code, with its own
+              model access.
+            </li>
+          </ul>
+          <h2 id="2-install-from-source">2. Install from source</h2>
+          <p>Choose a permanent folder for the checkout, then run:</p>
+          <pre><code>git clone https://github.com/shuaige121/mychrome-mcp.git
+cd mychrome-mcp
+bash scripts/setup.sh</code></pre>
+          <p>
+            Setup checks prerequisites, runs the dependency installation and
+            build, installs the native MyChrome app in
+            <code>~/Applications</code>, and checks permissions. It does not
+            change your AI client&#x27;s configuration or grant macOS
+            permissions for you. If it reports that installation succeeded but
+            permissions need attention, complete the next step before trying a
+            task.
+          </p>
+          <p>
+            Setup opens MyChrome after installation. On first use, its
+            getting-started guide appears. If you skip or close it, reopen it
+            from the question-mark button or <strong>Getting started</strong> in
+            the menu.
+          </p>
+          <p>
+            Keep the checkout where it is: the app and MCP client reference it.
+            This release is installed from source, not npm.
+          </p>
+          <p>
+            To check an existing checkout without installing or changing
+            settings:
+          </p>
+          <pre><code>bash scripts/setup.sh --check</code></pre>
+          <h2 id="3-allow-chrome-access">3. Allow Chrome access</h2>
+          <p>
+            Open Chrome and enable
+            <strong
+              >View → Developer → Allow JavaScript from Apple Events</strong
+            >
+            for each Chrome profile you intend to use.
+          </p>
+          <p>
+            In <strong>System Settings → Privacy &amp; Security</strong>, grant
+            the permissions requested for the application that launches
+            MyChrome. That may be Terminal or your desktop AI client; use the
+            diagnostics to identify it.
+          </p>
+          <div
+            class="table-scroll"
+            role="region"
+            aria-label="Comparison table"
+            tabindex="0"
+          >
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Permission</th>
+                  <th scope="col">What it enables</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Automation → Google Chrome</td>
+                  <td>Read and control Chrome through Apple Events</td>
+                </tr>
+                <tr>
+                  <td>Accessibility</td>
+                  <td>Real mouse and keyboard input</td>
+                </tr>
+                <tr>
+                  <td>Screen Recording</td>
+                  <td>Screenshots and on-device text recognition</td>
+                </tr>
+                <tr>
+                  <td>Input Monitoring</td>
+                  <td>
+                    Optional recording of your own input pace; not needed for
+                    the first task
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Restart the responsible application if macOS asks you to. Run the
+            check from the same application that will launch the MCP server:
+          </p>
+          <pre><code>node src/index.js doctor</code></pre>
+          <p>
+            If Automation has not prompted yet,
+            <code>node src/index.js doctor --ask</code> requests the prompt.
+            <code>--open</code> opens the relevant settings page. These commands
+            do not grant approval automatically.
+          </p>
+          <h2 id="4-connect-your-ai-client">4. Connect your AI client</h2>
+          <p>Print the commands using your actual Node and checkout paths:</p>
+          <pre><code>bash scripts/setup.sh --instructions</code></pre>
+          <p>
+            Choose the <strong>Codex</strong> or
+            <strong>Claude Code</strong> instructions and run the printed
+            registration command. Review an existing
+            <code>mychrome</code> registration before replacing it. For another
+            stdio MCP client, use the printed absolute Node executable and
+            <code>src/index.js</code> path.
+          </p>
+          <p>
+            For <strong>Codex</strong>, also apply the printed TOML settings to
+            the existing MyChrome entry in <code>~/.codex/config.toml</code>.
+            Set <code>startup_timeout_sec = 30</code> and
+            <code>tool_timeout_sec = 900</code>; do not create a second entry
+            with the same name. The longer timeout lets queued actions and user
+            handoffs finish.
+          </p>
+          <p>
+            Start a new AI client session and ask it to list Chrome tabs with
+            MyChrome. If you closed MyChrome, reopen it from Spotlight or Finder
+            to see its native window.
+          </p>
+          <div
+            class="table-scroll"
+            role="region"
+            aria-label="Comparison table"
+            tabindex="0"
+          >
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Client</th>
+                  <th scope="col">Browser tools</th>
+                  <th scope="col">
+                    Live conversation text and replies in the MyChrome window
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Codex</td>
+                  <td>Supported</td>
+                  <td>
+                    Requires a supported local Codex integration and an
+                    associated thread
+                  </td>
+                </tr>
+                <tr>
+                  <td>Claude Code</td>
+                  <td>Supported</td>
+                  <td>
+                    Not available; continue the conversation in Claude Code
+                  </td>
+                </tr>
+                <tr>
+                  <td>Other local stdio MCP client</td>
+                  <td>Connect with the generated paths</td>
+                  <td>No adapter provided</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            An empty conversation view does not by itself mean the browser tools
+            are disconnected. See the
+            <a
+              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/conversation-center.md"
+              >conversation center guide</a
+            >
+            for Codex thread association.
+          </p>
+          <h2 id="5-finish-one-local-task">5. Finish one local task</h2>
+          <p>Start the included practice page and open it in Chrome:</p>
+          <pre><code>node examples/first-task/serve.mjs --open</code></pre>
+          <p>
+            The command starts a server only on <code>127.0.0.1</code>, opens
+            Chrome and prints the exact local URL. Keep the terminal open while
+            you practice; Control-C stops the server, and it also stops after 30
+            minutes. The page uses synthetic content and sends nothing to an
+            external service. Copy the request shown on the page, which includes
+            this run&#x27;s URL, or ask your assistant:
+          </p>
+          <blockquote>
+            <p>
+              Use MyChrome on the open local practice page. Read the weekend
+              plan. Enter “Visit the weekend market”, choose “Saturday morning”,
+              and click “Save practice plan”. Then read the visible saved result
+              and tell me exactly what it says.
+            </p>
+          </blockquote>
+          <p>
+            Watch the page as the assistant works. Completion means the visible
+            saved result contains the requested plan and time. Refreshing the
+            practice page resets it. For a website you use, give the assistant
+            the specific tab and desired outcome, confirm the active website
+            account, and have it verify the result after any change.
+          </p>
+          <h2 id="your-controls">Your controls</h2>
+          <p>
+            The getting-started guide supports English and Chinese; the main
+            workspace currently uses Chinese labels. Open
+            <strong>对话 (Conversations)</strong> to see your connected conversations.
+          </p>
+          <ul>
+            <li>
+              <strong>Stop now:</strong> press Esc twice quickly, within 0.8
+              seconds. This cancels the current agent and returns the pointer
+              and keyboard. A new instruction is required before another
+              takeover.
+            </li>
+            <li>
+              <strong>Pause everyone:</strong> after control is returned, use
+              <strong>暂停 AI 操作 (Pause AI actions)</strong> in MyChrome to prevent further
+              input across connections.
+            </li>
+            <li>
+              <strong>Choose input:</strong> in
+              <strong>操作设置 (Operation settings)</strong>, use
+              <strong>跟随任务 (Follow task)</strong>, <strong>逐字键盘输入 (Type key by key)</strong> or
+              <strong>直接粘贴 (Paste)</strong>, with a pace from 0.5× to 3×. Your explicit
+              choice overrides the agent for the next action. Use Paste for
+              Chinese or other text unsupported by key-by-key input.
+            </li>
+            <li>
+              <strong>Handle a private field:</strong> take over for passwords,
+              verification codes and site challenges, then tell the assistant
+              when to continue.
+            </li>
+            <li>
+              <strong>Reuse a sequence:</strong> open
+              <strong>网站流程 (Website routines)</strong>, inspect suitable recorded steps
+              and save a continuous range. Supply fresh values and select an
+              existing tab for each run.
+              <a
+                href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/routines.md"
+                >Routine guide</a
+              >.
+            </li>
+          </ul>
+          <p>
+            During takeover, ordinary physical input is intercepted, so use
+            double Esc instead of trying to click a stop button. Stopping does
+            not undo text, clicks or submissions already sent.
+          </p>
+          <h2 id="troubleshooting">Troubleshooting</h2>
+          <div
+            class="table-scroll"
+            role="region"
+            aria-label="Comparison table"
+            tabindex="0"
+          >
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">What you see</th>
+                  <th scope="col">Next step</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Unsupported Mac or Node version</td>
+                  <td>
+                    Compare with the requirements above. Install a supported
+                    Node version and rerun setup. Intel Macs, Rosetta Node,
+                    Windows, Linux and other browsers are not supported by this
+                    build.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Command Line Tools missing</td>
+                  <td>
+                    Complete <code>xcode-select --install</code>, then rerun
+                    setup.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Permission still missing</td>
+                  <td>
+                    Check the app named by <code>doctor</code>, restart that app
+                    if requested, and rerun <code>doctor</code> from the same
+                    launcher.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Existing MyChrome app belongs to another checkout</td>
+                  <td>
+                    Keep that installation intact. Continue using its checkout,
+                    or use <code>--app-path</code> with a new absolute path for
+                    a separate installation.
+                  </td>
+                </tr>
+                <tr>
+                  <td>MCP client cannot find Node</td>
+                  <td>
+                    Regenerate instructions and use their absolute Node path;
+                    desktop apps may have a different PATH.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Codex tool call times out</td>
+                  <td>
+                    Apply <code>tool_timeout_sec = 900</code> to the existing
+                    server entry and start a new client session.
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    Claude tools work but the MyChrome conversation is empty
+                  </td>
+                  <td>
+                    Use Claude Code for the conversation. Live text and direct
+                    replies in MyChrome are not supported for Claude.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Chinese or other text is refused in key mode</td>
+                  <td>
+                    Choose <strong>直接粘贴 (Paste)</strong> in
+                    <strong>操作设置 (Operation settings)</strong>, then
+                    retry only after reading the current field.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Page changed or action result is uncertain</td>
+                  <td>
+                    Read the current page before retrying. Check whether the
+                    original action already took effect.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Login, CAPTCHA or access check</td>
+                  <td>
+                    Complete it yourself if the site permits, then decide
+                    whether the task can continue. MyChrome does not bypass site
+                    challenges.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            For help, use
+            <a
+              href="https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md"
+              >Support</a
+            >. Share a small sanitized reproduction, not account screenshots or
+            runtime records.
+          </p>
+        </article>
+      </div>
+    </main>
+    <footer class="site-footer wrap">
+      <div>
+        <a class="wordmark" href="./"
+          >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
+        >
+        <p>A little help, right where you work.</p>
+      </div>
+      <div class="footer-links">
+        <a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md"
+          >Support</a
+        ><a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md"
+          >Security</a
+        ><a
+          href="https://github.com/shuaige121/mychrome-mcp/blob/main/CONTRIBUTING.md"
+          >Contribute</a
+        ><a href="./llms.txt">llms.txt</a
+        ><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE"
+          >MIT License</a
+        >
+      </div>
+      <p class="legal">
+        © 2026 Leonard Chow. Independent project. Not affiliated with or
+        endorsed by Google. Chrome is a trademark of Google LLC.
+      </p>
+    </footer>
+  </body>
+</html>
