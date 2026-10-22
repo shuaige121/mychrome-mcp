@@ -2,6 +2,21 @@
 
 Release notes describe changes in this source tree. A source version, an npm publication, a GitHub push and a successful live test are separate events.
 
+## 0.13.0 — 2026-10-22
+
+- Start a Codex or Claude Code conversation from the native App with New conversation or Command-N. Select a working folder, a model from the installed client's current catalog, and a supported thinking effort; these choices do not rewrite client settings.
+- Show streamed public assistant text, follow-up replies and supported questions or one-time approval requests for App-created conversations. Existing external Claude conversations retain their browser tools and page handoff, but cannot be attached as live conversations.
+- Keep the first task as an exact-conversation draft and send it through the normal delivery ledger. Repeated or uncertain creation requests retain their identity, and uncertain message delivery never triggers automatic resending.
+- Read back effective model and effort settings. Confirm Claude messages through matching CLI acknowledgements, distinguish generation failures from accepted input, and provide Stop generation for the selected conversation.
+- Keep managed conversations separate from MCP-server restart and permission checks. Closing the App leaves their background work running; exited backend sessions are not automatically restored.
+
+### Validation scope
+
+- All 71 default test scripts passed across the initial run, the corrected page test and the remaining-script continuation. Two obsolete test fixtures were updated to match existing navigation and handoff behavior; the full page test passed 188 groups. Optional strict scheduler-latency assertions were not enabled.
+- A clean 212-file allowlisted export installed and built all three native helpers. The final session adapters, launcher, worker, native UI and affected GUI regressions passed again from that export. The package dry run contained 102 files; no npm publication was performed.
+- Real App-created Codex and Claude Code conversations returned their requested synthetic replies, reported effective model/effort, and accepted follow-up input. Native checks covered empty and prefilled creation, model selection, changing folders, Stop and continuing afterward, and reconnecting after the GUI process restarted. The final Claude interruption fix was also verified against its real CLI.
+- Verification used the installed Codex 0.163.0 and Claude Code 2.1.307 clients. Authentication and global client settings were not rewritten. Client/model availability can vary; existing external Claude conversations and exited managed backends are not restored by this feature.
+
 ## 0.12.1 — 2026-10-22
 
 - Replace the first-run practice server with a short continuation request for the user's existing Chrome page and AI conversation. Opening the guide never starts a sample task or leaves a localhost tab behind.

@@ -3032,7 +3032,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
       addCaptcha();
       await assert.rejects(idx.readPage({ tab: 5 }), (e) => e.code === 'site_blocked' && /不代做、也不绕过/.test(e.message));
       assert.equal(told.length, 1, JSON.stringify(told));
-      assert.match(told[0].t, /^Needs you: example\.test is showing a reCAPTCHA check\. The AI has paused and given the keyboard and mouse back/);
+      assert.equal(told[0].t, 'Needs you: example.test is showing a reCAPTCHA check. The AI has given the keyboard and mouse back. Handle this yourself, then say "continue" in your original AI conversation.');
       assert.ok(!/[\u4e00-\u9fff]/.test(told[0].t), told[0].t);
     } finally { if (prev === undefined) delete process.env.CHROME_BRIDGE_LANG; else process.env.CHROME_BRIDGE_LANG = prev; quiet(); }
   });

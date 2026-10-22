@@ -14,7 +14,7 @@
 
 - [AI agent guide](https://github.com/shuaige121/mychrome-mcp/blob/main/docs/ai-guide.md): exact tools, tab selection, user handoff and result verification.
 - [Website routines](https://github.com/shuaige121/mychrome-mcp/blob/main/docs/routines.md): recording, saved sequences, fresh parameters and replay limits.
-- [Conversation center](https://github.com/shuaige121/mychrome-mcp/blob/main/docs/conversation-center.md): native window and supported Codex association.
+- [Conversation center](https://github.com/shuaige121/mychrome-mcp/blob/main/docs/conversation-center.md): App-created Codex and Claude Code conversations, plus supported external Codex association.
 - [Support](https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md): sanitized bug reports.
 - [Security](https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md): private vulnerability reporting.
 
@@ -35,7 +35,8 @@
 
 - Apple Silicon, macOS 13+, Google Chrome in /Applications, supported Node.js and Xcode Command Line Tools. Node 24+ is recommended; 20.19+ and 22.13+ are also supported.
 - Install with `bash scripts/setup.sh` from a source checkout. This release is not published to npm.
-- Codex and Claude Code support browser tools. Live assistant text and replies in the native app need a supported Codex integration and associated thread. Claude has no live text/direct reply adapter there.
+- Codex and Claude Code support browser tools. Conversations created through the native app support live assistant text and direct replies for both clients. Existing external Codex conversations need a supported integration and associated thread; existing external Claude Code conversations cannot be associated and must continue in their original client.
+- Use **新对话 (New conversation)** to select an installed, logged-in Codex or Claude Code CLI, an available model, supported reasoning effort and a working directory. The model choices come from that CLI. An initial task is optional; the new conversation is separate from existing client conversations.
 - Physical input is serialized. During takeover, ordinary user input is intercepted; double Esc cancels the active agent. Global pause prevents subsequent input. Stop does not undo actions already sent.
 - Website routine recording is on by default. Local metadata may reveal usage context; typed and selected values are not saved as replay defaults. Runs need fresh parameters and an explicit tab, stop on mismatches, and do not prove the broader task succeeded.
 - Page content returned through MCP goes to the AI client and is handled under its settings. Local operation is not a promise that all task data remains on-device.

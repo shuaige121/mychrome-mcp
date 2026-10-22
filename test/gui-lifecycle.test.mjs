@@ -74,8 +74,13 @@ final class ProbeOnboarding {
     func stop() { stops += 1; mark("onboarding-stopped") }
     func dismiss() { dismissals += 1 }
 }
+final class ProbeNewSession {
+    var stops = 0
+    func stop() { stops += 1; mark("new-session-stopped") }
+}
 final class Model {
     let onboarding = ProbeOnboarding()
+    let newSession = ProbeNewSession()
     var recorder: Process?
     var cancelling = false
     var conversationVisible = true
@@ -165,7 +170,7 @@ if mode == "empty" || mode == "finished" {
     }
     m.prepareForExit(); m.prepareForExit()
     precondition(!m.holding && !FileManager.default.fileExists(atPath: PID_FILE))
-    precondition(m.onboarding.stops == 2)
+    precondition(m.onboarding.stops == 2 && m.newSession.stops == 2)
     print("cleanup tolerates absent and already finished recorders"); exit(0)
 }
 
@@ -223,6 +228,7 @@ while true { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02)) }
     assert.ok(!existsSync(path.join(dir, 'panel.pid')), `${mode}: stale panel PID`);
     assert.ok(existsSync(path.join(dir, 'released')), `${mode}: keepawake not released`);
     assert.ok(existsSync(path.join(dir, 'onboarding-stopped')), `${mode}: onboarding child cleanup not called`);
+    assert.ok(existsSync(path.join(dir, 'new-session-stopped')), `${mode}: new-session child cleanup not called`);
     assert.ok(!existsSync(path.join(dir, 'expired')), `${mode}: recorder ran to completion`);
     if (mode === 'quit') {
       const state = JSON.parse(readFileSync(path.join(dir, 'state.json'), 'utf8'));

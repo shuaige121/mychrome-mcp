@@ -8,7 +8,9 @@ MyChrome lets Claude Code help on the Google Chrome page you're already using on
 4. After Claude Code loads the connection, return to your task conversation. If a restart is needed, resume that conversation afterward. Ask it to list your Chrome tabs using MyChrome.
 5. Give the title or URL of your existing page and the outcome you want. Have it read the actual page, carry out the authorized task and check the result. [Continue with your open page](../getting-started.md#5-continue-with-your-open-page).
 
-Claude Code supports MyChrome's browser tools and page handoff. Live Claude conversation text and direct replies are not available in MyChrome's native window; continue the conversation in Claude Code.
+Claude Code supports MyChrome's browser tools and page handoff. An existing external Claude Code conversation cannot be associated with MyChrome's native window; continue that conversation in Claude Code.
+
+You can also start a separate Claude Code conversation in MyChrome: click **新对话 (New conversation)**, select Claude Code, then choose an available model, supported reasoning effort and a working directory. The local Claude Code CLI must already be installed and logged in; model choices come from that CLI. The first task is optional. Conversations created this way support live text and direct replies in MyChrome, without importing an existing Claude Code conversation. [Conversation center](../conversation-center.md).
 
 For a password or verification code, handle the step yourself and explicitly tell Claude to continue. It should reread the page and resume the same task. Press Esc twice quickly whenever you need to cancel active input.
 

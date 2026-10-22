@@ -23,7 +23,7 @@ const declarations = [
   ...['Check', 'SetupChecks', 'ServerInfo', 'AgentTask'].map(name => declaration(menu, 'struct', name)),
   declaration(menu, 'func', 'liveServers'),
   ...['conversationName', 'conversationClient', 'conversationIsVisible', 'conversationKey', 'hasPreviousBindingDraft',
-    'conversationPresentation', 'conversationDeliveryPresentation']
+    'conversationPresentation', 'conversationDeliveryPresentation', 'managedConversationFailure', 'canInterruptConversation']
     .map(name => declaration(ui, 'func', name)),
 ].join('\n');
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'mychrome-gui-list-'));
@@ -49,7 +49,8 @@ let results: [[String: Any]] = rows.map { row in
     syntheticPresence = ["pid": id, "who": who]
     for (source, target) in ["busy": "busy", "launcher": "launcher", "instance": "guiInstance",
         "thread": "conversationThread", "binding": "conversationBinding", "pending": "conversationPending",
-        "title": "conversationTitle", "provider": "conversationProvider", "status": "conversationStatus"] {
+        "title": "conversationTitle", "provider": "conversationProvider", "status": "conversationStatus",
+        "managed": "managedSession", "model": "model", "effort": "effort", "cwd": "cwd"] {
         syntheticPresence[target] = row[source]
     }
     let server = liveServers()[0]
@@ -66,6 +67,9 @@ let results: [[String: Any]] = rows.map { row in
         "delivery": ["kind": delivery.kind, "label": delivery.label, "symbol": delivery.symbol, "tone": delivery.tone],
         "visible": conversationIsVisible(server, task: task, hasActiveContext: row["activeContext"] as? Bool ?? false),
         "key": conversationKey(server),
+        "managed": server.managedSession, "model": server.model ?? NSNull(), "effort": server.effort ?? NSNull(), "cwd": server.cwd ?? NSNull(),
+        "canInterrupt": canInterruptConversation(server, state: state, sending: row["sending"] as? Bool ?? false),
+        "managedFailure": managedConversationFailure(state) ?? NSNull(),
         "feedPlaceholder": ConversationState(row["state"] as? [String: Any] ?? [:]).feedPlaceholder,
         "hasPreviousDraft": hasPreviousBindingDraft(server, drafts: row["drafts"] as? [String: String] ?? [:])]
 }
@@ -111,6 +115,19 @@ test('only same-thread metadata or an actual busy operation marks a conversation
   assert.deepEqual(rows.map(row => row.presentation.tone), ['blue', 'blue', 'gray', 'gray', 'gray']);
 });
 
+test('managed Codex and Claude use their actual conversation state while external Claude stays unsupported', () => {
+  const base = { instance: 'managed-a', thread: 'managed-thread', status: 'connected', managed: true,
+    model: 'reported-model', effort: 'high', cwd: '/synthetic/project',
+    state: { threadId: 'managed-thread', status: 'connected', threadStatus: 'idle', canSend: true } };
+  const rows = inspect({ ...base, provider: 'Codex' }, { ...base, provider: 'Claude' },
+    { ...base, provider: 'Claude', managed: false },
+    { ...base, provider: 'Claude', model: null, effort: null, cwd: null });
+  assert.deepEqual(rows.map(r => r.presentation.kind), ['idle', 'idle', 'unsupported', 'idle']);
+  assert.deepEqual(rows.slice(0, 2).map(r => [r.managed, r.model, r.effort, r.cwd]),
+    Array(2).fill([true, 'reported-model', 'high', '/synthetic/project']));
+  assert.equal(rows[3].model, null); assert.equal(rows[3].effort, null); assert.equal(rows[3].cwd, null);
+});
+
 test('a genuine pending question or page alert takes attention priority over active work', () => {
   const base = { instance: 'gui-a', provider: 'Codex', thread: 'a', status: 'connected', busy: 'click' };
   const rows = inspect(
@@ -123,6 +140,34 @@ test('a genuine pending question or page alert takes attention priority over act
     assert.equal(row.presentation.tone, 'orange');
     assert.equal(row.presentation.symbol, 'hand.raised.fill');
   }
+});
+
+test('managed generation failures remain explicit even when the connection is idle and ready', () => {
+  const base = { instance: 'managed-a', provider: 'Codex', thread: 'a', status: 'connected', managed: true };
+  const rows = inspect(...['turn_failed', 'claude_turn_failed', 'message_too_large', 'claude_delivery_unconfirmed'].map(reason => ({
+    ...base, state: { threadId: 'a', status: 'connected', threadStatus: 'idle', canSend: true, reason },
+  })), { ...base, state: { threadId: 'other', status: 'connected', reason: 'turn_failed' } });
+  for (const row of rows.slice(0, 4)) {
+    assert.equal(row.presentation.kind, 'error'); assert.equal(row.presentation.tone, 'red');
+    assert.ok(row.managedFailure); assert.doesNotMatch(row.managedFailure, /turn_failed|claude_/);
+  }
+  assert.equal(rows[4].presentation.kind, 'connected');
+});
+
+test('stop generation remains available during managed send and turn-start waiting', () => {
+  const base = { instance: 'managed-a', provider: 'Codex', thread: 'a', status: 'connected', managed: true };
+  const idle = { threadId: 'a', status: 'connected', threadStatus: 'idle' };
+  const rows = inspect(
+    { ...base, state: idle },
+    { ...base, state: idle, sending: true },
+    { ...base, state: { ...idle, sending: true } },
+    { ...base, state: { ...idle, threadStatus: 'active' } },
+    { ...base, sending: true },
+    { ...base, state: { ...idle, threadStatus: 'active' }, status: 'disconnected' },
+    { ...base, state: { ...idle, threadStatus: 'active' }, managed: false },
+    { ...base, state: { ...idle, threadId: 'other', threadStatus: 'active' } },
+  );
+  assert.deepEqual(rows.map(row => row.canInterrupt), [false, true, true, true, true, false, false, false]);
 });
 
 test('delivery colors distinguish acceptance, refusal and uncertainty without claiming task success', () => {

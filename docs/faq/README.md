@@ -8,7 +8,9 @@ MyChrome lets you bring your AI assistant into the Chrome page you're already us
 
 ## Which computers and clients work?
 
-Apple Silicon Macs running macOS 13+ with Google Chrome, supported Node.js and Xcode Command Line Tools. Codex and Claude Code support the browser tools; other local stdio MCP clients can use the generated connection paths. The native conversation text/reply integration requires supported Codex integration and an associated thread. Claude live text and direct replies are not available in the MyChrome window.
+Apple Silicon Macs running macOS 13+ with Google Chrome, supported Node.js and Xcode Command Line Tools. Codex and Claude Code support the browser tools; other local stdio MCP clients can use the generated connection paths. Codex and Claude Code conversations created in MyChrome support live text and direct replies in the native window. Existing external Codex conversations require a supported integration and associated thread. Existing external Claude Code conversations cannot be associated; continue them in Claude Code.
+
+To start a separate conversation in the App, click **新对话 (New conversation)** and choose an installed, logged-in Codex or Claude Code CLI, an available model, supported reasoning effort and a working directory. Model choices come from the selected CLI; the first task is optional. [Conversation center](../conversation-center.md).
 
 ## Can it use my existing login?
 

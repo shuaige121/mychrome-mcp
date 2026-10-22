@@ -12,7 +12,9 @@ MyChrome connects Codex, Claude Code and other local MCP clients to the Google C
 
 Choose typing or paste and adjust the pace of typing, mouse movement and scrolling. Optional experimental habit sampling fits timing statistics from three minutes of your keyboard and mouse use for later input. Double Esc returns control whenever you need it.
 
-Start with the source installer, connect your client and return to the page where you want help. MyChrome is open source under MIT. It requires macOS 13+, Google Chrome, supported Node.js and Xcode Command Line Tools. Claude browser tools are supported; live Claude text and direct replies in the native window are not available.
+Start with the source installer, connect your client and return to the page where you want help. MyChrome is open source under MIT. It requires macOS 13+, Google Chrome, supported Node.js and Xcode Command Line Tools. Codex and Claude Code conversations created in the App support live text and direct replies. Existing external Claude Code conversations cannot be associated; continue them in Claude Code.
+
+Click **新对话 (New conversation)** to choose an installed, logged-in Codex or Claude Code CLI, an available model, supported reasoning effort and a working directory. Model choices come from that CLI; the first task is optional.
 
 ## 中文简介
 
@@ -22,7 +24,9 @@ Start with the source installer, connect your client and return to the page wher
 
 输入可以选逐字或粘贴，打字、鼠标移动和滚动的节奏都能调整。还可自选采样三分钟键鼠节奏，拟合后用于后续输入；这项习惯采样目前是实验功能。需要立即收回控制时，快速连按两次 Esc。
 
-项目采用 MIT License，支持 Apple Silicon Mac、macOS 13+，需要 Google Chrome、受支持的 Node.js 和 Xcode Command Line Tools。完成源码安装和客户端连接后，回到需要帮忙的页面即可。Claude 浏览器工具可用；原生窗口暂不支持 Claude 实时文字及直接回复。
+项目采用 MIT License，支持 Apple Silicon Mac、macOS 13+，需要 Google Chrome、受支持的 Node.js 和 Xcode Command Line Tools。完成源码安装和客户端连接后，回到需要帮忙的页面即可。通过 App 新建的 Codex 和 Claude Code 对话均支持实时文字及直接回复；外部已有的 Claude Code 对话仍不能关联，请在原客户端继续。
+
+点击「新对话」，选择已安装并登录的 Codex 或 Claude Code CLI，再选择可用模型、支持的思考强度和工作目录。模型选项由本机 CLI 返回，第一条任务可以留空。
 
 ## Example requests / 需求示例
 

@@ -429,6 +429,10 @@ struct ServerInfo: Identifiable {
     var conversationTitle: String? = nil
     var conversationProvider: String? = nil
     var conversationStatus: String? = nil
+    var managedSession = false
+    var model: String? = nil
+    var effort: String? = nil
+    var cwd: String? = nil
 }
 /// A session's setup check (src/doctor.js runChecks, run in that session's own app).
 struct SetupChecks {
@@ -466,7 +470,9 @@ func liveServers(serverPids: Set<Int32>? = nil, psAt: Double = 0) -> [ServerInfo
             conversationPending: (j["conversationPending"] as? NSNumber)?.intValue ?? 0,
             conversationRequestKey: j["conversationRequestKey"] as? String,
             conversationTitle: j["conversationTitle"] as? String, conversationProvider: j["conversationProvider"] as? String,
-            conversationStatus: j["conversationStatus"] as? String))
+            conversationStatus: j["conversationStatus"] as? String,
+            managedSession: j["managedSession"] as? Bool ?? false,
+            model: j["model"] as? String, effort: j["effort"] as? String, cwd: j["cwd"] as? String))
     }
     return out.sorted { $0.startedAt < $1.startedAt }
 }
@@ -526,8 +532,11 @@ func nodeScript<S: StringProtocol>(_ cmd: S) -> String? {
     return realPath(w[i])
 }
 
-/// From ps: every process that runs an MCP server (any checkout: `…/src/index.js` or the `mychrome-mcp` command,
+/// From ps: every process that runs an MCP server or managed session worker (any checkout),
 /// not a doctor run nor a hot-swap launcher's look at new code), and those of this checkout. nil when ps could not run.
+func isManagedSessionCommand<S: StringProtocol>(_ cmd: S) -> Bool {
+    nodeScript(cmd)?.hasSuffix("/src/session-worker.js") == true
+}
 func serverProcesses() -> (all: Set<Int32>, here: Set<Int32>, parent: [Int32: Int32])? {
     guard let r = runQuick("/bin/ps", ["-axo", "pid=,ppid=,command="]) else { return nil }
     let script = ROOT_DIR + "/src/index.js"
@@ -538,7 +547,7 @@ func serverProcesses() -> (all: Set<Int32>, here: Set<Int32>, parent: [Int32: In
         let rest = t[sp1...].drop(while: { $0 == " " })
         guard let sp2 = rest.firstIndex(of: " "), let ppid = Int32(rest[..<sp2]) else { continue }
         let cmd = rest[sp2...]
-        guard (cmd.contains("src/index.js") || cmd.contains("mychrome-mcp")), !cmd.contains(" doctor"), !cmd.contains(" --probe"),
+        guard (cmd.contains("src/index.js") || cmd.contains("mychrome-mcp") || isManagedSessionCommand(cmd)), !cmd.contains(" doctor"), !cmd.contains(" --probe"),
               !cmd.contains(" restart-all") else { continue }
         all.insert(pid)
         parent[pid] = ppid
@@ -584,7 +593,7 @@ func failTitle(_ c: Check) -> String {
 /// The freshest check of each app the sessions run in (one session per app answers a request).
 func checksByApp(_ servers: [ServerInfo]) -> [SetupChecks] {
     var best: [String: SetupChecks] = [:]
-    for s in servers { if let c = s.checks { let k = c.app ?? "?"; if best[k].map({ $0.at < c.at }) ?? true { best[k] = c } } }
+    for s in servers where !s.managedSession { if let c = s.checks { let k = c.app ?? "?"; if best[k].map({ $0.at < c.at }) ?? true { best[k] = c } } }
     return best.values.sorted { ($0.app ?? "") < ($1.app ?? "") }
 }
 
@@ -647,6 +656,8 @@ func failureText(_ code: String?) -> String {
 final class Model: ObservableObject {
     let routines = RoutineModel()
     let onboarding = OnboardingModel()
+    let newSession = NewSessionModel()
+    @Published var newSessionPresented = false
     @Published var workspaceDestination = "conversations"
     @Published var settingsError: String? = nil
     private let settingsWriteQueue = DispatchQueue(label: "work.mychrome.settings-save", qos: .userInitiated)
@@ -664,6 +675,10 @@ final class Model: ObservableObject {
     @Published var deliveryNotes: [String: String] = [:]
     @Published var deliveryStates: [String: String] = [:]
     @Published var sendingTo = Set<String>()
+    @Published var interruptingConversations = Set<String>()
+    @Published var generationNotes: [String: String] = [:]
+    var initializedNewConversations = Set<String>()
+    var localConversationTitles: [String: String] = [:]
     @Published var gotoNotes: [Int32: String] = [:]
     var openConversations: ((Int32?) -> Void)?
     var openOnboarding: (() -> Void)?
@@ -862,8 +877,8 @@ final class Model: ObservableObject {
     func refreshPanelData() {
         let st = Settings.read()
         if st != settings { settings = st }
-        var sv = liveServers(serverPids: serverPids?.all, psAt: psAt)
-        for i in sv.indices where sameRoot(sv[i].root) {
+        var sv = namedConversations(liveServers(serverPids: serverPids?.all, psAt: psAt))
+        for i in sv.indices where !sv[i].managedSession && sameRoot(sv[i].root) {
             if let a = sv[i].srcHash, let b = currentHash { sv[i].needsRestart = a != b }
         }
         servers = sv
@@ -877,7 +892,7 @@ final class Model: ObservableObject {
         if let at = restartPressedAt, (job.map { $0.startedAt >= at - 5000 } ?? false) || now - at > 15_000 { restartPressedAt = nil }
         if let at = checkRequestedAt, checksByApp(sv).contains(where: { $0.at >= at }) || now - at > 30_000 { checkRequestedAt = nil }
         // A session with no result (it skipped its own check, the one it relied on is gone): ask (Codex r13 r4 A1).
-        if live, !settings.paused, checkRequestedAt == nil, sv.contains(where: { $0.checks == nil && now - $0.startedAt > 20_000 }) { requestChecks(force: true) }
+        if live, !settings.paused, checkRequestedAt == nil, sv.contains(where: { !$0.managedSession && $0.checks == nil && now - $0.startedAt > 20_000 }) { requestChecks(force: true) }
         let attrs = [ACTIVITY_FILE, ACTIVITY_OLD].map { try? FileManager.default.attributesOfItem(atPath: $0) }
         let stamp = (attrs.compactMap { ($0?[.modificationDate] as? Date)?.timeIntervalSince1970 }.max() ?? -1,
                      attrs.compactMap { ($0?[.size] as? NSNumber)?.intValue }.reduce(0, +))
@@ -932,7 +947,7 @@ final class Model: ObservableObject {
     /// Sessions on old code that do not update themselves (「需要重启」 and the older ones without a presence file),
     /// one per session as restart-all counts them: servers with the same parent are one (Codex r15 restart r1 B10).
     var staleCount: Int {
-        let pids = servers.filter { $0.needsRestart == true && $0.launcher == nil }.map { $0.id } + legacy
+        let pids = servers.filter { !$0.managedSession && $0.needsRestart == true && $0.launcher == nil }.map { $0.id } + legacy
         return Set(pids.map { serverPids?.parent[$0] ?? -$0 }).count
     }
     var restartRunning: Bool { restartPressedAt != nil || restartJob?.running == true }
@@ -974,7 +989,7 @@ final class Model: ObservableObject {
         // permission changes only when the owner changes it, and then they press 「重新检查」 (Fable r13 r4 B3).
         let chromeGone = appChecks.flatMap { $0.items }.contains { !$0.ok && !$0.skipped && ($0.id == "chrome_running" || $0.id == "chrome_installed") }
         if !force && !chromeGone && now - newest < 5 * 60_000 { return }
-        guard !servers.isEmpty else { return }
+        guard servers.contains(where: { !$0.managedSession }) else { return }
         let at = nowMs()
         try? String(Int(at)).write(toFile: CHECK_REQUEST, atomically: true, encoding: .utf8)
         checkRequestedAt = at
@@ -1084,6 +1099,7 @@ final class Model: ObservableObject {
     /// Both menu Quit and process signals must cancel an in-flight recording before leaving.
     func prepareForExit() {
         onboarding.stop()
+        newSession.stop()
         if let recorder, recorder.isRunning {
             cancelling = true
             recorder.terminate()
@@ -1436,7 +1452,7 @@ struct Panel: View {
         if model.settings.paused { return ("AI 操作已暂停", hex(0xEA6A0C)) }
         if !model.tasks.isEmpty || model.servers.contains(where: { $0.busy != nil }) { return ("AI 正在操作", hex(0x3B7BFF)) }
         if let p = model.setupProblem { return (p, ALERT) }
-        if !model.settings.paused, !model.servers.isEmpty, model.appChecks.isEmpty { return ("正在检查权限", SUBTLE) }
+        if !model.settings.paused, model.servers.contains(where: { !$0.managedSession }), model.appChecks.isEmpty { return ("正在检查权限", SUBTLE) }
         if model.servers.isEmpty { return ("没有 AI 连接", SUBTLE) }
         return ("一切就绪", hex(0x16A34A))
     }
@@ -1546,12 +1562,12 @@ struct Panel: View {
                     Text(sessionLine(s)).font(.system(size: 11)).foregroundStyle(SUBTLE).lineLimit(1)
                 }
                 Spacer(minLength: 6)
-                if s.needsRestart == true && s.launcher != nil {
+                if !s.managedSession && s.needsRestart == true && s.launcher != nil {
                     Text("会自动更新").font(.system(size: 11, weight: .semibold)).foregroundStyle(SUBTLE)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(SUBTLE.opacity(0.12)))
                         .help("MyChrome 更新过。这个会话空下来（没有操作进行中）后会自己换成新版，不用重启，它开的标签也保留。")
-                } else if s.needsRestart == true {
+                } else if !s.managedSession && s.needsRestart == true {
                     Text("需要重启").font(.system(size: 11, weight: .semibold)).foregroundStyle(ALERT)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(ALERT.opacity(0.1)))
@@ -1637,7 +1653,7 @@ struct Panel: View {
             Text("AI 操作已暂停，暂停期间不检查；恢复后会自动再查一次。").font(.system(size: 12)).foregroundStyle(SUBTLE)
                 .fixedSize(horizontal: false, vertical: true)
         } else if apps.isEmpty {
-            Text(model.servers.isEmpty ? "AI 连上 MyChrome 后，会在这里检查权限。" : "正在检查权限…")
+            Text(model.servers.contains(where: { !$0.managedSession }) ? "正在检查权限…" : "浏览器连接启用后，会在这里检查权限。")
                 .font(.system(size: 12)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
         }
         ForEach(Array(apps.enumerated()), id: \.offset) { i, a in
@@ -1667,7 +1683,7 @@ struct Panel: View {
         HStack {
             if let at = apps.map({ $0.at }).max() { Text("检查于 " + whenText(at, now: model.now)).font(.system(size: 11)).foregroundStyle(SUBTLE) }
             Spacer()
-            if !model.servers.isEmpty && !model.settings.paused {
+            if model.servers.contains(where: { !$0.managedSession }) && !model.settings.paused {
                 PlainButton(text: model.checkRequestedAt != nil ? "正在检查…" : "重新检查") { model.requestChecks(force: true) }
             }
         }
@@ -1971,7 +1987,7 @@ final class Controller: NSObject, NSWindowDelegate, NSApplicationDelegate {
             model.selectConversation(selected)
         } else if model.chosenServer == nil,
                   let selected = model.servers.first(where: { s in model.attentionTasks.contains { $0.id == s.id && $0.alert != nil } })
-                    ?? model.servers.first(where: { $0.guiInstance != nil && $0.conversationProvider == "Codex" && $0.conversationThread != nil })
+                    ?? model.servers.first(where: { $0.guiInstance != nil && ($0.managedSession || $0.conversationProvider == "Codex") && $0.conversationThread != nil })
                     ?? model.servers.first(where: { $0.guiInstance != nil && $0.conversationProvider == "Codex" })
                     ?? model.servers.first {
             model.selectConversation(selected)
@@ -2011,7 +2027,7 @@ final class Controller: NSObject, NSWindowDelegate, NSApplicationDelegate {
         if notification.object as? NSWindow === onboardingWindow { model.onboarding.dismiss() }
         if notification.object as? NSWindow === conversationWindow { model.conversationVisible = false }
     }
-    func applicationWillTerminate(_ notification: Notification) { model.onboarding.stop() }
+    func applicationWillTerminate(_ notification: Notification) { model.onboarding.stop(); model.newSession.stop() }
     func showNewAlert() {
         let current = Set(model.attentionTasks.compactMap { task in task.alert.map { _ in "\(task.id):\(task.alertToken ?? task.alert ?? "")" } })
         seenAlerts.formIntersection(current)
@@ -2094,7 +2110,7 @@ enum CBMenu {
             let o: [String: Any] = [
                 "root": ROOT_DIR, "srcHash": hash ?? NSNull(),
                 "servers": sv.map { s -> [String: Any] in
-                    let restart: Any = sameRoot(s.root) ? ((s.srcHash).flatMap { a in hash.map { a != $0 } } ?? NSNull()) as Any : NSNull()
+                    let restart: Any = !s.managedSession && sameRoot(s.root) ? ((s.srcHash).flatMap { a in hash.map { a != $0 } } ?? NSNull()) as Any : NSNull()
                     return ["pid": Int(s.id), "who": s.who, "busy": s.busy ?? NSNull(), "needsRestart": restart, "envLocked": s.envLocked,
                             "launcher": s.launcher.map { Int($0) } ?? NSNull(),
                             "checksApp": s.checks?.app ?? NSNull()]

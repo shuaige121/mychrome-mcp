@@ -46,7 +46,7 @@
     <script src="./site.js" defer></script>
     <meta
       property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -56,7 +56,7 @@
     />
     <meta
       name="twitter:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
     />
     <meta
       name="twitter:image:alt"
@@ -262,15 +262,18 @@ bash scripts/setup.sh</code></pre>
                   <td>Codex</td>
                   <td>Supported</td>
                   <td>
-                    Requires a supported local Codex integration and an
-                    associated thread
+                    Supported for App-created conversations. Existing external
+                    conversations require a supported local integration and an
+                    associated thread.
                   </td>
                 </tr>
                 <tr>
                   <td>Claude Code</td>
                   <td>Supported</td>
                   <td>
-                    Not available; continue the conversation in Claude Code
+                    Supported for App-created conversations. Existing external
+                    Claude Code conversations cannot be associated; continue
+                    them in Claude Code.
                   </td>
                 </tr>
                 <tr>
@@ -282,13 +285,20 @@ bash scripts/setup.sh</code></pre>
             </table>
           </div>
           <p>
+            To start a separate conversation in MyChrome, click
+            <strong>新对话 (New conversation)</strong>. Choose an installed,
+            logged-in Codex or Claude Code CLI, an available model, supported
+            reasoning effort and a working directory. Model choices come from
+            the selected CLI; the first task is optional.
+          </p>
+          <p>
             An empty conversation view does not by itself mean the browser tools
             are disconnected. See the
             <a
               href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/conversation-center.md"
               >conversation center guide</a
             >
-            for Codex thread association.
+            for App-created conversations and external Codex thread association.
           </p>
           <h2 id="start-your-task">
             3. Return to your conversation and continue the task
@@ -453,11 +463,13 @@ bash scripts/setup.sh</code></pre>
                 </tr>
                 <tr>
                   <td>
-                    Claude tools work but the MyChrome conversation is empty
+                    External Claude tools work but the MyChrome conversation is empty
                   </td>
                   <td>
-                    Use Claude Code for the conversation. Live text and direct
-                    replies in MyChrome are not supported for Claude.
+                    Continue the existing conversation in Claude Code; it cannot
+                    be associated here. Use <strong>新对话 (New conversation)</strong>
+                    to create a separate Claude Code conversation with live text
+                    and replies in MyChrome.
                   </td>
                 </tr>
                 <tr>

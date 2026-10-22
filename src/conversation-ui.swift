@@ -4,7 +4,7 @@ import AppKit
 /// A live view of one explicitly bound AI thread. No rollout files or terminal scrollback.
 struct ConversationState {
     let threadId: String, status: String, reason: String, threadStatus: String
-    let canSend: Bool
+    let canSend: Bool, sending: Bool
     let entries: [ConversationEntry]
     let pending: [[String: Any]]
     init(_ j: [String: Any]) {
@@ -13,6 +13,7 @@ struct ConversationState {
         reason = j["reason"] as? String ?? ""
         threadStatus = j["threadStatus"] as? String ?? ""
         canSend = j["canSend"] as? Bool ?? false
+        sending = j["sending"] as? Bool ?? false
         entries = (j["entries"] as? [[String: Any]] ?? []).compactMap { e in
             guard let id = e["id"] as? String, let text = e["text"] as? String else { return nil }
             return ConversationEntry(id: id, text: text)
@@ -43,6 +44,23 @@ struct ConversationState {
 }
 struct ConversationEntry: Identifiable { let id: String, text: String }
 
+func managedConversationFailure(_ state: ConversationState?) -> String? {
+    guard let state else { return nil }
+    switch state.reason {
+    case "turn_failed", "claude_turn_failed": return "本轮生成失败，已显示的内容和草稿仍保留。请重试。"
+    case "claude_delivery_unconfirmed": return "尚未确认客户端是否收到消息。请先检查送达状态，草稿仍保留。"
+    case "message_too_large": return "本轮内容超出显示限制，部分内容未能显示。"
+    case "request_failed", "request_timeout": return "客户端请求未完成。请查看当前进展后重试，草稿仍保留。"
+    default: return state.status == "error" ? "客户端发生错误。请检查客户端连接后重试，草稿仍保留。" : nil
+    }
+}
+func canInterruptConversation(_ server: ServerInfo, state: ConversationState?, sending: Bool) -> Bool {
+    guard server.managedSession, server.conversationStatus != "disconnected" else { return false }
+    let current = state.flatMap { $0.threadId == server.conversationThread ? $0 : nil }
+    return (current?.status ?? server.conversationStatus) == "connected" &&
+        (sending || current?.sending == true || current?.threadStatus == "active")
+}
+
 /// Presentation uses verified state/receipt metadata, never the wording of an AI message.
 struct ConversationPresentation {
     let kind: String, label: String, symbol: String, tone: String
@@ -61,13 +79,16 @@ func conversationPresentation(_ server: ServerInfo, task: AgentTask? = nil, stat
     if (current?.pending.count ?? server.conversationPending) > 0 {
         return ConversationPresentation(kind: "waiting", label: "等待你回复", symbol: "hand.raised.fill", tone: "orange")
     }
+    if server.managedSession, managedConversationFailure(current) != nil {
+        return ConversationPresentation(kind: "error", label: "本轮遇到问题", symbol: "exclamationmark.triangle.fill", tone: "red")
+    }
     if server.busy != nil || (status == "connected" && current?.threadStatus == "active") {
         return ConversationPresentation(kind: "running", label: server.busy != nil ? "正在操作网页" : "正在运行", symbol: "arrow.triangle.2.circlepath", tone: "blue")
     }
     if status == "connecting" {
         return ConversationPresentation(kind: "connecting", label: "正在连接", symbol: "ellipsis.circle", tone: "gray")
     }
-    if current?.reason == "unsupported_client" || (server.conversationProvider != nil && server.conversationProvider != "Codex") {
+    if current?.reason == "unsupported_client" || (!server.managedSession && server.conversationProvider != nil && server.conversationProvider != "Codex") {
         return ConversationPresentation(kind: "unsupported", label: "暂不支持实时对话", symbol: "bubble.left.and.exclamationmark.bubble.right", tone: "gray")
     }
     if server.guiInstance == nil {
@@ -173,6 +194,28 @@ func callConversation(_ server: ServerInfo, request: [String: Any], done: @escap
 
 extension Model {
     var chosenServer: ServerInfo? { servers.first { $0.id == selectedConversation } }
+    func seedCreatedSessionDraft(_ server: ServerInfo, prompt: String) -> Bool {
+        let key = conversationKey(server)
+        guard initializedNewConversations.insert(key).inserted else { return false }
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        drafts[key] = prompt
+        return true
+    }
+    func namedConversations(_ values: [ServerInfo]) -> [ServerInfo] {
+        values.map { server in
+            var copy = server
+            if server.managedSession, let title = localConversationTitles[conversationKey(server)] { copy.conversationTitle = title }
+            return copy
+        }
+    }
+    func rememberConversationTitle(_ server: ServerInfo, text: String) {
+        let key = conversationKey(server)
+        guard server.managedSession, localConversationTitles[key] == nil else { return }
+        let words = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard !words.isEmpty else { return }
+        localConversationTitles[key] = String(words.prefix(48)) + (words.count > 48 ? "…" : "")
+        servers = namedConversations(servers)
+    }
     func selectConversation(_ server: ServerInfo) {
         guard selectedConversation != server.id else { return }
         selectedConversation = server.id
@@ -248,7 +291,7 @@ extension Model {
             guard let binding = server.conversationBinding, let thread = server.conversationThread else { return }
             payload = ["nonce": UUID().uuidString, "bindingId": binding, "threadId": thread]
             if let answers { payload["answers"] = answers; payload["requestId"] = requestId }
-            else { payload["text"] = text }
+            else { payload["text"] = text; generationNotes.removeValue(forKey: key) }
         }
         unconfirmedSends[key] = payload
         sendingTo.insert(key)
@@ -262,7 +305,10 @@ extension Model {
             if status == "accepted" {
                 self.deliveryStates[key] = "accepted"
                 self.deliveryNotes[key] = "已送达这个会话"
-                if let sentText = payload["text"] as? String, self.drafts[key] == sentText { self.drafts[key] = "" }
+                if let sentText = payload["text"] as? String {
+                    self.rememberConversationTitle(server, text: sentText)
+                    if self.drafts[key] == sentText { self.drafts[key] = "" }
+                }
                 self.unconfirmedSends.removeValue(forKey: key)
             } else if status == "resolved" {
                 self.deliveryStates[key] = "resolved"
@@ -280,6 +326,18 @@ extension Model {
                 self.deliveryStates[key] = "unknown"
                 self.deliveryNotes[key] = "尚未确认送达，请先查看会话状态；内容已保留，不会自动重发。"
             }
+            self.refreshConversation()
+        }
+    }
+    func interruptConversation(_ server: ServerInfo) {
+        let key = conversationKey(server)
+        guard live, server.managedSession, !interruptingConversations.contains(key) else { return }
+        interruptingConversations.insert(key); generationNotes[key] = "正在请求停止生成…"
+        callConversation(server, request: ["op": "interrupt"]) { [weak self] response in
+            guard let self else { return }
+            self.interruptingConversations.remove(key)
+            self.generationNotes[key] = response["ok"] as? Bool == true
+                ? "已请求停止生成" : "停止请求未能确认，请查看最新进展后重试。"
             self.refreshConversation()
         }
     }
@@ -305,6 +363,8 @@ struct MyChromeWorkspace: View {
         VStack(spacing: 0) {
             HStack(spacing: 18) {
                 Label("MyChrome", systemImage: "bubble.left.and.bubble.right").font(.headline)
+                Button { model.showNewSession() } label: { Label("新对话", systemImage: "plus.bubble") }
+                    .buttonStyle(.borderedProminent).keyboardShortcut("n", modifiers: .command).help("新对话（⌘N）")
                 Spacer()
                 Picker("页面", selection: $model.workspaceDestination) {
                     Text("对话").tag("conversations")
@@ -337,6 +397,7 @@ struct MyChromeWorkspace: View {
             }
         }.frame(minWidth: 840, minHeight: 580)
             .background(Color(nsColor: .windowBackgroundColor))
+            .sheet(isPresented: $model.newSessionPresented) { NewSessionSheet(state: model.newSession, model: model) }
     }
 }
 
@@ -471,7 +532,7 @@ struct ConversationCenter: View {
         return text.isEmpty || (conversationName(server, task: model.tasks.first { $0.id == server.id }) + " " + conversationClient(server)).localizedCaseInsensitiveContains(text)
     }
     var canAssociate: ServerInfo? {
-        otherConnections.first { $0.guiInstance != nil && $0.conversationProvider == "Codex" }
+        otherConnections.first { !$0.managedSession && $0.guiInstance != nil && $0.conversationProvider == "Codex" }
     }
     var body: some View {
         HStack(spacing: 0) {
@@ -497,7 +558,7 @@ struct ConversationCenter: View {
                                 showOtherConnections = true
                                 model.selectConversation(server)
                                 model.discoverConversation(server)
-                            } label: { Label("添加对话", systemImage: "plus.bubble") }
+                            } label: { Label("关联已有对话", systemImage: "link") }
                                 .buttonStyle(.plain).foregroundStyle(Color.accentColor)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                         }
@@ -526,9 +587,11 @@ struct ConversationCenter: View {
             } else {
                 VStack(spacing: 14) {
                     Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 38)).foregroundStyle(.secondary)
-                    Text(model.servers.isEmpty ? "还没有 AI 会话连接" : "选择一个会话").font(.title2.bold())
-                    Text("连接 MyChrome 的 AI 会出现在左侧。\n在这里查看进展、回复，或前往需要你处理的页面。")
+                    Text(model.servers.isEmpty ? "开始你的第一个对话" : "选择一个会话").font(.title2.bold())
+                    Text("新建 Codex 或 Claude Code 对话，直接在这里聊天。\n已有连接会显示在左侧，也可以关联原来的 AI 对话。")
                         .multilineTextAlignment(.center).foregroundStyle(.secondary)
+                    Button { model.showNewSession() } label: { Label("新对话", systemImage: "plus.bubble") }
+                        .buttonStyle(.borderedProminent)
                     Button(onboardingText("打开入门引导", "Open getting started")) { model.openOnboarding?() }
                         .buttonStyle(.borderedProminent)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -576,7 +639,7 @@ struct ConversationCenter: View {
                 HStack(alignment: .top) {
                     Text(conversationName(server, task: task)).font(.title2.bold()).textSelection(.enabled)
                     Spacer()
-                    if server.guiInstance != nil && server.conversationProvider == "Codex" {
+                    if !server.managedSession && server.guiInstance != nil && server.conversationProvider == "Codex" {
                         Button(server.conversationThread == nil ? "关联对话" : "更换对话") { model.discoverConversation(server) }
                             .disabled(model.associating.contains(key) || model.sendingTo.contains(key))
                     }
@@ -585,7 +648,27 @@ struct ConversationCenter: View {
                     Text(conversationClient(server)).foregroundStyle(.secondary)
                         .help(server.who + " · 连接 \(server.id)")
                     ConversationStatusLabel(presentation: conversationPresentation(server, task: task, state: state))
+                    Spacer()
+                    if server.managedSession {
+                        Button(model.interruptingConversations.contains(key) ? "正在停止…" : "停止生成") { model.interruptConversation(server) }
+                            .disabled(!canInterruptConversation(server, state: state, sending: model.sendingTo.contains(key)) || model.interruptingConversations.contains(key))
+                    }
                 }.font(.caption)
+                if server.managedSession {
+                    HStack(spacing: 12) {
+                        Text(server.model.map { "模型：" + $0 } ?? "模型信息待确认")
+                        Text(server.effort.map { "思考强度：" + sessionEffortName($0) } ?? "思考强度：未提供")
+                    }.font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    if let directory = server.cwd {
+                        Label(sessionDirectoryName(directory), systemImage: "folder").font(.caption).foregroundStyle(.secondary)
+                            .help(sessionDirectoryPath(directory))
+                    }
+                    if let note = model.generationNotes[key] { Text(note).font(.caption).foregroundStyle(.secondary) }
+                    if let failure = managedConversationFailure(state) {
+                        Label(failure, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 if let note = model.associationNotes[key] { Text(note).font(.caption).foregroundStyle(.secondary) }
                 if let choices = model.availableConversations[key], !choices.isEmpty {
                     ScrollView {

@@ -49,7 +49,7 @@
     <script src="./site.js" defer></script>
     <meta
       property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -59,7 +59,7 @@
     />
     <meta
       name="twitter:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
     />
     <meta
       name="twitter:image:alt"
@@ -104,10 +104,19 @@
             Apple Silicon Macs running macOS 13+ with Google Chrome, supported
             Node.js and Xcode Command Line Tools. Codex and Claude Code support
             the browser tools; other local stdio MCP clients can use the
-            generated connection paths. The native conversation text/reply
-            integration requires supported Codex integration and an associated
-            thread. Claude live text and direct replies are not available in the
-            MyChrome window.
+            generated connection paths. Codex and Claude Code conversations
+            created in MyChrome support live text and direct replies in the
+            native window. Existing external Codex conversations require a
+            supported integration and associated thread. Existing external
+            Claude Code conversations cannot be associated; continue them in
+            Claude Code.
+          </p>
+          <p>
+            Click <strong>新对话 (New conversation)</strong> to choose an
+            installed, logged-in Codex or Claude Code CLI, an available model,
+            supported reasoning effort and a working directory. Model choices
+            come from the selected CLI. The first task is optional, and this
+            creates a separate conversation.
           </p>
           <h2 id="can-it-use-my-existing-login">
             Can it use my existing login?

@@ -31,6 +31,8 @@ writeFileSync(swift, `import Foundation
 struct ServerInfo {
     let id: Int32
     let guiInstance: String?, conversationThread: String?, conversationBinding: String?
+    var managedSession = false
+    var conversationTitle: String?
 }
 struct ConversationEntry: Identifiable { let id: String, text: String }
 ${block('struct ConversationState')}
@@ -51,10 +53,16 @@ final class Model {
     var drafts: [String: String] = [:], deliveryNotes: [String: String] = [:]
     var deliveryStates: [String: String] = [:]
     var unconfirmedSends: [String: [String: Any]] = [:], sendingTo = Set<String>()
+    var interruptingConversations = Set<String>(), generationNotes: [String: String] = [:]
+    var initializedNewConversations = Set<String>(), localConversationTitles: [String: String] = [:]
     var chosenServer: ServerInfo? { servers.first { $0.id == selectedConversation } }
     ${block('    func selectConversation(')}
+    ${block('    func seedCreatedSessionDraft(')}
+    ${block('    func namedConversations(')}
+    ${block('    func rememberConversationTitle(')}
     ${block('    func refreshConversation()')}
     ${block('    func sendConversation(')}
+    ${block('    func interruptConversation(')}
 }
 let a = ServerInfo(id: 101, guiInstance: "gui-a", conversationThread: "thread-a", conversationBinding: "binding-a")
 let b = ServerInfo(id: 102, guiInstance: "gui-b", conversationThread: "thread-b", conversationBinding: "binding-b")
@@ -105,6 +113,48 @@ case "stale-snapshot":
     precondition(calls.count == 2 && calls[1].server.id == b.id)
     calls[1].done(["ok": true, "snapshot": ["bindingId": "binding-b", "threadId": "thread-b", "status": "connected"]])
     precondition(model.loadedConversationKey == bk && model.conversation?.threadId == "thread-b")
+case "interrupt-managed":
+    model.interruptConversation(a)
+    precondition(calls.isEmpty, "An external connection is not a managed generation")
+    var managed = b; managed.managedSession = true
+    model.interruptConversation(managed); model.interruptConversation(managed)
+    precondition(calls.count == 1 && calls[0].server.id == b.id && calls[0].request["op"] as? String == "interrupt")
+    precondition(calls[0].request["payload"] == nil && model.interruptingConversations.contains(bk))
+    model.selectConversation(a); calls[0].done(["ok": true])
+    precondition(!model.interruptingConversations.contains(bk) && model.generationNotes[bk] == "已请求停止生成")
+    precondition(model.generationNotes[ak] == nil, "An interrupt receipt belongs only to its original session")
+case "created-first-task":
+    var managed = a; managed.managedSession = true
+    model.servers = [managed, b]
+    let text = "First task with exact\\nbytes"
+    if model.seedCreatedSessionDraft(managed, prompt: text) { model.sendConversation(managed) }
+    precondition(calls.count == 1 && payload(calls[0])["text"] as? String == text)
+    calls[0].done(["ok": true, "result": ["status": "rejected"]])
+    precondition(model.drafts[ak] == text && model.localConversationTitles[ak] == nil)
+    if model.seedCreatedSessionDraft(managed, prompt: text) { model.sendConversation(managed) }
+    precondition(calls.count == 1, "Reopening the same receipt must not send the initial task twice")
+    model.sendConversation(managed); accept(calls[1])
+    precondition(model.drafts[ak] == "" && model.localConversationTitles[ak] == "First task with exact bytes")
+    precondition(model.servers[0].conversationTitle == "First task with exact bytes")
+    precondition(model.namedConversations([managed])[0].conversationTitle == "First task with exact bytes")
+    model.drafts[ak] = "Second title"; model.sendConversation(managed); accept(calls[2])
+    precondition(model.servers[0].conversationTitle == "First task with exact bytes", "The first accepted task names the session")
+    precondition(model.drafts[bk] == nil && model.localConversationTitles[bk] == nil)
+case "created-empty":
+    precondition(!model.seedCreatedSessionDraft(a, prompt: "  \\n"))
+    precondition(!model.seedCreatedSessionDraft(a, prompt: "Later reentry"))
+    precondition(model.drafts[ak] == nil && calls.isEmpty)
+case "new-send-clears-stop-note":
+    model.generationNotes[ak] = "已请求停止生成"; model.generationNotes[bk] = "Other session stop"
+    model.sendConversation(a, answers: ["approval": ["answers": ["Allow once"]]], requestId: "approval-1")
+    precondition(model.generationNotes[ak] == "已请求停止生成", "Answering a pending question is not a new generation")
+    accept(calls[0]); model.drafts[ak] = "Continue this conversation"; model.sendConversation(a)
+    precondition(model.generationNotes[ak] == nil && model.generationNotes[bk] == "Other session stop")
+    model.generationNotes[ak] = "A newer stop request"
+    calls[1].done(["ok": true, "result": ["status": "unknown"]])
+    model.sendConversation(a, checkOnly: true)
+    precondition(calls.count == 3 && calls[2].request["op"] as? String == "delivery")
+    precondition(model.generationNotes[ak] == "A newer stop request", "Checking a prior delivery must preserve current generation notes")
 default: fatalError("Unknown synthetic scenario")
 }
 print("ok")
@@ -117,6 +167,10 @@ for (const [scenario, description] of [
   ['reconnect', 'same-thread reconnect retains the old draft with an explicit recovery hint, without sending'],
   ['unknown', 'unknown delivery blocks resend and checks only the original nonce'],
   ['stale-snapshot', 'a late snapshot cannot repaint another selected source'],
+  ['interrupt-managed', 'only managed generations receive one interrupt and its receipt stays with that session'],
+  ['created-first-task', 'a created first task uses the delivery ledger once and keeps rejection drafts with an in-memory accepted title'],
+  ['created-empty', 'creating an empty conversation sends no message and receipt reentry cannot inject one'],
+  ['new-send-clears-stop-note', 'only a new ordinary send clears that conversation stop note'],
 ]) {
   test(description, () => {
     assert.equal(execFileSync(binary, [scenario], { encoding: 'utf8', timeout: 5000 }).trim(), 'ok');

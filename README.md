@@ -52,9 +52,12 @@ Follow the [getting-started guide](docs/getting-started.md) to grant permissions
 |---|---|---|---|
 | Read and operate Chrome | Yes | Yes | Requires stdio MCP support |
 | Hand a page back to you | Yes | Yes | Via the browser tools |
-| Live assistant text and replies in MyChrome | Supported Codex integration and associated thread required | Not available | No adapter provided |
+| Start a new conversation in MyChrome | Supported; model and reasoning effort selection | Supported; model and effort selection | No launcher provided |
+| Show and reply to an existing external conversation | Supported local integration and associated thread required | Existing external sessions are not attachable | No adapter provided |
 
-MyChrome runs on the Mac whose Chrome it controls. Your AI client provides the model and its own account or subscription.
+Click **新对话 (New conversation)** in MyChrome to choose Codex or Claude Code, a model, its supported thinking effort, and a working folder. You can include a first task or open an empty conversation. Live replies, questions and supported approval requests appear in the same window. **停止生成 (Stop generation)** interrupts that conversation. These choices apply to the new session and do not rewrite your client configuration.
+
+MyChrome runs on the Mac whose Chrome it controls. Install and sign in to the chosen CLI first; its account, model access, permissions and existing MCP configuration are used. Closing MyChrome leaves App-created sessions running. Reopen the App to rejoin them while their backend processes are alive; automatic recovery after backend exit is not supported.
 
 The getting-started guide supports English and Chinese; the main workspace currently uses Chinese labels.
 

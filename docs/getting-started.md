@@ -71,11 +71,15 @@ After your client loads the connection, return to your task conversation and ask
 
 | Client | Browser tools | Live conversation text and replies in the MyChrome window |
 |---|---|---|
-| Codex | Supported | Requires a supported local Codex integration and an associated thread |
-| Claude Code | Supported | Not available; continue the conversation in Claude Code |
+| Codex | Supported | App-created sessions work directly; existing external sessions require a supported integration and association |
+| Claude Code | Supported | App-created sessions work directly; existing external sessions remain in Claude Code |
 | Other local stdio MCP client | Connect with the generated paths | No adapter provided |
 
-An empty conversation view does not by itself mean the browser tools are disconnected. See the [conversation center guide](conversation-center.md) for Codex thread association.
+To start from MyChrome, click **新对话 (New conversation)**, choose Codex or Claude Code, and select a model, supported thinking effort, and working folder. The model list comes from the installed CLI. The CLI must already be signed in; MyChrome uses its existing account, permissions and MCP configuration. Model and effort selections apply to this session without changing persistent client settings.
+
+You can enter a first task or create an empty conversation. The App opens the exact new session, where you can send messages, see live assistant text and handle supported questions or approvals. If creating the session is slow, **检查创建结果 (Check creation result)** checks the same request rather than starting another session. A first message whose delivery is uncertain stays in that session's draft and is not automatically resent.
+
+An empty external conversation view does not by itself mean the browser tools are disconnected. Existing Claude Code terminal sessions cannot be attached for live replies. See the [conversation center guide](conversation-center.md) for existing Codex thread association and App-created sessions.
 
 ## 5. Continue with your open page
 
@@ -106,6 +110,7 @@ For a more personal rhythm, **我的操作习惯 (My habits)** offers optional t
 The getting-started guide supports English and Chinese; the main workspace currently uses Chinese labels. Open **对话 (Conversations)** to see your connected conversations.
 
 - **Stop now:** press Esc twice quickly, within 0.8 seconds. This cancels the current agent and returns the pointer and keyboard. A new instruction is required before another takeover.
+- **Stop an App-created conversation:** use **停止生成 (Stop generation)** in its conversation view to interrupt current work. Closing or quitting MyChrome keeps the session running. Reopen the App to rejoin it while its backend process is alive; automatic recovery after backend exit is not supported.
 - **Pause everyone:** after control is returned, use **暂停 AI 操作 (Pause AI actions)** in MyChrome to prevent further input across connections.
 - **Handle a private field:** take over for passwords, verification codes and site challenges you can complete. Tell the assistant explicitly when to continue with the original task.
 - **Reuse a sequence:** open **网站流程 (Website routines)**, inspect suitable recorded steps and save a continuous range. Supply fresh values and select an existing tab for each run. [Routine guide](routines.md).
@@ -122,7 +127,8 @@ During takeover, ordinary physical input is intercepted, so use double Esc inste
 | Existing MyChrome app belongs to another checkout | Keep that installation intact. Continue using its checkout, or use `--app-path` with a new absolute path for a separate installation. |
 | MCP client cannot find Node | Regenerate instructions and use their absolute Node path; desktop apps may have a different PATH. |
 | Codex tool call times out | Apply `tool_timeout_sec = 900` to the existing server entry, reload the client configuration and resume your task conversation. |
-| Claude tools work but the MyChrome conversation is empty | Use Claude Code for the conversation. Live text and direct replies in MyChrome are not supported for Claude. |
+| Existing Claude tools work but the MyChrome conversation is empty | Continue the external conversation in Claude Code. For a separate conversation with live replies in MyChrome, use **新对话 (New conversation)** and select Claude Code. |
+| The chosen client or models cannot be loaded | Install and sign in to that CLI, confirm the working folder is available, then reload the model list. |
 | Chinese or other text is refused in key mode | Choose **直接粘贴 (Paste)** in **操作设置 (Operation settings)**, then retry only after reading the current field. |
 | Page changed or action result is uncertain | Read the current page before retrying. Check whether the original action already took effect. |
 | Login, CAPTCHA or access check | Complete it yourself if the site permits, then decide whether the task can continue. MyChrome does not bypass site challenges. |

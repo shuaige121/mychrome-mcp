@@ -15,7 +15,7 @@ function canonical(value, depth = 0) {
 }
 export const guiSocketPath = (base, pid) => path.join(base, `gui-${pid}.sock`);
 
-export async function startGuiIPC({ base, pid = process.pid, snapshot, send, discover, bind, routines }) {
+export async function startGuiIPC({ base, pid = process.pid, snapshot, send, discover, bind, routines, interrupt }) {
   mkdirSync(base, { recursive: true });
   const socketPath = guiSocketPath(base, pid);
   const instance = randomUUID();
@@ -44,6 +44,9 @@ export async function startGuiIPC({ base, pid = process.pid, snapshot, send, dis
       if (request.instance !== instance) { reply({ ok: false, code: 'session_changed', delivery: 'not_sent' }); return; }
       try {
         if (request.op === 'snapshot') reply({ ok: true, instance, snapshot: snapshot() });
+        else if (request.op === 'interrupt' && typeof interrupt === 'function') {
+          reply({ ok: true, instance, result: await interrupt() });
+        }
         else if (request.op === 'routine' && typeof routines === 'function' && request.payload &&
           typeof request.payload === 'object' && !Array.isArray(request.payload)) {
           reply({ ok: true, instance, result: await routines(request.payload) });

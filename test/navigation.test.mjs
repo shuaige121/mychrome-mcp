@@ -175,7 +175,8 @@ async function registration({ untouched = true, observerFails = false, openFails
       B: { pageScript: async () => '', chromeInfo: async () => target,
         evalInPage: async () => ({ target: { url: initial }, entered: { how: 'enter', filled: true, at: 1005 } }) },
     });
-    vm.runInContext(source.match(/^function blockToken\b.*$/m)[0] + '\n'
+    vm.runInContext(source.match(/^const HANDOFF_NEXT\b.*$/m)[0] + '\n'
+      + source.match(/^function blockToken\b.*$/m)[0] + '\n'
       + functionSource('clearBlock') + '\n' + functionSource('waitForFieldObserved'), context);
     await context.waitForFieldObserved({ tabId: 1, startUrl: initial, field: 1, why: 'test',
       ask: { alertToken: 'current-wait' }, ms: 5000, t0: 1000 }, {
