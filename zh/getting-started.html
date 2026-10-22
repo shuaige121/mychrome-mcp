@@ -43,7 +43,7 @@
     <script src="../site.js" defer></script>
     <meta
       property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -53,7 +53,7 @@
     />
     <meta
       name="twitter:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
     />
     <meta
       name="twitter:image:alt"
@@ -234,12 +234,12 @@ bash scripts/setup.sh</code></pre>
                 <tr>
                   <td>Codex</td>
                   <td>支持</td>
-                  <td>需要支持的本机集成和已关联会话</td>
+                  <td>App 新建对话支持；外部已有对话需要支持的本机集成和已关联会话</td>
                 </tr>
                 <tr>
                   <td>Claude Code</td>
                   <td>支持</td>
-                  <td>暂不支持；继续在 Claude Code 中对话</td>
+                  <td>App 新建对话支持；外部已有的 Claude Code 对话不能关联，请在原客户端继续</td>
                 </tr>
                 <tr>
                   <td>其他本机 stdio MCP 客户端</td>
@@ -250,7 +250,13 @@ bash scripts/setup.sh</code></pre>
             </table>
           </div>
           <p>
-            会话窗口没有文字，不一定表示浏览器工具未连接。Codex 会话关联方法见<a
+            要在 MyChrome 中创建独立对话，点击<strong>新对话</strong>，选择已安装并登录的
+            Codex 或 Claude Code CLI，再选择可用模型、支持的思考强度和工作目录。
+            模型选项由本机 CLI 返回，第一条任务可以留空。
+          </p>
+          <p>
+            会话窗口没有文字，不一定表示浏览器工具未连接。App 新建对话和外部 Codex
+            会话关联方法见<a
               href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/conversation-center.md"
               >会话窗口指南</a
             >。
@@ -377,10 +383,11 @@ bash scripts/setup.sh</code></pre>
                   </td>
                 </tr>
                 <tr>
-                  <td>Claude 工具正常，MyChrome 对话区为空</td>
+                  <td>外部 Claude 工具正常，MyChrome 对话区为空</td>
                   <td>
-                    继续在 Claude Code 对话；MyChrome 暂未提供 Claude
-                    实时文字和直接回复适配器。
+                    外部已有会话不能关联，请继续在 Claude Code 中对话；也可点击
+                    <strong>新对话</strong>建立独立的 Claude Code 对话，在 MyChrome
+                    中查看实时文字和回复。
                   </td>
                 </tr>
                 <tr>

@@ -18,7 +18,8 @@ Use the user's actual kinds of requests: organize their LinkedIn page, check whe
 
 - Local MCP server and native macOS app; Apple Silicon, macOS 13+, Google Chrome, supported Node.js, Xcode Command Line Tools.
 - Source installation. No npm installation command or hosted service promise.
-- Codex and Claude Code can use browser tools. Supported Codex integrations can show live assistant text and accept replies; Claude has no live conversation/direct reply adapter in the native window.
+- Codex and Claude Code can use browser tools. Conversations created in the App support live assistant text and direct replies for both clients. Existing external Codex conversations require a supported integration and associated thread; existing external Claude Code conversations cannot be associated and continue in their original client.
+- **新对话 (New conversation)** creates a separate conversation using an installed, logged-in local CLI. Users choose an available model, supported reasoning effort and a working directory, with an optional first task. Model choices come from that CLI.
 - During takeover there is one shared pointer and keyboard. Double Esc cancels the active agent; global pause prevents new input actions.
 - Input modes include task-selected input, key-by-key typing and paste. Speed settings run from 0.5× to 3× and affect typing, pointer movement and scrolling.
 - Optional experimental **My habits** sampling lasts three minutes and fits rhythm statistics. Insufficient samples retain default parameters. It stores statistics rather than typed text or screen video.
@@ -36,7 +37,7 @@ The website extends that context with ink `#172C3B`, warm paper `#F7F6F2`, white
 
 The synthetic practice fixture and previous launch media are engineering material. Keep them out of promotional links and the first-use path. The new film demonstrates bringing AI into an existing page, personal input settings, a handoff to the user, and explicit continuation of the original task.
 
-Use recordings when available. Native views rendered with synthetic data and faithful HTML reconstruction of uncaptured layers are also authorized for this explainer; label them as interface rendering/reconstruction with example content. Match current controls and behavior, including the Codex-only conversation integration. Do not present a reconstructed scene as a real social post, successful verification or measured performance. Cursor tracking, focus, smooth zoom and editing may improve legibility without inventing capabilities.
+Use recordings when available. Native views rendered with synthetic data and faithful HTML reconstruction of uncaptured layers are also authorized for this explainer; label them as interface rendering/reconstruction with example content. Match current controls and behavior, including the distinction between App-created conversations and supported external conversation associations. Do not present a reconstructed scene as a real social post, successful verification or measured performance. Cursor tracking, focus, smooth zoom and editing may improve legibility without inventing capabilities.
 
 Review all final media for personal accounts, conversations, notifications and private records before publication. Every meaningful image needs descriptive alt text; motion needs user control. Provide captions, a poster and a downloadable video; keep raw/private footage outside the public export.
 

@@ -46,7 +46,7 @@
     <script src="../site.js" defer></script>
     <meta
       property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
@@ -56,7 +56,7 @@
     />
     <meta
       name="twitter:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.12.1"
+      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
     />
     <meta
       name="twitter:image:alt"
@@ -97,8 +97,15 @@
             支持 Apple Silicon Mac、macOS 13+、Google Chrome，需要受支持的
             Node.js 和 Xcode Command Line Tools。Codex 和 Claude Code
             都能使用浏览器工具；其他本机 stdio MCP
-            客户端可用生成的路径连接。原生窗口的实时文字和回复需要支持的 Codex
-            集成与已关联会话，Claude 暂不支持这两项功能。
+            客户端可用生成的路径连接。通过 MyChrome 新建的 Codex 和 Claude Code
+            对话均支持原生窗口中的实时文字和直接回复。外部已有的 Codex
+            对话需要支持的集成与已关联会话；外部已有的 Claude Code
+            对话仍不能关联，请在原客户端继续。
+          </p>
+          <p>
+            点击<strong>新对话</strong>，选择已安装并登录的 Codex 或 Claude Code
+            CLI，再选择可用模型、支持的思考强度和工作目录。模型选项由本机 CLI
+            返回，第一条任务可以留空；这会创建一个独立的新对话。
           </p>
           <h2 id="能用我现有的登录状态吗">能用我现有的登录状态吗？</h2>
           <p>
