@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>upload fixture</title>
+<style>
+  body{font:16px -apple-system,sans-serif;padding:40px}
+  .button{display:inline-block;padding:8px 14px;border:1px solid #888;border-radius:6px;cursor:pointer}
+  .offscreen{position:absolute;left:-9999px;width:1px;height:1px;opacity:0}
+  p,div{margin:18px 0}
+</style>
+<h1>Upload fixture</h1>
+<!-- The common shape (Easy Apply and similar): a styled label for a hidden file input. -->
+<p><label class="button" id="pick" for="resume">Upload resume</label>
+<input type="file" id="resume" class="offscreen" accept=".pdf,.doc,.docx,.txt"></p>
+<!-- A plain, visible file input. -->
+<p><input type="file" id="plain"></p>
+<!-- A custom uploader whose file input lives in the button's open shadow root. -->
+<div id="cv"><span class="button" id="shadowpick" role="button" tabindex="0">Attach CV</span> <span id="cvname"></span></div>
+<!-- Not an upload control. -->
+<p><button id="next" type="button">Continue</button></p>
+<!-- A file input placed directly in <body>. -->
+<input type="file" id="bodyfile">
+<p id="out">no file</p>
+<script>
+  // The page's own view of the selection: the chosen file's name, as a site would show it.
+  for (const id of ['resume', 'plain']) {
+    document.getElementById(id).addEventListener('change', function () {
+      const f = this.files && this.files[0];
+      document.getElementById('out').textContent = f ? 'selected: ' + f.name : 'no file';
+    });
+  }
+  const host = document.getElementById('shadowpick');
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = '<slot></slot><input type="file" id="inner" hidden>';
+  const inner = root.getElementById('inner');
+  host.addEventListener('click', () => inner.click());
+  inner.addEventListener('change', function () {
+    const f = this.files && this.files[0];
+    document.getElementById('cvname').textContent = f ? f.name : '';
+  });
+</script>

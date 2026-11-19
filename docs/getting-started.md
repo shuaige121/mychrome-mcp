@@ -69,17 +69,19 @@ For **Codex**, also apply the printed TOML settings to the existing MyChrome ent
 
 After your client loads the connection, return to your task conversation and ask it to list Chrome tabs with MyChrome. If your client needs a restart to load new MCP servers, restart it and resume that conversation. If you closed MyChrome, reopen it from Spotlight or Finder to see its native window.
 
-| Client | Browser tools | Live conversation text and replies in the MyChrome window |
+| Client | Browser tools | Conversation text in the MyChrome window |
 |---|---|---|
-| Codex | Supported | App-created sessions work directly; existing external sessions require a supported integration and association |
-| Claude Code | Supported | App-created sessions work directly; existing external sessions remain in Claude Code |
+| Codex | Supported | App-created sessions: live text and replies. Existing external sessions: with a supported integration and an associated thread |
+| Claude Code | Supported | App-created sessions: live text and replies. A session running in your terminal: read-only live view, in 0.15.0 |
 | Other local stdio MCP client | Connect with the generated paths | No adapter provided |
 
-To start from MyChrome, click **新对话 (New conversation)**, choose Codex or Claude Code, and select a model, supported thinking effort, and working folder. The model list comes from the installed CLI. The CLI must already be signed in; MyChrome uses its existing account, permissions and MCP configuration. Model and effort selections apply to this session without changing persistent client settings.
+In 0.15.0, MyChrome's own windows, the takeover card and the notifications MyChrome sends you follow your Mac's language: Chinese when your first preferred language is Chinese, otherwise English. To choose one yourself, open the menu bar panel, then **Settings** → **Language**, or set `CHROME_BRIDGE_UI_LANG` to `en` or `zh`. Texts sent to your assistant do not change.
 
-You can enter a first task or create an empty conversation. The App opens the exact new session, where you can send messages, see live assistant text and handle supported questions or approvals. If creating the session is slow, **检查创建结果 (Check creation result)** checks the same request rather than starting another session. A first message whose delivery is uncertain stays in that session's draft and is not automatically resent.
+To start from MyChrome, click **New conversation** (the highlighted button at the top left, or ⌘N), choose Codex or Claude Code, and select a model, supported thinking effort, and working folder. The model list comes from the installed CLI. The CLI must already be signed in; MyChrome uses its existing account, permissions and MCP configuration. Model and effort selections apply to this session without changing persistent client settings.
 
-An empty external conversation view does not by itself mean the browser tools are disconnected. Existing Claude Code terminal sessions cannot be attached for live replies. See the [conversation center guide](conversation-center.md) for existing Codex thread association and App-created sessions.
+You can enter a first task or create an empty conversation. The App opens the exact new session, where you can send messages, see live assistant text and handle supported questions or approvals. If creating the session is slow, the **Check result** button checks the same request rather than starting another session. A first message whose delivery is uncertain stays in that session's draft and is not automatically resent.
+
+An empty external conversation view does not by itself mean the browser tools are disconnected. In 0.15.0, a Claude Code session running in your terminal appears here as a read-only live view of your prompts and Claude's replies; you reply in the terminal. It is on by default; set `CHROME_BRIDGE_CLAUDE_FEED=0` in the MCP server's environment and reconnect the MCP client to turn it off. See the [conversation center guide](conversation-center.md) (in Chinese) for existing Codex thread association and App-created sessions.
 
 ## 5. Continue with your open page
 
@@ -93,7 +95,7 @@ Examples of requests you can make; these platform workflows have not all been ve
 
 - Organize your open LinkedIn page with the introduction and section text you've approved.
 - Check your Facebook notifications and messages, and summarize who is trying to reach you.
-- Distribute an article you've already written to the Facebook, 小红书, Reddit and LinkedIn accounts you specify, using your supplied platform versions and publishing instructions.
+- Distribute an article you've already written to the Facebook, Xiaohongshu, Reddit and LinkedIn accounts you specify, using your supplied platform versions and publishing instructions.
 
 The assistant should read the actual page and identify the target before acting, including the displayed website account when relevant. It can then carry out the authorized steps without asking at each click. It should ask if the page is ambiguous, required information is missing or the task needs a decision you haven't made. After a change, it should read the result and report what is confirmed.
 
@@ -101,19 +103,19 @@ When you take over for a password or verification code, finish that step and exp
 
 ## Your input pace
 
-In **操作设置 (Operation settings)**, choose **跟随任务 (Follow task)**, **逐字键盘输入 (Type key by key)** or **直接粘贴 (Paste)**. Adjust the speed from 0.5× to 3× to change the pace of typing, pointer movement and scrolling. Your explicit settings apply to subsequent actions. Use Paste for Chinese or other text unsupported by key-by-key input.
+Open **Operation settings** (the middle part of the switch at the top of the MyChrome window) and choose an input mode: **Follow task**, **Type key by key** or **Paste**. Adjust the speed from 0.5× to 3× to change the pace of typing, pointer movement and scrolling. Your explicit settings apply to subsequent actions. Use Paste for Chinese or other text unsupported by key-by-key input.
 
-For a more personal rhythm, **我的操作习惯 (My habits)** offers optional three-minute sampling of your keyboard and mouse use. It fits timing statistics for later typing and movement. This feature is experimental; you can turn its use on or off, sample again or delete its data. It stores rhythm statistics rather than typed text or a screen recording.
+For a more personal rhythm, **My operation habits** in the same settings page offers optional three-minute sampling of your keyboard and mouse use. It fits timing statistics for later typing and movement. This feature is experimental; you can turn its use on or off, sample again or delete its data. It stores rhythm statistics rather than typed text or a screen recording.
 
 ## Your controls
 
-The getting-started guide supports English and Chinese; the main workspace currently uses Chinese labels. Open **对话 (Conversations)** to see your connected conversations.
+In 0.15.0, the first-run guide and the main MyChrome window follow the language set above. Open **Conversations** (the left part of the switch at the top) to see your connected conversations.
 
 - **Stop now:** press Esc twice quickly, within 0.8 seconds. This cancels the current agent and returns the pointer and keyboard. A new instruction is required before another takeover.
-- **Stop an App-created conversation:** use **停止生成 (Stop generation)** in its conversation view to interrupt current work. Closing or quitting MyChrome keeps the session running. Reopen the App to rejoin it while its backend process is alive; automatic recovery after backend exit is not supported.
-- **Pause everyone:** after control is returned, use **暂停 AI 操作 (Pause AI actions)** in MyChrome to prevent further input across connections.
+- **Stop an App-created conversation:** use **Stop generating** in its conversation view to interrupt current work. Closing or quitting MyChrome keeps the session running. Reopen the App to rejoin it while its backend process is alive; automatic recovery after backend exit is not supported.
+- **Pause everyone:** after control is returned, use **Pause AI operations** (the button with the pause icon at the top right of the MyChrome window) to prevent further input across connections.
 - **Handle a private field:** take over for passwords, verification codes and site challenges you can complete. Tell the assistant explicitly when to continue with the original task.
-- **Reuse a sequence:** open **网站流程 (Website routines)**, inspect suitable recorded steps and save a continuous range. Supply fresh values and select an existing tab for each run. [Routine guide](routines.md).
+- **Reuse a sequence:** open **Website routines** (the right part of the switch at the top), inspect suitable recorded steps and save a continuous range. Supply fresh values and select an existing tab for each run. [Routine guide](routines.md) (in Chinese).
 
 During takeover, ordinary physical input is intercepted, so use double Esc instead of trying to click a stop button. Stopping does not undo text, clicks or submissions already sent.
 
@@ -127,9 +129,9 @@ During takeover, ordinary physical input is intercepted, so use double Esc inste
 | Existing MyChrome app belongs to another checkout | Keep that installation intact. Continue using its checkout, or use `--app-path` with a new absolute path for a separate installation. |
 | MCP client cannot find Node | Regenerate instructions and use their absolute Node path; desktop apps may have a different PATH. |
 | Codex tool call times out | Apply `tool_timeout_sec = 900` to the existing server entry, reload the client configuration and resume your task conversation. |
-| Existing Claude tools work but the MyChrome conversation is empty | Continue the external conversation in Claude Code. For a separate conversation with live replies in MyChrome, use **新对话 (New conversation)** and select Claude Code. |
+| Claude Code tools work but its conversation is not shown in MyChrome | In 0.15.0, terminal sessions have a read-only live view from connection time; replies stay in Claude Code. The mirror is on by default; if it was disabled, enable it and reconnect. To reply directly in MyChrome, use **New conversation** and select Claude Code. |
 | The chosen client or models cannot be loaded | Install and sign in to that CLI, confirm the working folder is available, then reload the model list. |
-| Chinese or other text is refused in key mode | Choose **直接粘贴 (Paste)** in **操作设置 (Operation settings)**, then retry only after reading the current field. |
+| Chinese or other text is refused in key mode | Choose **Paste** in **Operation settings**, then retry only after reading the current field. |
 | Page changed or action result is uncertain | Read the current page before retrying. Check whether the original action already took effect. |
 | Login, CAPTCHA or access check | Complete it yourself if the site permits, then decide whether the task can continue. MyChrome does not bypass site challenges. |
 

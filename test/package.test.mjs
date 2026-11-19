@@ -36,7 +36,8 @@ await t('started through a link the way npm installs the bin: the server answers
   fs.symlinkSync(INDEX, link);
   const viaNode = stdioCheck(process.execPath, link);
   assert.equal(viaNode.error, null, JSON.stringify(viaNode));
-  assert.equal(viaNode.tools, 17, JSON.stringify(viaNode));
+  assert.equal(viaNode.tools, 19, JSON.stringify(viaNode));
+  assert.ok(viaNode.names.includes('page_event_ack'));
   assert.ok(viaNode.names.includes('routines'));
   const direct = stdioCheck(process.execPath, INDEX);
   assert.deepEqual(viaNode.names, direct.names);
@@ -70,7 +71,17 @@ await t('ships the three prebuilt helpers and no backups; nothing is built at in
 });
 
 await t('every helper is built for the same explicit macOS target (the minimum the README states)', async () => {
-  const targets = [...pkg.scripts.build.matchAll(/swiftc [^&]*?-target (arm64-apple-macos\d+)/g)].map(m => m[1]);
+  assert.match(pkg.scripts.build, /^bash scripts\/build-native\.sh && swiftc -parse-as-library/);
+  assert.ok(pkg.files.includes('scripts/build-native.sh'));
+  const native = fs.readFileSync(path.join(ROOT, 'scripts/build-native.sh'), 'utf8');
+  const nativeTarget = native.match(/^native_target=(arm64-apple-macos\d+)$/m)?.[1];
+  assert.ok(nativeTarget, 'native script must declare the explicit platform floor');
+  const nativeCompiles = [...native.matchAll(/^"\$native_compiler"[^\n]* -O -target "\$native_target" -o "\$native_build\/(cgevent|chromectl)\/output"/gm)];
+  assert.deepEqual(nativeCompiles.map(m => m[1]).sort(), ['cgevent', 'chromectl'], 'both native helpers use the explicit target');
+  for (const entry of ['helper', 'chromectl']) assert.ok(native.includes(`src/${entry}.swift`));
+  assert.equal(native.match(/"\$native_root\/src\/native-chrome\.swift"/g)?.length, 2, 'both native helpers compile the shared source');
+  const targets = [nativeTarget, nativeTarget,
+    ...[...pkg.scripts.build.matchAll(/swiftc [^&]*?-target (arm64-apple-macos\d+)/g)].map(m => m[1])];
   assert.equal(targets.length, 3, pkg.scripts.build);
   assert.equal(new Set(targets).size, 1, targets.join(' '));
   const nn = targets[0].replace('arm64-apple-macos', '');
@@ -80,5 +91,14 @@ await t('every helper is built for the same explicit macOS target (the minimum t
   assert.deepEqual(pkg.cpu, ['arm64']);
 });
 
+await t('terminal helper and focused round 2 regressions are included exactly once in the release', async () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs/release/release-manifest.json'), 'utf8'));
+  for (const file of ['test/harness-terminal-race.test.mjs', 'test/native-ownership-round2.test.mjs', 'test/native-round2.test.mjs']) {
+    assert.equal(pkg.scripts.test.split(' && ').filter(x => x === `node ${file}`).length, 1, file);
+    assert.equal(manifest.files.filter(x => x === file).length, 1, file);
+  }
+  assert.equal(manifest.files.filter(x => x === 'test/harness-terminal.mjs').length, 1);
+  assert.equal(pkg.scripts.test.includes('node test/harness-terminal.mjs'), false, 'shared helper is not a test entry point');
+});
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`package: ${passed} passed`);

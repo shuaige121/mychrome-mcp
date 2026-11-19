@@ -15,6 +15,7 @@ import { readFileSync, statSync, lstatSync, readlinkSync, symlinkSync, unlinkSyn
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { normalizePagePromptSettings } from './page-events.js';
 
 export const SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'chrome-bridge-mcp');
 /** A path override from the environment, with ~ expanded as the panel does (Codex r13 B3). */
@@ -76,7 +77,15 @@ export const SETTINGS = {
   /** System notifications (keys held during an action, a site that needs the user). */
   notify: { env: 'CHROME_BRIDGE_NOTIFY', def: true, file: bool, fromEnv: envBool },
   /** Keep the activity log for the panel's 「记录」 page. */
-  activityLog: { env: null, def: true, file: bool }
+  activityLog: { env: null, def: true, file: bool },
+  /** CC-LIVE: mirror a Claude Code session's own conversation (read-only) in the GUI and the takeover sidebar. */
+  claudeFeed: { env: 'CHROME_BRIDGE_CLAUDE_FEED', def: true, file: bool, fromEnv: envBool },
+  /** I18N1: the language of MyChrome's own UI and notifications; auto follows the Mac's first preferred language (zh* → Chinese,
+   * otherwise English). The older CHROME_BRIDGE_LANG (en|zh) still applies when this is auto (src/index.js uiEnglish). */
+  uiLanguage: { env: 'CHROME_BRIDGE_UI_LANG', def: 'auto', file: oneOf('auto', 'en', 'zh'), fromEnv: oneOf('auto', 'en', 'zh') },
+  /** Deliberate reviewed rules only; changes use the locked per-rule operations below. */
+  pagePrompt: { env: null, def: { version: 1, policy: 'notify_ai', rules: [] },
+    file: value => { const normalized = normalizePagePromptSettings(value); return normalized.valid ? normalized.value : undefined; } }
 };
 
 let cache = { path: null, mtimeMs: -1, size: -1, data: {} };
@@ -110,6 +119,11 @@ export function setting(key, env = process.env) {
   return { value: s.def, source: 'default' };
 }
 export const get = (key, env = process.env) => setting(key, env).value;
+
+/** Effective policy and validation status; the raw nested member is never repaired on read. */
+export function readPagePromptSettings(env = process.env) {
+  return normalizePagePromptSettings(readSettingsFile(env).pagePrompt);
+}
 
 /** The settings an env variable fixes in this process, with their values (the panel shows them as fixed). */
 export const envLocked = (env = process.env) =>
@@ -168,6 +182,7 @@ function settingsForWrite(file) {
 export function writeSettings(patch, env = process.env) {
   for (const [k, v] of Object.entries(patch)) {
     if (!SETTINGS[k]) throw new Error(`unknown setting ${k}`);
+    if (k === 'pagePrompt') throw new Error('page_prompt_requires_locked_mutation');
     if (SETTINGS[k].file(v) === undefined) throw new Error(`bad value for ${k}: ${JSON.stringify(v)}`);
   }
   const p = settingsPath(env);
@@ -201,6 +216,55 @@ export function writeSettings(patch, env = process.env) {
   return pauseTokens(p).length ? { ...result, paused: true } : result;
 }
 
+/** Never replace a GUI's stale rules array. Read, modify and validate inside the SAME settings lock. */
+function mutatePagePrompt(change, env) {
+  const file = settingsPath(env);
+  mkdirSync(path.dirname(file), { recursive: true });
+  withSettingsWriteLock(file, () => {
+    const current = settingsForWrite(file);
+    const normalized = normalizePagePromptSettings(current.pagePrompt);
+    if (!normalized.valid) throw new Error(normalized.reason);
+    const next = change({ ...normalized.value, rules: normalized.value.rules.map(rule => ({ ...rule })) });
+    const validated = normalizePagePromptSettings(next);
+    if (!validated.valid) throw new Error(validated.reason);
+    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      writeFileSync(tmp, JSON.stringify({ ...current, pagePrompt: validated.value, version: 1 }, null, 2), { mode: 0o600 });
+      renameSync(tmp, file);
+    } finally { try { unlinkSync(tmp); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
+  });
+  cache = { path: null, mtimeMs: -1, size: -1, data: {} };
+  return readPagePromptSettings(env);
+}
+
+export function writePagePromptPolicy(policy, env = process.env) {
+  if (!['off', 'notify_ai', 'auto_safe'].includes(policy)) throw new Error('invalid_page_prompt_settings');
+  return mutatePagePrompt(current => ({ ...current, policy }), env);
+}
+
+/** Add is create-only; toggle and delete address exactly one existing rule ID. */
+export function updatePagePromptRule(operation, env = process.env) {
+  const exact = keys => operation && typeof operation === 'object' && !Array.isArray(operation)
+    && Object.keys(operation).length === keys.length && keys.every(key => Object.hasOwn(operation, key));
+  if (!(operation?.op === 'add' && exact(['op', 'rule'])
+    || operation?.op === 'toggle' && exact(['op', 'id', 'enabled']) && typeof operation.enabled === 'boolean'
+    || operation?.op === 'delete' && exact(['op', 'id']))) throw new Error('invalid_page_prompt_mutation');
+  return mutatePagePrompt(current => {
+    const id = operation.op === 'add' ? operation.rule?.id : operation.id;
+    if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?![\s\S])/.test(id)) throw new Error('invalid_page_prompt_mutation');
+    const index = current.rules.findIndex(rule => rule.id === id);
+    if (operation.op === 'add') {
+      if (index !== -1) throw new Error('page_prompt_rule_exists');
+      current.rules.push(operation.rule);
+    } else {
+      if (index === -1) throw new Error('page_prompt_rule_missing');
+      if (operation.op === 'toggle') current.rules[index] = { ...current.rules[index], enabled: operation.enabled };
+      else current.rules.splice(index, 1);
+    }
+    return current;
+  }, env);
+}
+
 /* ------------------------------------------------------- presence (servers/<pid>.json) */
 
 /** Where the panel looks for the servers (next to tasks/, under the lock's folder). */
@@ -226,12 +290,13 @@ export function removePresence(lockDir, pid = process.pid) {
  * What the server runs: the JS modules in src/ (page scripts are read at each use, the helpers are
  * started per action, the panel replaces itself). The panel hashes the same files the same way and
  * shows 「需要重启」 when they differ (Codex r13 A4: uncommitted edits; Fable r13 A3: a panel-only commit).
- * sha256 over "<name>\0<bytes>\0" for each src/*.js in name order; the first 16 hex digits.
+ * sha256 over "<name>\0<bytes>\0" for sorted src-relative JS/catalog inputs; the first 16 hex digits.
  */
 export function sourceFingerprint(root) {
   const dir = path.join(root, 'src');
   const h = createHash('sha256');
-  for (const n of readdirSync(dir).filter(n => n.endsWith('.js')).sort()) {
+  const names = [...readdirSync(dir).filter(n => n.endsWith('.js')), 'page-prompt-templates.json', 'page/prompt-observation.js'].sort();
+  for (const n of names) {
     h.update(n); h.update('\0'); h.update(readFileSync(path.join(dir, n))); h.update('\0');
   }
   return h.digest('hex').slice(0, 16);
@@ -280,22 +345,87 @@ export const activityPath = (env = process.env) => envPath(env.CHROME_BRIDGE_ACT
 export const activityOldPath = (p) => p.replace(/(\.jsonl)?$/, '.1.jsonl');
 export const ACTIVITY_MAX_BYTES = 256 * 1024;
 
-/** Tools that change nothing and say nothing about a site: not logged. */
-const NOT_LOGGED = new Set(['list_tabs', 'task_plan', 'wake_screen']);
+/** Wake polling has no task outcome; list/plan lifecycle metadata aids diagnosis. */
+const NOT_LOGGED = new Set(['wake_screen']);
 
 /** The host of a URL, nothing else (no path, no query: they can hold names, ids, search words). */
 export function hostOf(url) {
   try { const u = new URL(String(url)); return /^https?:$/.test(u.protocol) ? u.hostname : u.protocol.replace(/:$/, ''); } catch { return null; }
 }
 
+/** STUCK1: `stuckKeyCleared`, the keys released inside a hold, from a finite set only: up to four names joined by '+',
+ * each an ANSI key cap (A–Z, 0–9), one of five named keys, or key0–key127 (the helper's stuckKeyToken). */
+const STUCK_KEY_NAME = '(?:[A-Z0-9]|return|space|escape|tab|delete|key(?:\\d|[1-9]\\d|1[01]\\d|12[0-7]))';
+export const STUCK_KEY_CLEARED = new RegExp(`^${STUCK_KEY_NAME}(?:\\+${STUCK_KEY_NAME}){0,3}$`);
+export const stuckKeyClearedValue = (v) => typeof v === 'string' && STUCK_KEY_CLEARED.test(v) ? v : undefined;
+/** STUCK1 r2: a key code's finite name (the ANSI key cap of a letter or digit key, five named keys, else key<code>), so the
+ * bridge's per-key ledger names a key the same way whether or not the helper replied. Never the layout's character. */
+const ANSI_KEY_CAPS = { 0: 'A', 1: 'S', 2: 'D', 3: 'F', 4: 'H', 5: 'G', 6: 'Z', 7: 'X', 8: 'C', 9: 'V', 11: 'B', 12: 'Q', 13: 'W',
+  14: 'E', 15: 'R', 16: 'Y', 17: 'T', 18: '1', 19: '2', 20: '3', 21: '4', 22: '6', 23: '5', 25: '9', 26: '7',
+  28: '8', 29: '0', 31: 'O', 32: 'U', 34: 'I', 35: 'P', 37: 'L', 38: 'J', 40: 'K', 45: 'N', 46: 'M',
+  36: 'return', 49: 'space', 53: 'escape', 48: 'tab', 51: 'delete' };
+export const stuckKeyToken = (code) => Number.isInteger(code) && code >= 0 && code < 128 ? ANSI_KEY_CAPS[code] ?? `key${code}` : undefined;
+
 /**
  * The line logged for one tool call: only these fields, whatever the tool was given. `text` of
- * type_text, `url` paths, keys pressed, page titles never reach the file.
+ * type_text, `url` paths, keys pressed, page titles never reach the file. The only key name in the file is the finite
+ * `stuckKeyCleared` token (STUCK1: a stale key MyChrome released inside its hold), never a typed key or a layout character.
  */
-export function activityRecord({ tool, host = null, ok, code = null, ms = null, who = null, color = 0, pid = process.pid, t = Date.now() }) {
+export function activityRecord({ tool, host = null, ok, code = null, ms = null, who = null, color = 0, pid = process.pid, t = Date.now(),
+  stage, firstErrorCode, firstErrorStage, firstErrorOsStatus, bindingReason, lastWriteStage, exceptionName, queueMs, idleWaitMs, inputDelivery, captureMs, ocrMs, typedChars, charsPerSec,
+  focusDriver, focusFallback, focusChild, focusFact, tSpawnMs, tKeyMs, focusReason, keyWindowIsTarget, axWindowMissing, focusAppleActivate,
+  ocrStatus, ocrHelperMs, ocrGapMs, ocrGapFrom, ocrPrevMs, ocrOverlap,
+  popupKind, popupAction, popupDelivery, popupResult, destinationEvidence, probeResult, probeChars, stuckKeyCleared }) {
   return { t, pid, who: who == null ? null : String(who).slice(0, 80), color: Number(color) || 0, tool: String(tool),
     host: host == null ? null : String(host).slice(0, 253), ok: !!ok, code: code == null ? null : String(code).slice(0, 40),
-    ms: Number.isFinite(ms) ? Math.round(ms) : null };
+    ms: Number.isFinite(ms) ? Math.round(ms) : null,
+    ...(/^[a-z_]{1,64}$/.test(stage ?? '') ? { stage } : {}),
+    ...(/^[a-z_]{1,64}$/.test(firstErrorCode ?? '') ? { firstErrorCode } : {}),
+    ...(/^[a-z_]{1,64}$/.test(firstErrorStage ?? '') ? { firstErrorStage } : {}),
+    ...(Number.isSafeInteger(firstErrorOsStatus) ? { firstErrorOsStatus } : {}),
+    ...(typeof bindingReason === 'string' && /^[a-z_]{1,64}$/.test(bindingReason) ? { bindingReason } : {}),
+    ...(typeof lastWriteStage === 'string' && /^[a-z_]{1,64}$/.test(lastWriteStage) ? { lastWriteStage } : {}),
+    // CRASH1: a caught Objective-C exception's name, an identifier only.
+    ...(typeof exceptionName === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(exceptionName) ? { exceptionName } : {}),
+    // FOCUS2: the activation backend (driver, why it fell back, the child's outcome, the breaker) and its timings.
+    ...(['legacy', 'skylight', 'carbon'].includes(focusDriver) ? { focusDriver } : {}),
+    ...(typeof focusFallback === 'string' && /^[a-z_]{1,32}$/.test(focusFallback) ? { focusFallback } : {}),
+    ...(typeof focusChild === 'string' && /^[a-z_]{1,32}$/.test(focusChild) ? { focusChild } : {}),
+    ...(focusFact === 'focus_backend_disabled' ? { focusFact } : {}),
+    ...(Number.isSafeInteger(tSpawnMs) && tSpawnMs >= 0 ? { tSpawnMs } : {}),
+    ...(Number.isSafeInteger(tKeyMs) && tKeyMs >= 0 ? { tKeyMs } : {}),
+    // FOCUS3: why a focus refusal failed, from this finite set only.
+    ...(['other_app_front', 'covered', 'not_key', 'tab_not_current', 'unknown'].includes(focusReason) ? { focusReason } : {}),
+    ...(typeof keyWindowIsTarget === 'boolean' ? { keyWindowIsTarget } : {}),
+    // FOCUS4: the activation skipped AX main/raise because the AX window list did not hold the target (diagnostic).
+    ...(typeof axWindowMissing === 'boolean' ? { axWindowMissing } : {}),
+    // FOCUS4 amendment A: the activation sent Chrome's `activate` Apple Event because Chrome was not frontmost.
+    ...(focusAppleActivate === true ? { focusAppleActivate } : {}),
+    // PERM1 (ruling 5): a Chrome popup above the target and what was done about it; how type_text's destination was
+    // established and its probe. Explicit finite sets and a bounded count only: never a label, text, URL or title.
+    ...(['permission', 'translate', 'indicator', 'js_dialog', 'unknown'].includes(popupKind) ? { popupKind } : {}),
+    ...(['none', 'allow', 'dismiss', 'observe'].includes(popupAction) ? { popupAction } : {}),
+    ...(['not_sent', 'sent', 'unknown'].includes(popupDelivery) ? { popupDelivery } : {}),
+    ...(['cleared', 'remains', 'changed', 'unknown'].includes(popupResult) ? { popupResult } : {}),
+    ...(['ordinary', 'probe', 'image', 'unknown'].includes(destinationEvidence) ? { destinationEvidence } : {}),
+    ...(['not_used', 'landed', 'not_landed', 'unknown', 'prohibited', 'unavailable', 'no_hold'].includes(probeResult) ? { probeResult } : {}),
+    ...(Number.isSafeInteger(probeChars) && probeChars >= 0 && probeChars <= 2 ? { probeChars } : {}),
+    // STUCK1: the stale keys released inside the hold, finite key names only (never the layout's character).
+    ...(stuckKeyClearedValue(stuckKeyCleared) ? { stuckKeyCleared } : {}),
+    ...(Number.isFinite(queueMs) && queueMs >= 0 ? { queueMs: Math.round(queueMs) } : {}),
+    ...(Number.isFinite(idleWaitMs) && idleWaitMs >= 0 ? { idleWaitMs: Math.round(idleWaitMs) } : {}),
+    ...(Number.isFinite(captureMs) && captureMs >= 0 ? { captureMs: Math.round(captureMs) } : {}),
+    ...(Number.isFinite(ocrMs) && ocrMs >= 0 ? { ocrMs: Math.round(ocrMs) } : {}),
+    // OCR1: fixed words and bounded integers only (definitions: src/ocr-job.js); never OCR text.
+    ...(['ok', 'failed', 'timeout', 'busy'].includes(ocrStatus) ? { ocrStatus } : {}),
+    ...(Number.isSafeInteger(ocrHelperMs) && ocrHelperMs >= 0 && ocrHelperMs <= 600_000 ? { ocrHelperMs } : {}),
+    ...(Number.isSafeInteger(ocrGapMs) && ocrGapMs >= 0 && ocrGapMs <= 2_592_000_000 ? { ocrGapMs } : {}),
+    ...(['real', 'warm', 'none', 'invalid'].includes(ocrGapFrom) ? { ocrGapFrom } : {}),
+    ...(Number.isSafeInteger(ocrPrevMs) && ocrPrevMs >= 0 && ocrPrevMs <= 600_000 ? { ocrPrevMs } : {}),
+    ...(Number.isSafeInteger(ocrOverlap) && ocrOverlap >= 0 && ocrOverlap <= 99 ? { ocrOverlap } : {}),
+    ...(Number.isFinite(typedChars) && typedChars >= 0 ? { typedChars: Math.round(typedChars) } : {}),
+    ...(Number.isFinite(charsPerSec) && charsPerSec >= 0 ? { charsPerSec: Math.round(charsPerSec * 100) / 100 } : {}),
+    ...(['sent', 'not_sent', 'unknown'].includes(inputDelivery) ? { inputDelivery } : {}) };
 }
 
 export function logActivity(rec, env = process.env) {

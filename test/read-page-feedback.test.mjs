@@ -1,0 +1,41 @@
+import './isolate-settings.mjs';
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import vm from 'node:vm';
+const tmp = await mkdtemp(path.join(os.tmpdir(), 'mychrome-read-feedback-'));
+Object.assign(process.env, { CHROME_BRIDGE_LOCK: path.join(tmp, 'input.lock'), CHROME_BRIDGE_TAB_DIR: path.join(tmp, 'tabs'), CHROME_BRIDGE_AGENT_STATE: path.join(tmp, 'agent.json'), CHROME_BRIDGE_MENUBAR: '0', CHROME_BRIDGE_WARM: '0', CHROME_BRIDGE_SWEEP: '0', CHROME_BRIDGE_NOTIFY: '0', CHROME_BRIDGE_HOTSWAP: '0' });
+await mkdir(path.join(tmp, 'tabs'));
+const idx = await import('../src/index.js');
+let calls = [], received = null;
+const target = { tabId: 5, windowId: 7, url: 'https://example.test/article', title: 'Article' };
+let payload = { target, url: target.url, title: target.title, documentKey: 'doc-a', text: '字'.repeat(1225), count: 1, hint: '', opaque: 0, visibility: 'visible', outline: [{ id: 1, title: 'Article', depth: 0 }], blocks: [{ id: 'S1', title: 'S1 Article', lines: ['S1 Article [collapsed]'] }] };
+const fake = Object.fromEntries(idx.__bridgeKeysForTests().map(k => [k, () => { calls.push(k); throw new Error(`Forbidden real/native call ${k}`); }]));
+// Page scripts are one expression returning JSON, as in Chrome; read_page joins block.js and read.js in one eval
+// (src/index.js gatedReadScript), so the fake page runs the script it is given.
+const page = ({ name, vars }) => { if (name === 'block') return { blocked: null, target }; received = vars.READ; return { ok: true, ...payload }; };
+Object.assign(fake, { pageDialog: async () => ({ open: false }), pageScript: async (name, vars) => `fakePage(${JSON.stringify(JSON.stringify({ name, vars }))})`,
+  evalInPage: async src => JSON.parse(vm.runInNewContext(src, { fakePage: spec => JSON.stringify(page(JSON.parse(spec))) })) });
+idx.__setBridgeForTests(fake);
+let out = await idx.readPage({ tab: 5, budget: 1200 });
+assert.match(out, /S1 Article/);
+assert.doesNotMatch(out, /截图|网页代码|用 click|提示：/);
+assert.deepEqual(calls, [], 'slightly over-budget DOM must not attempt screenshot/OCR');
+assert.equal(await idx.readPage({ tab: 5, budget: 1200 }), 'tab=5 unchanged');
+payload = { ...payload, blocks: [{ id: 'S1', title: 'S1 Article', lines: ['S1 Article', 'New text'] }] };
+out = await idx.readPage({ tab: 5, sections: ['s1'], budget: 1200 });
+assert.match(out, /New text/);
+assert.deepEqual(received.sections, ['S1']);
+assert.equal(typeof received.reader, 'string');
+assert.equal(await idx.readPage({ tab: 5 }), 'tab=5 unchanged');
+payload = { ...payload, blocks: [{ id: 'S1', title: 'S1 Article', lines: ['S1 Article [collapsed]'] }] };
+out = await idx.readPage({ tab: 5, refresh: true });
+assert.equal(received.refresh, true);
+assert.match(out, /S1 Article \[collapsed\]/);
+assert.doesNotMatch(out, /Removed:|New text|unchanged/);
+assert.equal(await idx.readPage({ tab: 5 }), 'tab=5 unchanged');
+payload = { ...payload, blocks: null, text: 'Explicit full result', hint: '' };
+assert.match(await idx.readPage({ tab: 5, full: true, budget: 200 }), /Explicit full result/);
+assert.deepEqual(calls, []);
+console.log('6 read_page feedback integration groups passed; every native entry point faked');

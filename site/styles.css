@@ -142,6 +142,11 @@ h1 em {
   max-width: 520px;
   margin-top: 26px;
 }
+.audience-note {
+  max-width: 520px;
+  margin-top: 16px;
+  color: var(--ink);
+}
 .actions {
   display: flex;
   align-items: center;
@@ -1145,5 +1150,120 @@ html[lang="zh-CN"] .prose {
 @media print {
   .film-figure video {
     display: none;
+  }
+}
+
+/* Hero media: the takeover card rendered from the product's own code (not a screenshot). */
+.hero-media {
+  min-width: 0;
+  justify-self: end;
+  width: min(100%, 470px);
+}
+.hero-media img {
+  width: 100%;
+  border-radius: 12px;
+  background: #2a2a30;
+  box-shadow:
+    0 1px 2px rgb(23 44 59 / 0.12),
+    0 18px 40px -18px rgb(23 44 59 / 0.45);
+}
+.hero-media figcaption {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 16px;
+  font-size: 0.74rem;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.motion-toggle {
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 0.7rem;
+  min-height: 28px;
+}
+.motion-toggle:hover {
+  border-color: var(--blue);
+  color: var(--blue);
+}
+
+/* How it works: the same handoff sequence, laid out as four columns. */
+.how-section .handoff-story {
+  border-left: 0;
+  padding: 0;
+}
+.how-section .handoff-story ol {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 36px;
+}
+.how-section .handoff-story li {
+  padding: 24px 0 0;
+}
+.handoff-story h3 {
+  font-size: 1.27rem;
+  line-height: 1.35;
+  letter-spacing: -0.025em;
+}
+
+/* Features introduced in the 0.15.0 release. */
+.next-section {
+  border-top: 1px solid var(--line);
+}
+.next-list {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 36px 60px;
+}
+.next-list article {
+  border-top: 1px solid var(--line);
+  padding-top: 24px;
+}
+.next-list h3 {
+  font-size: 1.2rem;
+  line-height: 1.35;
+  margin-bottom: 12px;
+}
+.next-list p {
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+@media (max-width: 1050px) {
+  .how-section .handoff-story ol {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 760px) {
+  .hero-media {
+    justify-self: stretch;
+    width: 100%;
+  }
+  .how-section .handoff-story {
+    border-top: 0;
+    padding: 0;
+  }
+  .how-section .handoff-story ol {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .how-section .handoff-story li {
+    padding-block: 20px;
+  }
+  .handoff-story h3 {
+    font-size: 1.25rem;
+  }
+  .next-list {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+  .hero-media figcaption {
+    flex-direction: column;
+    gap: 10px;
   }
 }

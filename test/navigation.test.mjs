@@ -1,3 +1,4 @@
+import { pageEventStubs } from './page-event-test-stubs.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
@@ -5,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { normalizeReturnFocus } from '../src/guard.js';
 import { openNavigationObserver } from '../src/bridge.js';
 
 // Run the actual production functions with a virtual clock. No Chrome or input.
@@ -16,7 +18,7 @@ function functionSource(name) {
 }
 function harness(snapshot) {
   let now = 0;
-  const context = vm.createContext({
+  const context = vm.createContext({ ...pageEventStubs,
     Date: { now: () => now }, Math, process: { env: {} },
     sleep: async ms => { now += ms; },
     S: { get: () => false },
@@ -50,6 +52,9 @@ const final = 'https://example.test/dashboard';
 }
 {
   const h = harness(() => ({}));
+  assert.equal(h.context.timingLine({ activated: 100, statusDone: 200, observeEnd: 500 }), '',
+    'default receipts do not include routine timing diagnostics');
+  h.context.process.env.CHROME_BRIDGE_TIMING_DETAIL = '1';
   assert.doesNotMatch(h.context.timingLine({ activated: 100, observeEnd: 300 }), /null|undefined|NaN/);
   const held = h.context.timingLine({ activated: 100, statusDone: 200, observeEnd: 500 });
   assert.match(held, /接管中观察 300 ms/);
@@ -64,17 +69,22 @@ async function registration({ untouched = true, observerFails = false, openFails
   const steps = [];
   const target = { tabId: 1, windowId: moved ? 99 : 10, chromePid: 42, cgWindow: 70, url: final };
   const observer = { startedAt: 0, untouched: async () => untouched,
+    observation: async () => ({ known: true, untouched }),
     close: async () => { steps.push('close'); } };
-  const context = vm.createContext({
+  const context = vm.createContext({ ...pageEventStubs,
     Date: { now: () => at }, sleep: async ms => { at += ms; }, S: { get: () => false },
+    OPEN_NAVIGATIONS: new Map(), OPEN_NAVIGATION_MS: 120000,
+    setTimeout: () => ({ unref() {} }), clearTimeout() {}, randomUUID: () => 'fixture-open',
     B: {
       openNavigationObserver: async () => { steps.push('arm'); if (observerFails) throw Error('unavailable'); return observer; },
       chromeInfo: async () => ({ ...target, url: at < 1500 ? initial : final, loading: at < 1500 }),
     },
-    registerTab: async (id, url) => { registered = { id, url }; },
+    registerTab: async (id, url, options) => { registered = { id, url, options }; },
+    getTab: async () => ({ takenOver: taken }),
     markTakenOver: async () => { taken = true; }, LEDGER: { apply() {} }, agentName: () => 'test',
   });
-  vm.runInContext(['settledUrl', 'registerSettled', 'openAndRegister'].map(functionSource).join('\n'), context);
+  vm.runInContext(['navigationObservation', 'forgetOpenNavigation', 'retainOpenNavigation',
+    'settledUrl', 'registerSettled', 'openAndRegister'].map(functionSource).join('\n'), context);
   const open = async () => { steps.push('open'); if (openFails) throw Error('open failed'); return { tabId: 1, windowId: 10 }; };
   if (openFails) {
     await assert.rejects(context.openAndRegister(open, initial), /open failed/);
@@ -93,7 +103,8 @@ async function registration({ untouched = true, observerFails = false, openFails
   for (const options of [{ untouched: false }, { observerFails: true }, { moved: true }]) {
     const r = await registration(options);
     assert.equal(r.registered.url, initial, 'user/unknown navigation must not become expectedUrl');
-    assert.equal(r.taken, true, 'an unverified tab is protected from automatic close');
+    assert.equal(r.taken, !options.observerFails, 'only observed user input or a moved window becomes takeover');
+    assert.equal(!!r.registered.options.uncertainty, !!options.observerFails, 'missing evidence gets independent close protection');
   }
   assert.deepEqual((await registration({ openFails: true })).steps, ['arm', 'open', 'close']);
 }
@@ -123,8 +134,8 @@ async function registration({ untouched = true, observerFails = false, openFails
   const observe = guard.slice(start, guard.indexOf('\n  };', start) + '\n  };'.length);
   for (const evidence of [true, false, 'unavailable', 'missing']) {
     const notes = [];
-    const context = vm.createContext({
-      err: null, out: '', prep: { target: { tabId: 1 } },
+    const context = vm.createContext({ ...pageEventStubs,
+      err: null, out: '', prep: { target: { tabId: 1 } }, focus: { terminal: { terminalInterrupted: false } },
       observer: async () => ({ out: 'loaded', url: final }),
       ops: { navigationUntouched: async () => { if (evidence === 'unavailable') throw Error('gone'); return evidence; },
         noteNavigation: async (_prep, url) => { notes.push(url); } },
@@ -144,11 +155,11 @@ async function registration({ untouched = true, observerFails = false, openFails
   for (const end of [null, { inputReleased: true, appRestored: true, pointerRestored: true },
     { inputReleased: true, appRestored: false, pointerRestored: false },
     { inputReleased: false, appRestored: false, pointerRestored: false }]) {
-    const context = vm.createContext({
-      PLAN: { task: 'Synthetic job', t0: 1000 }, Date: { now: () => 2000 },
+    const context = vm.createContext({ ...pageEventStubs,
+      normalizeReturnFocus, PLAN: { task: 'Synthetic job', t0: 1000 }, Date: { now: () => 2000 },
       writeTaskState() {}, closeTaskFeed() {}, endTaskHold: async () => end, PANEL_TASK: {},
     });
-    vm.runInContext(functionSource('clearTaskPlan') + '\n' + functionSource('taskPlanTool'), context);
+    vm.runInContext(functionSource('focusReturnNote') + '\n' + functionSource('clearTaskPlan') + '\n' + functionSource('taskPlanTool'), context);
     const text = await context.taskPlanTool({ done: true });
     assert.doesNotMatch(text, /窗口和光标已还原/);
     assert.equal(text.includes('光标已放回原处'), end?.pointerRestored === true);
@@ -156,7 +167,7 @@ async function registration({ untouched = true, observerFails = false, openFails
     assert.equal(text.includes('键盘鼠标接管已结束'), end?.inputReleased === true);
   }
   const facts = { inputReleased: true, pointerRestored: false };
-  const context = vm.createContext({ YIELDING: null, TASK_HOLD: {}, endTaskHoldNow: async () => facts });
+  const context = vm.createContext({ ...pageEventStubs, YIELDING: null, TASK_HOLD: {}, endTaskHoldNow: async () => facts });
   vm.runInContext(functionSource('endTaskHold'), context);
   assert.equal(await context.endTaskHold(), facts, 'endTaskHold forwards native restoration facts');
 }
@@ -166,20 +177,20 @@ async function registration({ untouched = true, observerFails = false, openFails
     let now = 1000;
     const noted = [], observed = [];
     const target = { tabId: 1, windowId: 10, chromePid: 42, cgWindow: 70, url: final };
-    const context = vm.createContext({
+    const context = vm.createContext({ ...pageEventStubs,
       Date: { now: () => now }, sleep: async ms => { now += ms; }, ASK_POLL_MS: 20,
       BLOCKS: new Map([[1, { alertToken: currentToken }]]), randomUUID,
       pausedCheck() {}, writeTaskState() {}, siteOf: u => u,
       followSubmit: async () => final, ledgerNavigated() {},
       noteAgentNavigation: async (_tab, url) => { noted.push(url); },
-      B: { pageScript: async () => '', chromeInfo: async () => target,
+      B: { pageScript: async () => '', chromeInfo: async () => target, pageDialog: async () => ({ open: false }),
         evalInPage: async () => ({ target: { url: initial }, entered: { how: 'enter', filled: true, at: 1005 } }) },
     });
     vm.runInContext(source.match(/^const HANDOFF_NEXT\b.*$/m)[0] + '\n'
       + source.match(/^function blockToken\b.*$/m)[0] + '\n'
       + functionSource('clearBlock') + '\n' + functionSource('waitForFieldObserved'), context);
     await context.waitForFieldObserved({ tabId: 1, startUrl: initial, field: 1, why: 'test',
-      ask: { alertToken: 'current-wait' }, ms: 5000, t0: 1000 }, {
+      ask: { alertToken: 'current-wait' }, ms: 5000, t0: 1000, waitStartedAt: 1000 }, {
       untouched: async (seen, since) => { observed.push({ seen, since }); return untouched; },
     });
     assert.equal(noted.length, untouched ? 1 : 0);
@@ -192,7 +203,7 @@ async function registration({ untouched = true, observerFails = false, openFails
 {
   for (const untouched of [true, false]) {
     const claims = [];
-    const context = vm.createContext({
+    const context = vm.createContext({ ...pageEventStubs,
       getTab: async tab => tab === 1 ? { ownerPid: 1 } : null,
       isMine: () => true, findLiveTab: () => ({ windowId: 10 }),
       popupCandidates: () => [{ tabId: 2, windowId: 10, url: initial }],
@@ -201,7 +212,7 @@ async function registration({ untouched = true, observerFails = false, openFails
       legacyTabs: async () => [], agentName: () => 'test',
       claimTab: async (...args) => { claims.push(args); return true; }, LEDGER: { apply() {} },
     });
-    vm.runInContext(functionSource('claimPopups'), context);
+    vm.runInContext(functionSource('gatedPageScript') + '\n' + functionSource('claimPopups'), context);
     await context.claimPopups({}, {}, { target: { tabId: 1, windowId: 10 } },
       { noteable: true, since: 100, untouched: async () => untouched }, initial);
     assert.equal(claims.length, untouched ? 1 : 0, 'a typed popup URL must not be claimed as agent navigation');

@@ -101,6 +101,7 @@ function argumentsFor(tool, value = {}) {
   if (tool === 'type_text') {
     const result = { textParam: 'input_1' };
     if (typeof a.submit === 'boolean') result.submit = a.submit;
+    if (typeof a.replace === 'boolean') result.replace = a.replace;
     if (['keys', 'paste', 'auto'].includes(a.input_mode)) result.input_mode = a.input_mode;
     return result;
   }

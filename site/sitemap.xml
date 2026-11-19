@@ -1,9 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://shuaige121.github.io/mychrome-mcp/</loc></url>
-  <url><loc>https://shuaige121.github.io/mychrome-mcp/getting-started.html</loc></url>
-  <url><loc>https://shuaige121.github.io/mychrome-mcp/faq.html</loc></url>
-  <url><loc>https://shuaige121.github.io/mychrome-mcp/zh/</loc></url>
-  <url><loc>https://shuaige121.github.io/mychrome-mcp/zh/getting-started.html</loc></url>
-  <url><loc>https://shuaige121.github.io/mychrome-mcp/zh/faq.html</loc></url>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://shuaige121.github.io/mychrome-mcp/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://shuaige121.github.io/mychrome-mcp/" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://shuaige121.github.io/mychrome-mcp/zh/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://shuaige121.github.io/mychrome-mcp/" />
+  </url>
+  <url>
+    <loc>https://shuaige121.github.io/mychrome-mcp/faq.html</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://shuaige121.github.io/mychrome-mcp/faq.html" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://shuaige121.github.io/mychrome-mcp/zh/faq.html" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://shuaige121.github.io/mychrome-mcp/faq.html" />
+  </url>
+  <url>
+    <loc>https://shuaige121.github.io/mychrome-mcp/getting-started.html</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://shuaige121.github.io/mychrome-mcp/getting-started.html" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://shuaige121.github.io/mychrome-mcp/zh/getting-started.html" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://shuaige121.github.io/mychrome-mcp/getting-started.html" />
+  </url>
+  <url>
+    <loc>https://shuaige121.github.io/mychrome-mcp/zh/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://shuaige121.github.io/mychrome-mcp/" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://shuaige121.github.io/mychrome-mcp/zh/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://shuaige121.github.io/mychrome-mcp/" />
+  </url>
+  <url>
+    <loc>https://shuaige121.github.io/mychrome-mcp/zh/faq.html</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://shuaige121.github.io/mychrome-mcp/faq.html" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://shuaige121.github.io/mychrome-mcp/zh/faq.html" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://shuaige121.github.io/mychrome-mcp/faq.html" />
+  </url>
+  <url>
+    <loc>https://shuaige121.github.io/mychrome-mcp/zh/getting-started.html</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://shuaige121.github.io/mychrome-mcp/getting-started.html" />
+    <xhtml:link rel="alternate" hreflang="zh-CN" href="https://shuaige121.github.io/mychrome-mcp/zh/getting-started.html" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://shuaige121.github.io/mychrome-mcp/getting-started.html" />
+  </url>
 </urlset>

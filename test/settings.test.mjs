@@ -9,6 +9,7 @@ import { mkdtemp, mkdir, writeFile, readFile, stat, utimes } from 'node:fs/promi
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'cb-settings-test-'));
@@ -21,7 +22,7 @@ Object.assign(process.env, {
   CHROME_BRIDGE_AGENT_STATE: path.join(tmp, 'agent-window.json'), CHROME_BRIDGE_AGENT_NAME: 'settings-test', CHROME_BRIDGE_HABITS: 'off'
 });
 for (const k of ['CHROME_BRIDGE_AGENT_DISPLAY', 'CHROME_BRIDGE_IDLE_S', 'CHROME_BRIDGE_TAB_TTL_MIN', 'CHROME_BRIDGE_NOTIFY',
-  'CHROME_BRIDGE_INPUT_MODE', 'CHROME_BRIDGE_INPUT_SPEED',
+  'CHROME_BRIDGE_INPUT_MODE', 'CHROME_BRIDGE_INPUT_SPEED', 'CHROME_BRIDGE_UI_LANG', 'CHROME_BRIDGE_LANG',
   'CODEX_THREAD_ID', 'MYCHROME_VISIBLE_THREAD_ID', 'MYCHROME_VISIBLE_SOCKET']) delete process.env[k];
 await mkdir(path.join(tmp, 'lock'));
 
@@ -47,13 +48,13 @@ const serverReads = () => Object.fromEntries(Object.keys(S.SETTINGS).map(k => [k
 
 console.log('settings: precedence and types');
 {
-  assert.deepEqual(serverReads(), { paused: false, agentDisplay: 'away', idleSeconds: 1.5, tabIdleMinutes: 10, notify: true, activityLog: true, inputMode: 'auto', inputSpeed: 1 });
+  assert.deepEqual(serverReads(), { paused: false, agentDisplay: 'away', idleSeconds: 1.5, tabIdleMinutes: 10, notify: true, activityLog: true, claudeFeed: true, uiLanguage: 'auto', inputMode: 'auto', inputSpeed: 1, pagePrompt: { version: 1, policy: 'notify_ai', rules: [] } });
   assert.equal(S.setting('idleSeconds').source, 'default');
   ok('no file: every setting is its default');
 }
 {
-  await putFile({ paused: true, agentDisplay: 'main', idleSeconds: 3, tabIdleMinutes: 0, notify: false, activityLog: false });
-  assert.deepEqual(serverReads(), { paused: true, agentDisplay: 'main', idleSeconds: 3, tabIdleMinutes: 0, notify: false, activityLog: false, inputMode: 'auto', inputSpeed: 1 });
+  await putFile({ paused: true, agentDisplay: 'main', idleSeconds: 3, tabIdleMinutes: 0, notify: false, activityLog: false, claudeFeed: false, uiLanguage: 'en' });
+  assert.deepEqual(serverReads(), { paused: true, agentDisplay: 'main', idleSeconds: 3, tabIdleMinutes: 0, notify: false, activityLog: false, claudeFeed: false, uiLanguage: 'en', inputMode: 'auto', inputSpeed: 1, pagePrompt: { version: 1, policy: 'notify_ai', rules: [] } });
   assert.equal(S.setting('agentDisplay').source, 'file');
   await putFile({ idleSeconds: 5 });
   assert.equal(S.get('idleSeconds'), 5);
@@ -62,8 +63,8 @@ console.log('settings: precedence and types');
 }
 {
   // 1 is not true, "3" is not 3, out of range and unknown values are the default: the panel reads them the same way.
-  await putFile({ paused: 1, notify: 'false', idleSeconds: '3', tabIdleMinutes: -5, agentDisplay: 'left', activityLog: null });
-  assert.deepEqual(serverReads(), { paused: false, agentDisplay: 'away', idleSeconds: 1.5, tabIdleMinutes: 10, notify: true, activityLog: true, inputMode: 'auto', inputSpeed: 1 });
+  await putFile({ paused: 1, notify: 'false', idleSeconds: '3', tabIdleMinutes: -5, agentDisplay: 'left', activityLog: null, claudeFeed: 0, uiLanguage: 'EN' });
+  assert.deepEqual(serverReads(), { paused: false, agentDisplay: 'away', idleSeconds: 1.5, tabIdleMinutes: 10, notify: true, activityLog: true, claudeFeed: true, uiLanguage: 'auto', inputMode: 'auto', inputSpeed: 1, pagePrompt: { version: 1, policy: 'notify_ai', rules: [] } });
   await putFile('{ broken');
   assert.equal(S.get('paused'), false);
   await putFile('[true]');
@@ -73,6 +74,8 @@ console.log('settings: precedence and types');
 {
   await putFile({ agentDisplay: 'main', idleSeconds: 3, notify: true });
   const env = { ...process.env, CHROME_BRIDGE_AGENT_DISPLAY: 'off', CHROME_BRIDGE_IDLE_S: 'abc', CHROME_BRIDGE_NOTIFY: '0', CHROME_BRIDGE_TAB_TTL_MIN: '0' };
+  assert.deepEqual(S.setting('uiLanguage', { ...env, CHROME_BRIDGE_UI_LANG: 'en' }), { value: 'en', source: 'env' });
+  assert.deepEqual(S.setting('uiLanguage', { ...env, CHROME_BRIDGE_UI_LANG: 'fr' }), { value: 'auto', source: 'default' });
   assert.deepEqual(S.setting('agentDisplay', env), { value: 'off', source: 'env' });
   assert.deepEqual(S.setting('idleSeconds', env), { value: 3, source: 'file' });     // a bad env value is ignored
   assert.deepEqual(S.setting('notify', env), { value: false, source: 'env' });
@@ -96,7 +99,9 @@ console.log('settings: the panel reads what the server reads');
 {
   const cases = [
     {},
-    { paused: true, agentDisplay: 'off', idleSeconds: 0.5, tabIdleMinutes: 1440, notify: false, activityLog: false },
+    { paused: true, agentDisplay: 'off', idleSeconds: 0.5, tabIdleMinutes: 1440, notify: false, activityLog: false, claudeFeed: false },
+    { claudeFeed: 'false' },
+    { uiLanguage: 'zh' }, { uiLanguage: 'en' }, { uiLanguage: 'English' }, { uiLanguage: 1 },
     { paused: 1, notify: 0, activityLog: 'true', idleSeconds: true, tabIdleMinutes: '30', agentDisplay: 'Main' },
     { idleSeconds: 0.4, tabIdleMinutes: 1441 },
     { idleSeconds: 10, tabIdleMinutes: 0, agentDisplay: 'secondary' },
@@ -151,32 +156,78 @@ const fakeChrome = {
   windows: [{ id: 7, index: 1, minimized: false, mode: 'normal', tabs: [{ id: 10, url: 'https://mail.example.test/inbox/42?q=secret-query', title: 'Inbox — someone', active: true }] }]
 };
 function fakeBridge() {
+  let held = false;
   const fake = Object.fromEntries(idx.__bridgeKeysForTests().map(k => [k, async () => { reached.push(k); throw new Error(`B.${k} reached`); }]));
-  const target = () => ({ tabId: 10, windowId: 7, url: fakeChrome.windows[0].tabs[0].url, title: fakeChrome.windows[0].tabs[0].title });
+  const target = () => ({ tabId: 10, windowId: 7, chromePid: 42, cgWindow: 107, tabActive: true,
+    bounds: { left: 20, top: 30, width: 1000, height: 800 }, url: fakeChrome.windows[0].tabs[0].url, title: fakeChrome.windows[0].tabs[0].title });
+  function settingsPage(kind) {
+    reached.push(`eval ${kind}`);
+    if (kind === 'block') return { ok: true, blocked: null, target: target() };
+    if (kind === 'read') return { ok: true, text: '=== 这一屏\n[1] 链接 Inbox', count: 1, hint: '', opaque: 0, outline: [], target: target() };
+    if (kind === 'opener') return { ok: true, referrer: '', opener: false, target: target() };
+    if (kind === 'locate') return { ok: true, bounds: target().bounds, view: { outerWidth: 1000, outerHeight: 800, innerWidth: 1000, innerHeight: 700, dpr: 1, screenX: 20, screenY: 30 }, visible: { x: 0, y: 0, width: 1000, height: 700 },
+      aim: { x: 200, y: 200 }, focusToken: 'fixture-field', hitOk: true, chain: [], target: target() };
+    // wait_for_user with a field: armed, then the user's Return (no page change, so the submit is followed to its end).
+    if (kind === 'ask') { assert.equal(fakeChrome.fieldFocused, true, 'annotation follows protected native field focus'); return { ok: true, kind: 'input', password: true, armed: true, connected: true, entered: { how: 'enter', at: Date.now() - 50, filled: true }, target: target() }; }
+    throw new Error(`unexpected page script ${kind}`);
+  }
   return Object.assign(fake, {
+    // Native input is synthetic and fail-closed: only the transaction ops used here exist.
+    openInputSession: async () => ({
+      request: async req => {
+        reached.push(`session ${req.op}`);
+        if (req.op === 'hold') { held = fakeChrome.held = true; return { ok: true, epoch: 1, pointer: { x: 10, y: 20 }, heldAt: Date.now() }; }
+        if (req.op === 'status') return { ok: true, epoch: 1, takeover: { active: held }, interrupted: null };
+        if (req.op === 'veil') return { ok: true, epoch: 1, held, takeover: { active: held } };
+        if (req.op === 'begin') { assert.equal(held, true); return { ok: true, epoch: 1, inputMonitor: true, takeover: { active: held } }; }
+        if (req.op === 'warp') { assert.equal(held, true); return { ok: true, verified: true, warped: req.to }; }
+        if (req.op === 'handBack') { assert.equal(held, true); return { ok: true, appFrontmost: true }; }
+        if (req.op === 'inspectDialog') return { ok: true, epoch: 1, known: true, open: false };
+        if (req.op === 'bindNativeTarget') {
+          assert.equal(held, true); assert.equal(req.epoch, 1);
+          for (const key of ['chromePid', 'windowId', 'tabId', 'cgWindow']) assert.ok(Number.isSafeInteger(req.target[key]) && req.target[key] > 0);
+          return { ok: true, epoch: 1 };
+        }
+        if (req.op === 'recordNativeScene') { assert.equal(held, true); assert.equal(req.epoch, 1); return { ok: true, epoch: 1, restoreToken: 'fixture-restore' }; }
+        if (req.op === 'revokeNative') { assert.ok(['pause', 'caller', 'task', 'conversation'].includes(req.reason)); return { ok: true, epoch: 1 }; }
+        if (req.op === 'nativeChrome') {
+          assert.equal(held, true); assert.equal(req.epoch, 1); assert.match(req.operationId, /^native-\d+$/);
+          assert.equal(req.intent.kind, 'restoreScene'); assert.equal(req.policy, 'restore'); assert.equal(req.restoreToken, 'fixture-restore');
+          return { ok: true, epoch: 1, operationId: req.operationId, inputDelivery: 'sent', stages: [], appFrontmost: true };
+        }
+        if (req.op === 'click') { assert.equal(held, true); fakeChrome.fieldFocused = true; return { ok: true, postedInput: 2 }; }
+        if (['prime', 'panel'].includes(req.op)) return { ok: true };
+        throw new Error(`unexpected synthetic session op ${req.op}`);
+      },
+      close: async () => { reached.push('session end'); held = fakeChrome.held = false; return { ok: true, epoch: 1, takeover: { active: false } }; }
+    }),
+    snapshotScene: async () => ({ appPid: 9, chromeWindow: 7, chromeTab: 10 }),
+    restoreScene: async (_scene, { native }) => { assert.equal(held, true); reached.push('restoreScene'); return native({ kind: 'restoreScene' }, { policy: 'restore' }); },
     listTabs: async () => { reached.push('listTabs'); return { ok: true, frontmost: 'WeChat', chromePid: 42, windows: structuredClone(fakeChrome.windows) }; },
-    pageScript: async (kind) => kind,
+    // Page scripts are one expression returning JSON, as in Chrome; read_page joins block.js and read.js
+    // in one eval (src/index.js gatedReadScript), so the fake page runs whatever script it is given.
+    pageScript: async (kind) => `fakePage(${JSON.stringify(kind)})`,
     pageDialog: async () => ({ ok: true, open: false }),
     ensureScreenAwake: async () => ({ woke: false, displays: 1, locked: false }),
     // This fixture performs no user input while its synthetic redirect settles.
     openNavigationObserver: async () => ({
       startedAt: Date.now(), untouched: async () => true, close: async () => {},
     }),
-    evalInPage: async (kind) => {
-      reached.push(`eval ${kind}`);
-      if (kind === 'block') return { ok: true, blocked: null, target: target() };
-      if (kind === 'read') return { ok: true, text: '=== 这一屏\n[1] 链接 Inbox', count: 1, hint: '', opaque: 0, outline: [], target: target() };
-      if (kind === 'opener') return { ok: true, referrer: '', opener: false, target: target() };
-      // wait_for_user with a field: armed, then the user's Return (no page change, so the submit is followed to its end).
-      if (kind === 'ask') return { ok: true, kind: 'input', password: true, armed: true, connected: true, entered: { how: 'enter', at: Date.now() - 50, filled: true }, target: target() };
-      throw new Error(`unexpected page script ${kind}`);
-    },
-    chromeInfo: async (tab) => (tab === 77 && fakeChrome.landing ? { ok: true, tabId: 77, windowId: 7, url: fakeChrome.landing, title: 'Landing' } : { ok: true, ...target() }),
+    evalInPage: async (src) => JSON.parse(vm.runInNewContext(src, { fakePage: kind => JSON.stringify(settingsPage(kind)) })),
+    chromeInfo: async (tab) => (tab === 77 && fakeChrome.landing ? { ok: true, ...target(), tabId: 77, url: fakeChrome.landing, title: 'Landing' } : { ok: true, ...target() }),
     keepAwake: () => { reached.push('keepAwake'); return () => reached.push('stopAwake'); },
-    selectTab: async () => { reached.push('selectTab'); return { ok: true }; },
-    openTab: async (url) => { reached.push(`openTab ${url}`); return { ok: true, tabId: 77, windowId: 7 }; },
+    selectTab: async () => { assert.equal(held, true); reached.push('selectTab'); return { ok: true }; },
+    activateChrome: async () => { assert.equal(held, true); reached.push('activateChrome');
+      return { ok: true, ...target(), targetOnTop: true, keyWindowIsTarget: true,
+        geometry: { mode: 'fit-current', beforeBounds: { ...target().bounds }, displayId: 1,
+          branch: 'usable', changed: false, possiblyChanged: false } }; },
+    openTab: async (url) => { assert.equal(held, true, 'openTab requires synthetic hold'); reached.push(`openTab ${url}`);
+      fakeChrome.openSent?.(); return { ok: true, tabId: 77, windowId: 7 }; },
     cgevent: async (args) => {
-      if (args[0] === 'idle') return { ok: true, idle: 100, clickIdle: 100 };
+      if (args[0] === 'idle') return { ok: true, idle: 100, keyIdle: 100, clickIdle: 100, held: [] };
+      if (args[0] === 'mousepos') return { ok: true, x: 10, y: 20 };
+      if (args[0] === 'displays') return { ok: true, locked: false, displaysAsleep: false, mouse: { x: 10, y: 20 },
+        displays: [{ id: 1, isMain: true, boundsPoints: { x: 0, y: 0, w: 1920, h: 1080 } }] };
       if (args[0] === 'trust') return { ok: true, responsible: { name: 'kitty' } };
       throw new Error(`unexpected cgevent ${args[0]}`);
     }
@@ -191,7 +242,7 @@ idx.__recordForTests(true);
 const logLines = async () => (await readFile(ACTIVITY_FILE, 'utf8').catch(() => '')).split('\n').filter(Boolean).map(l => JSON.parse(l));
 {
   await putFile({ paused: true });
-  const requests = idx.__toolsForTests().filter(t => t.name !== 'list_tabs').flatMap(({ name }) =>
+  const requests = idx.__toolsForTests().filter(t => !['list_tabs', 'page_event_ack'].includes(t.name)).flatMap(({ name }) =>
     name === 'routines' ? ['start', 'run'].map(action => ({ name, extra: { action, id: 'paused-routine', nonce: `paused-${action}`, params: {} } })) : [{ name, extra: {} }]);
   for (const { name, extra } of requests) {
     reached = [];
@@ -202,6 +253,9 @@ const logLines = async () => (await readFile(ACTIVITY_FILE, 'utf8').catch(() => 
     assert.deepEqual(reached, [], `${label} reached the bridge while paused: ${reached.join(', ')}`);
   }
   reached = [];
+  const receipt = await call('page_event_ack', { event_id: 'missing', task_generation: 'missing', delivery_token: 'a'.repeat(43) });
+  assert.equal(receipt.isError, false, 'receipt-only ACK remains available while paused');
+  assert.deepEqual(reached, [], 'ACK must not reach Chrome or input');
   const l = await call('list_tabs');
   assert.equal(l.isError, false);
   assert.ok(reached.includes('listTabs'));
@@ -235,8 +289,10 @@ const logLines = async () => (await readFile(ACTIVITY_FILE, 'utf8').catch(() => 
   assert.equal(typed.ok, false);
   assert.equal(typed.code, 'paused_by_user');
   assert.equal(lines.find(x => x.tool === 'open_tab').host, 'bank.example.test');
-  assert.ok(!lines.some(x => x.tool === 'list_tabs' || x.tool === 'task_plan' || x.tool === 'wake_screen'));
-  assert.deepEqual(Object.keys(typed).sort(), ['code', 'color', 'host', 'ms', 'ok', 'pid', 't', 'tool', 'who']);
+  assert.ok(lines.some(x => x.tool === 'list_tabs'));
+  assert.ok(lines.some(x => x.tool === 'task_plan'));
+  assert.ok(!lines.some(x => x.tool === 'wake_screen'));
+  assert.deepEqual(Object.keys(typed).sort(), ['code', 'color', 'host', 'inputDelivery', 'ms', 'ok', 'pid', 'queueMs', 't', 'tool', 'who']);
   assert.equal((await stat(ACTIVITY_FILE)).mode & 0o777, 0o600);
   ok('activity log: refused calls logged as not done (paused_by_user), host names only, no typed text, path, query, key or title; file 0600');
 }
@@ -259,7 +315,7 @@ const logLines = async () => (await readFile(ACTIVITY_FILE, 'utf8').catch(() => 
   ok('activity log off in the settings: nothing more is written');
 }
 {
-  const panel = JSON.parse(execFileSync(CBMENU, ['--read-activity'], { encoding: 'utf8', env: process.env }));
+  const panel = JSON.parse(execFileSync(CBMENU, ['--read-activity'], { encoding: 'utf8', env: { ...process.env, CHROME_BRIDGE_UI_LANG: 'zh' } }));
   const lines = await logLines();
   assert.equal(panel.length, lines.length);
   assert.equal(panel[0].tool, 'read_page');                      // newest first
@@ -268,6 +324,22 @@ const logLines = async () => (await readFile(ACTIVITY_FILE, 'utf8').catch(() => 
   assert.equal(t.label, '输入文字');
   assert.equal(t.why, '当时 AI 操作已暂停');
   ok('the panel lists the log newest first, with plain labels and the reason a call did not work');
+}
+{
+  // I18N1 (new fix): the panel's words follow CHROME_BRIDGE_UI_LANG, then the settings file's uiLanguage, then the Mac.
+  const labels = env => { const a = JSON.parse(execFileSync(CBMENU, ['--read-activity'], { encoding: 'utf8', env }));
+    const t = a.find(x => x.tool === 'type_text'); return [a[0].label, t.label, t.why]; };
+  const EN = ['Read page', 'Type text', 'AI operations were paused'], ZH = ['读取页面', '输入文字', '当时 AI 操作已暂停'];
+  assert.deepEqual(labels({ ...process.env, CHROME_BRIDGE_UI_LANG: 'en' }), EN, 'CHROME_BRIDGE_UI_LANG=en');
+  await putFile({ uiLanguage: 'en' });
+  assert.deepEqual(labels(process.env), EN, 'settings file uiLanguage en');
+  assert.deepEqual(labels({ ...process.env, CHROME_BRIDGE_UI_LANG: 'auto' }), EN, 'CHROME_BRIDGE_UI_LANG=auto leaves the file to decide');
+  assert.deepEqual(labels({ ...process.env, CHROME_BRIDGE_UI_LANG: 'zh' }), ZH, 'the variable wins over the file');
+  assert.deepEqual(labels({ ...process.env, CHROME_BRIDGE_LANG: 'zh' }), ZH, 'the older CHROME_BRIDGE_LANG wins over the file');
+  await putFile({ uiLanguage: 'zh' });
+  assert.deepEqual(labels(process.env), ZH, 'settings file uiLanguage zh');
+  await putFile({});
+  ok('I18N1: the panel speaks English or Chinese by CHROME_BRIDGE_UI_LANG, then CHROME_BRIDGE_LANG, then the settings file');
 }
 
 console.log('pause: the cases the reviews found (round 13)');
@@ -316,15 +388,32 @@ console.log('pause: the cases the reviews found (round 13)');
   fakeChrome.landing = 'https://long.example.test/landing';
   reached = [];
   const T0 = await import('../src/tabs.js');
+  const sent = new Promise(resolve => { fakeChrome.openSent = resolve; });
   const op = call('open_tab', { url: 'https://short.example.test/x', why: 'user_asked' });
+  await Promise.race([sent, op.then(result => { throw new Error(`open_tab ended before synthetic send: ${result.text}`); })]);
+  delete fakeChrome.openSent;
   await new Promise(r => setTimeout(r, 150));
+  const targetWrites = () => reached.filter(x => /^(openTab |selectTab$|activateChrome$|newWindow$|closeTab$|answerDialog$)/.test(x));
+  const sentBeforePause = targetWrites();
   await putFile({ agentDisplay: 'off', paused: true, notify: false });
   const opr = await op;
-  assert.equal(opr.isError, false, opr.text);
+  // Creation already happened. The new final boundary reports Pause, while
+  // preserving exactly one send and the observed redirect attribution.
+  assert.equal(opr.isError, true, opr.text);
+  assert.match(opr.text, /暂停/);
+  assert.doesNotMatch(opr.text, /这次什么也没做/);
+  assert.match(opr.text, /窗口 7 创建标签 tab=77/);
+  assert.match(opr.text, /不会重试创建或自动关闭/);
+  const openRecord = (await logLines()).filter(x => x.tool === 'open_tab').at(-1);
+  assert.deepEqual([openRecord.ok, openRecord.code, openRecord.inputDelivery], [false, 'paused_by_user', 'sent']);
+  assert.equal(reached.filter(x => x.startsWith('openTab ')).length, 1);
+  assert.deepEqual(targetWrites(), sentBeforePause, 'a new target mutation followed Pause');
+  assert.equal(fakeChrome.held, false, 'Pause must release the synthetic hold');
+  assert.ok(reached.includes('session end'));
   assert.equal((await T0.getTab(77)).expectedUrl, 'https://long.example.test/landing', 'registered the URL before the redirect');
   delete fakeChrome.landing;
   await T0.forgetTab(77);
-  ok('a pause during an agent\'s own open_tab: the redirect still settles and the landing URL is registered');
+  ok('a pause after one open_tab send: paused reply, no new target action, hold released, and exact landing URL retained');
 
   // wait_for_user: paused while waiting → stops, and the job's card and keep-awake end (Codex/Fable r13 r2 A2);
   // a wait that runs out is logged as not done (Codex r13 A5).
@@ -435,6 +524,28 @@ console.log('activity log: size and presence files');
   assert.equal(S.hostOf('not a url'), null);
   assert.deepEqual(Object.keys(S.activityRecord({ tool: 'type_text', text: 'secret', url: 'https://x/y', ok: true })).sort(),
     ['code', 'color', 'host', 'ms', 'ok', 'pid', 't', 'tool', 'who']);
+  // C8: a type_text record carries typing speed as numbers only, never the text.
+  const speed = S.activityRecord({ tool: 'type_text', text: 'secret words', ok: true, typedChars: 500, charsPerSec: 3.337, extra: 'x' });
+  assert.equal(speed.typedChars, 500); assert.equal(speed.charsPerSec, 3.34);
+  assert.ok(!JSON.stringify(speed).includes('secret') && !('text' in speed) && !('extra' in speed));
+  const badSpeed = S.activityRecord({ tool: 'type_text', ok: true, typedChars: '500', charsPerSec: NaN });
+  assert.ok(!('typedChars' in badSpeed) && !('charsPerSec' in badSpeed));
+  const diagnostic = S.activityRecord({ tool: 'click', ok: false, stage: 'find_tab_windows',
+    firstErrorCode: 'focus_unconfirmed', firstErrorStage: 'activate', queueMs: 48.2, idleWaitMs: 1500.1, inputDelivery: 'not_sent', text: 'private-page-content' });
+  assert.equal(diagnostic.stage, 'find_tab_windows');
+  assert.equal(diagnostic.firstErrorCode, 'focus_unconfirmed');
+  assert.equal(diagnostic.firstErrorStage, 'activate');
+  assert.equal(diagnostic.queueMs, 48);
+  assert.equal(diagnostic.idleWaitMs, 1500);
+  assert.equal(diagnostic.inputDelivery, 'not_sent');
+  const unsafe = S.activityRecord({ tool: 'click', ok: false, stage: 'URL https://secret.test/',
+    firstErrorCode: 'private-page-content', firstErrorStage: 'https://private.example/secret', queueMs: -1, idleWaitMs: Infinity, inputDelivery: 'private-page-content' });
+  assert.equal(unsafe.stage, undefined);
+  assert.equal(unsafe.firstErrorCode, undefined);
+  assert.equal(unsafe.firstErrorStage, undefined);
+  assert.equal(unsafe.queueMs, undefined);
+  assert.equal(unsafe.idleWaitMs, undefined);
+  assert.equal(unsafe.inputDelivery, undefined);
   ok('host names only (no user, port, path, query); a record has only its fixed fields whatever it is given');
 
   const lockDir = path.join(tmp, 'p', 'input.lock');
@@ -460,7 +571,7 @@ await writeFile(HOLD, 'setTimeout(() => {}, 60000);\nawait new Promise(() => {})
   const other = spawn(process.execPath, ['--import', HOLD, path.join(tmp, 'elsewhere', 'src', 'index.js')], { stdio: 'ignore' });
   try {
     await new Promise(r => setTimeout(r, 300));
-    const read = () => JSON.parse(execFileSync(CBMENU, ['--read-servers'], { encoding: 'utf8', env: process.env }));
+    const read = () => JSON.parse(execFileSync(CBMENU, ['--read-servers'], { encoding: 'utf8', env: { ...process.env, CHROME_BRIDGE_UI_LANG: 'zh' } }));
     let r = read();
     assert.ok(r.legacy.includes(old.pid), 'an old server not counted');
     assert.ok(!r.legacy.includes(doctor.pid) && !r.legacy.includes(other.pid), 'a doctor run or another checkout counted as an old server');
@@ -514,6 +625,9 @@ await writeFile(HOLD, 'setTimeout(() => {}, 60000);\nawait new Promise(() => {})
     await writeFile(path.join(repo, 'bin', 'cbmenu'), await readFile(CBMENU), { mode: 0o755 });
     await writeFile(path.join(repo, 'src', 'index.js'), 'v1');
     await writeFile(path.join(repo, 'src', 'Tabs.js'), 't');          // upper case sorts first in both
+    await mkdir(path.join(repo, 'src', 'page'), { recursive: true });
+    await writeFile(path.join(repo, 'src', 'page-prompt-templates.json'), '{}');
+    await writeFile(path.join(repo, 'src', 'page', 'prompt-observation.js'), '');
     const rr = path.join(repo, 'bin', 'cbmenu');
     const readRepo = () => JSON.parse(execFileSync(rr, ['--read-servers'], { encoding: 'utf8', env: process.env }));
     const h1 = S.sourceFingerprint(repo);

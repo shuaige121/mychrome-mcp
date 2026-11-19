@@ -14,3 +14,8 @@ for (const name of ['CODEX_THREAD_ID', 'MYCHROME_VISIBLE_THREAD_ID', 'MYCHROME_V
   'CHROME_BRIDGE_INPUT_MODE', 'CHROME_BRIDGE_INPUT_SPEED']) {
   delete process.env[name];
 }
+// The Claude Code session running the tests passes its identity down (CLAUDE_CODE_SESSION_ID, CLAUDECODE, the kitty
+// window, the messaging socket): an in-process server must never bind that real transcript or terminal (SIDEBAR-CC).
+for (const name of Object.keys(process.env)) {
+  if (/^(CLAUDE_CODE_|KITTY_)/.test(name) || name === 'CLAUDECODE' || name === 'CHROME_BRIDGE_CLAUDE_FEED') delete process.env[name];
+}

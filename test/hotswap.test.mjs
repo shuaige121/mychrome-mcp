@@ -3,8 +3,9 @@
  * it is replaced when src/*.js change. Run on a copy of the repo with a fake chromectl and cgevent in its
  * bin/ and a temporary HOME: nothing here reaches Chrome, the screen, the keyboard or the mouse.
  *
- * The client keeps its connection and hears tools/list_changed; the session's tabs stay over a swap and
- * close when the session ends; a call under way, a job in progress or new code that does not load: no
+ * The client keeps its connection and hears tools/list_changed; the session's tabs stay over a swap.
+ * Passive sweeps without an owned native Session retain tabs, including at session end.
+ * A call under way, a job in progress or new code that does not load: no
  * swap; a worker that dies is started again and its call answered with an error to retry. */
 import './isolate-settings.mjs';
 import assert from 'node:assert/strict';
@@ -75,6 +76,20 @@ function servers() {
     .filter(j => j && alive(j.pid));
 }
 const closes = () => { try { return fs.readFileSync(path.join(fake, 'chromectl.log'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)).filter(a => a[0] === 'close').map(a => Number(a[1])); } catch { return []; } };
+function retainedWithoutSession(tabId, exitingPid) {
+  // Exercise the actual passive sweep/defaultDeps against this copy's fake
+  // helpers. A retained record alone would not prove the sweep ran.
+  const module = path.join(copy, 'src', 'tabs.js');
+  const script = `const T = await import(${JSON.stringify(module)}); console.log(JSON.stringify(await T.sweepTabs({ exitingPid: ${exitingPid} })));`;
+  const result = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], { env: ENV, encoding: 'utf8' }));
+  assert.deepEqual(result.closed, []); assert.deepEqual(result.blocked, []);
+  assert.ok(result.deferred?.some(r => r.tabId === tabId && r.reason === 'native_session_required'), JSON.stringify(result));
+  assert.equal(closes().includes(tabId), false, 'a passive sweep must not use the old direct close CLI');
+  assert.ok(JSON.parse(fs.readFileSync(path.join(fake, 'tabs.json'), 'utf8')).tabs.some(t => t.id === tabId));
+  const record = JSON.parse(fs.readFileSync(path.join(TABS, `${tabId}.json`), 'utf8'));
+  assert.equal(record.closeBlocked, false, 'a deferred, never-sent close must not be marked blocked');
+  assert.equal(fs.existsSync(path.join(TABS, `${tabId}.blocked.json`)), false);
+}
 let edits = 0;
 /** An update: src/peers.js changes (valid code unless `broken`). */
 function update(broken = false) {
@@ -110,13 +125,13 @@ try {
   assert.equal(ppidOf(w1.pid), L, 'the worker is not the launcher\'s child');
   assert.ok(execFileSync('/bin/ps', ['-o', 'command=', '-p', String(L)], { encoding: 'utf8' }).includes(path.join(copy, 'src', 'index.js')));
   assert.equal(servers().length, 1, 'the launcher reports as a server of its own');
-  assert.equal((await s.client.listTools()).tools.length, 17);
-  // The session's tab (registered to the launcher) and one whose owner is gone (closed by the next sweep).
+  assert.equal((await s.client.listTools()).tools.length, 19);
+  // The session's tab (registered to the launcher) and an orphan retained by a passive sweep without a native Session.
   const gone = spawnSync('/usr/bin/true').pid;
   record(10, L, 'https://a.test/');
   record(11, gone, 'https://b.test/');
   const before = text(await s.client.callTool({ name: 'list_tabs', arguments: {} }));
-  const mine = /你（这个会话）的标签（1 个）：\n  tab=10 [\s\S]*tab=10 +A +［你的/;
+  const mine = /你（这个连接；主会话与子 agent 共用）的标签（1 个）：\n  tab=10 [\s\S]*tab=10 +A +［你的/;
   assert.match(before, mine, before);
   ok('the client starts a launcher; MyChrome runs as its child and reports the launcher; tools as before');
 
@@ -124,15 +139,15 @@ try {
   const w2 = await until(() => servers().find(j => j.pid !== w1.pid && j.launcher === L), 15_000, 'the new worker');
   await until(() => !alive(w1.pid), 5000, 'the old worker gone');
   await until(() => s.changed() >= 1, 5000, 'tools/list_changed');
-  assert.equal((await s.client.listTools()).tools.length, 17);
+  assert.equal((await s.client.listTools()).tools.length, 19);
   const after = text(await s.client.callTool({ name: 'list_tabs', arguments: {} }));
-  await until(() => closes().includes(11), 5000, 'the dead owner\'s tab closed by the new worker\'s sweep');
+  retainedWithoutSession(11, gone);
   assert.ok(!closes().includes(10), 'the session\'s tab was closed by the swap');
   assert.ok(fs.existsSync(path.join(TABS, '10.json')), 'the session\'s tab record went');
   assert.match(after, mine, `the tab is not this session's after the swap:\n${after}`);
   assert.match(s.stderr(), new RegExp(`updated: \\w+ → \\w+, worker ${w1.pid} → ${w2.pid}`));
   assert.match(s.stderr(), new RegExp(`pid ${w2.pid}, carried 1 tab\\(s\\) over`), 'the ledger was not handed over');
-  ok('src/ changes: the worker is replaced at a quiet moment; same connection, tools/list_changed; the session\'s tab stays its own, its ledger handed over (sweeps still close a dead owner\'s)');
+  ok('src/ changes: same connection and tools/list_changed; session ownership and ledger carry over; passive sweep retains the orphan without a native Session');
 
   // A call under way: no swap until it is answered.
   setTabs({ tabs: [{ id: 10, url: 'https://a.test/', title: 'A' }], listDelayMs: 2500 });
@@ -162,7 +177,7 @@ try {
   await until(() => /new code does not load/.test(s.stderr()), 30_000, 'the failed look at the new code');
   await sleep(800);
   assert.equal(servers().find(j => j.launcher === L).pid, w4.pid, 'swapped to code that does not load');
-  assert.equal((await s.client.listTools()).tools.length, 17);
+  assert.equal((await s.client.listTools()).tools.length, 19);
   unbreak();
   const w5 = await until(() => servers().find(j => j.pid !== w4.pid && j.launcher === L), 30_000, 'the swap once fixed');
   ok('new code that does not load: the old worker keeps serving (said on stderr); fixed: swapped');
@@ -176,7 +191,7 @@ try {
   assert.ok(d.e && /意外退出/.test(String(d.e.message)), `the call of a worker that died: ${JSON.stringify(d.r || String(d.e))}`);
   setTabs({ tabs: [{ id: 10, url: 'https://a.test/', title: 'A' }] });
   await until(() => servers().find(j => j.pid !== w5.pid && j.launcher === L), 10_000, 'a worker again');
-  assert.equal((await s.client.listTools()).tools.length, 17);
+  assert.equal((await s.client.listTools()).tools.length, 19);
   assert.ok(!closes().includes(10), 'the session\'s tab closed when a worker died');
   ok('a worker that dies: its call answered with an error to retry, a new worker, the session\'s tab kept');
 
@@ -201,12 +216,12 @@ try {
   await until(() => servers().find(j => j.pid !== w7.pid && j.launcher === L), 20_000, 'the swap after a cancelled call');
   ok('a cancelled call does not hold the swap back');
 
-  // The session ends: the worker closes the session's tabs and both processes go.
+  // The session ends: both processes go; its tabs remain without a native Session for closing.
   const last = servers().find(j => j.launcher === L);
   await s.client.close();
   await until(() => !alive(L) && !alive(last.pid), 15_000, 'launcher and worker gone');
-  await until(() => closes().includes(10), 5000, 'the session\'s tab closed at its end');
-  ok('the session ends: its tabs close, launcher and worker exit');
+  retainedWithoutSession(10, L);
+  ok('the session ends: launcher and worker exit; tabs and unblocked ownership records remain without a native Session');
 
   // A worker that ends while asked to hand over: the session goes on with a new worker (on the new code).
   const t = await connect({ ...ENV, CHROME_BRIDGE_TEST_HANDOVER: 'die' });
@@ -214,7 +229,7 @@ try {
   update();
   await until(() => /ended while asked to hand over/.test(t.stderr()), 20_000, 'the worker ending while asked');
   await until(() => servers().find(j => j.pid !== d1.pid && j.launcher === d1.launcher), 10_000, 'a worker again');
-  assert.equal((await t.client.listTools()).tools.length, 17);
+  assert.equal((await t.client.listTools()).tools.length, 19);
   await t.client.close();
   await until(() => !alive(d1.launcher), 15_000, 'its launcher gone');
   ok('a worker that ends while asked to hand over: another one starts, the session goes on');
@@ -225,7 +240,7 @@ try {
   const many = Array.from({ length: 120 }, (_, i) => ({ id: 1000 + i, url: `https://big.test/${i}/${'x'.repeat(1500)}`, title: `T${i} ${'y'.repeat(1500)}` }));
   setTabs({ tabs: many });
   for (const t of many) record(t.id, b1.launcher, t.url);
-  assert.match(text(await b.client.callTool({ name: 'list_tabs', arguments: {} })), /你（这个会话）的标签（120 个）/);
+  assert.match(text(await b.client.callTool({ name: 'list_tabs', arguments: {} })), /你（这个连接；主会话与子 agent 共用）的标签（120 个）/);
   update();
   await until(() => servers().find(j => j.pid !== b1.pid && j.launcher === b1.launcher), 20_000, 'the swap with a big ledger');
   await until(() => /carried 120 tab\(s\) over/.test(b.stderr()), 5000, 'the big ledger handed over');
@@ -266,7 +281,10 @@ try {
   const idx = await import('../src/index.js');
   const carry = { routines: { version: 1, entries: [] }, ledger: { tabs: [[10, { tabId: 10, state: 'user_viewing', url: 'https://a.test/', helped: { since: 1, until: 2 }, newsSeq: 3 }]], seq: 3, reportedSeq: 2 },
     warned: [11], noted: [12], taskCancelled: 'swap test', panelTask: { text: 'swap test', at: 123 },
-    shots: [[10, { rect: [0, 0, 800, 600], width: 800, height: 600, at: Date.now(), texts: [['t1', { x: 40, y: 20, text: '登录' }]] }]] };
+    geometryUnverified: ['42:70:7:11'],
+    shots: [[10, { rect: { x: 0, y: 0, w: 800, h: 600 }, width: 800, height: 600, at: Date.now(),
+      baseline: { chromePid: 42, cgWindow: 70, windowId: 7, tabId: 10, bounds: { left: 0, top: 0, width: 800, height: 600 } },
+      texts: [['t1', { x: 40, y: 20, text: '登录' }]] }]] };
   assert.equal(idx.applyCarry(JSON.parse(JSON.stringify(carry))), 1);
   assert.deepEqual(idx.handoverCarry(), carry);
   assert.equal(idx.applyCarry(null), 0);

@@ -12,6 +12,7 @@
  * was found ~90 points away from the target afterwards. The click was reported
  * as a success that nobody had observed. These guards make that impossible.
  */
+import { randomUUID } from 'node:crypto';
 import { BridgeError, UserInterrupted, sessionError } from './bridge.js';
 
 /** How far the cursor may sit from the intended point at press time (points). */
@@ -51,8 +52,21 @@ export const MAX_PLAUSIBLE_SIDE_INSET_PT = 8;
  *
  * There is no API that reports the viewport's screen offset, so a wrong model
  * cannot be corrected here — only detected. Detected ⇒ refuse to click.
+ *
+ * A zero or missing size is a different case ('not_shown'): a tab that is not
+ * displayed yet (open_tab opens in the background) reports a 0×0 window with a
+ * normal viewport (field 2026-10-27: 0×0, viewport 1220×921). Nothing is docked
+ * then, so that message must not send anyone looking for DevTools; a docked
+ * panel only shrinks the viewport inside a window of normal, positive size.
  */
 export function checkViewportGeometry(origin, view) {
+  if (!['outerWidth', 'outerHeight', 'innerWidth', 'innerHeight'].every(k => Number(view[k]) > 0)) {
+    const n = v => Number.isFinite(Number(v)) ? Math.round(Number(v)) : '?';
+    return { ok: false, reason: 'not_shown',
+      message: `❌ 标签尚未显示：网页报告的窗口是 ${n(view.outerWidth)}×${n(view.outerHeight)}，可视区 ${n(view.innerWidth)}×${n(view.innerHeight)}，` +
+        '说明这个标签还没有在 Chrome 窗口里显示出来（刚在后台打开的标签常见），无法换算屏幕坐标，已放弃这次操作。' +
+        '\n请先 read_page 核对页面当前状态（此前可能已有滚动），再决定下一步；不要改用估算的坐标点击。' };
+  }
   const dw = Math.abs(Number(view.outerWidth) - Number(view.innerWidth));
   const dh = Math.abs(Number(view.outerHeight) - Number(view.innerHeight));
   // True fullscreen / kiosk: no window chrome at all, and the model is exact.
@@ -158,20 +172,20 @@ export function isChromeOwner(name) {
 /**
  * Did the click produce anything we can actually observe?
  *
- * Two observable effects count (codex review 3, #5):
- *  - the tab's URL changed (a link or a router did something);
- *  - keyboard focus moved onto the target (or inside it) and it was NOT
- *    there before the click.
- * What the target is (onclick, role=button) is not evidence of anything, and
- * focus that was already on the target proves nothing either. Neither effect
- * ⇒ "clicked, nothing observable" — which does not mean it had no effect.
+ * Confirm visible results, not input delivery: navigation, changed visible
+ * content, a newly visible dialog or a new tab. Focus and style changes alone
+ * do not establish that the button's requested action happened. No observed
+ * result within the bounded wait means unknown, not that nothing happened.
  *
  * @returns {{observed:boolean, reasons:string[]}}
  */
-export function didClickRegister({ hrefChanged, activeIsTarget, hadFocusBefore = false }) {
+export function didClickRegister({ hrefChanged, contentChanged, dialogChanged, stateChanged, newTabs = 0 }) {
   const reasons = [];
   if (hrefChanged) reasons.push('页面地址已改变');
-  if (activeIsTarget && !hadFocusBefore) reasons.push('键盘焦点移到了目标元素上（点击前不在它上面）');
+  if (dialogChanged) reasons.push('出现了新的弹层');
+  if (contentChanged) reasons.push('可见内容已更新');
+  if (stateChanged) reasons.push('目标控件的选中状态已改变');
+  if (newTabs > 0) reasons.push('出现了新标签');
   return { observed: reasons.length > 0, reasons };
 }
 
@@ -378,7 +392,7 @@ export function keyupCount(text) {
  *   → action(session, prep, ctx): delivers the input and returns as soon as
  *     the page is known to have consumed it; what is left to watch (URL
  *     change, new tabs) is registered with ctx.observe(fn)
- *   → then:
+ *   → then, when returnFocus requests origin restoration:
  *       success           → restore the scene, warp the pointer back, WHILE the
  *                           session's tap still watches: a user who takes over
  *                           during the restore is not pulled back
@@ -387,7 +401,9 @@ export function keyupCount(text) {
  *                           the user's app when our activation left Chrome in
  *                           front and the user did not click (see handBackApp)
  *       other failure     → as success, then report
- *   → the observation, after the hand-back (still under the input lock, so
+ *     current, invalid held policy, or a marked human handoff → close without
+ *     app/window/tab/pointer restoration; keep the same observation/error path.
+ *   → the observation, after the release/restoration (still under the input lock, so
  *     sweeps stay inert): its URL becomes the tab's expected URL only when the
  *     action ended without the user and no mouse button went down since.
  *   A refusal before anything was posted (prepare, begin) is re-checked
@@ -397,7 +413,7 @@ export function keyupCount(text) {
  *
  * ops: { waitForUserIdle() -> ms, now() -> epoch ms, snapshotScene() -> scene|null,
  *        waitForHandsOff() -> ms              optional, takeover: until the user is done typing/clicking
- *        mousepos() -> {x,y}|null, prepare() -> prep, userActedSince(ms) -> bool,
+ *        mousepos() -> {x,y}|null, prepare(pre, {pointer, session, scene}, ctx) -> prep, userActedSince(ms) -> bool,
  *        openSession() -> {request, close, interrupted},
  *        restoreScene(scene, {since}) -> reply   since: epoch ms of the last clean look
  *        warp(point) (only when the session is gone),
@@ -409,6 +425,7 @@ export function keyupCount(text) {
  *        navigationUntouched(prep, since) -> bool  scoped native routing evidence covering
  *                                             keyboard and mouse input in the target window
  *        activates: false                     the action never brings Chrome forward (scroll)
+ *        returnFocus: {mode,source}             frozen at first hold; reuse policy always wins
  *        veil(pre) -> {rect?, label, point?}  optional, takeover: what the veil shows (hold's `veil`)
  *        inherit: {scene, pointer, touched, claim()}  optional, takeover: the previous agent's takeover
  *                                             is taken over (lock.js hand-over): no scene is read; once
@@ -434,25 +451,333 @@ export function keyupCount(text) {
 /** Quiet window before activation: user input seen by the running session aborts it. */
 export const PRE_ACTIVATE_QUIET_MS = 250;
 
+/** Copy a policy at the call/hold boundary; only new legacy calls get a default. */
+export function normalizeReturnFocus(value, legacyDefault = false) {
+  if (value === undefined && legacyDefault) return Object.freeze({ mode: 'origin', source: 'legacy_default' });
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { mode, source } = value;
+  if (!['current', 'origin'].includes(mode) || !['explicit', 'legacy_default', 'why_signal'].includes(source)) return null;
+  return Object.freeze({ mode, source });
+}
+
+function focusReturnMetadata(returnFocus, releaseReason = 'policy') {
+  return { returnFocus, releaseReason,
+    focusRestoration: !returnFocus ? 'policy_invalid'
+      : releaseReason === 'human_handoff' || returnFocus.mode === 'current' ? 'not_requested' : 'requested',
+    ...(!returnFocus ? { focusPolicyDiagnostic: 'missing_or_invalid_hold_policy' } : {}) };
+}
+
+/** Closing can confirm release and still be the first reply that reports Stop. */
+function terminalInputFacts(end, sessionInterrupted = null, status = null) {
+  const reported = [status?.interrupted, end?.interrupted, sessionInterrupted];
+  // A malformed reported record is still interruption evidence, even when it
+  // cannot supply the identity needed by mergeInterrupted or a retry proof.
+  const interrupted = mergeInterrupted(reported) || reported.find(Boolean) || null;
+  const aborted = end?.takeover?.aborted === true ? end.takeover
+    : status?.takeover?.aborted === true ? status.takeover : null;
+  const terminalInterrupted = !!(interrupted || aborted);
+  return { terminalInterrupted, terminalAborted: !!aborted,
+    ...(terminalInterrupted ? { noRetry: true } : {}),
+    ...(interrupted ? { interrupted } : {}),
+    ...(aborted?.abortedBy ? { terminalAbortedBy: aborted.abortedBy } : {}) };
+}
+
+/** Compare raw first-event facts, never the merged earliest-epoch receipt. */
+function sameInterruption(a, b, complete) {
+  if (!a || !b || !['move', 'button', 'wheel', 'key', 'flags'].includes(a.kind) || a.kind !== b.kind) return false;
+  const clocks = ['t', 'epoch'];
+  if (complete ? !clocks.every(k => Number.isFinite(a[k]) && Number.isFinite(b[k]))
+    : !clocks.some(k => Number.isFinite(a[k]) && Number.isFinite(b[k]))) return false;
+  if (!clocks.every(k => (a[k] == null && b[k] == null) ||
+      (Number.isFinite(a[k]) && Number.isFinite(b[k]) && a[k] === b[k]))) return false;
+  if ([a, b].some(x => x.button != null && typeof x.button !== 'boolean')) return false;
+  return (a.button === true || a.kind === 'button') === (b.button === true || b.kind === 'button');
+}
+
+/** NAT-RETRY: one internal id per MCP call context (index.js CALL, shared by its internal attempts), sent with
+ * ordinary native requests so the helper can tell this call's writes from an earlier call's in a held Session. */
+const NATIVE_CALLS = new WeakMap();
+function nativeCallTag(call) {
+  if (!call || typeof call !== 'object') return {};
+  let id = NATIVE_CALLS.get(call);
+  if (!id) NATIVE_CALLS.set(call, id = randomUUID());
+  return { call: id };
+}
 export async function runInputAction(ops, action) {
+  const detach = [];
+  const onSession = ops.onSession;
+  // A reused hold is authoritative, including a missing/invalid policy. Never
+  // cover a dropped held policy with a fresh caller's compatibility default.
+  const focus = { returnFocus: normalizeReturnFocus(ops.reuse ? ops.reuse.returnFocus : ops.returnFocus, !ops.reuse),
+    releaseReason: 'policy', closed: false, end: null, blockRecovery: false, terminal: { terminalInterrupted: false, terminalAborted: false } };
+  const facts = (prior = null) => ({ ...focusReturnMetadata(focus.returnFocus, focus.releaseReason), ...focus.terminal,
+    ...(prior?.terminalInterrupted === true || prior?.terminalAborted === true ? { terminalInterrupted: true, noRetry: true } : {}),
+    ...(prior?.terminalAborted === true ? { terminalAborted: true } : {}),
+    ...(prior?.terminalAbortedBy && !focus.terminal.terminalAbortedBy ? { terminalAbortedBy: prior.terminalAbortedBy } : {}),
+    ...(prior?.noRetry === true ? { noRetry: true } : {}),
+    ...(prior?.interrupted ? { interrupted: mergeInterrupted([prior.interrupted, focus.terminal.interrupted]) || prior.interrupted } : {}),
+    ...(focus.closed ? { inputReleased: focus.end?.ok === true && focus.end?.takeover?.active !== true } : {}) });
+  // HI2: a session whose helper was neither confirmed stopped (acknowledgement) nor confirmed gone (exit).
+  const sessions = new Set();
+  const unconfirmed = () => [...sessions].some(s => s?.helperStop === 'unconfirmed');
+  // HI2 r2: every return waits for a stop this call started (a caller cancel, a timeout), and a stopped session is never
+  // handed back as a job's healthy kept hold: it is closed here and the call reports the stop.
+  const stopped = () => [...sessions].filter(s => s?.stopStarted === true);
+  const settleStops = async () => {
+    for (const s of stopped()) await s.stopSettled?.().catch(() => null);
+    for (const s of stopped()) await s.close?.().catch(() => null);
+  };
+  try {
+    let result = await runInputActionCore({ ...ops, onSession(session) {
+      sessions.add(session);
+      const cleanup = onSession?.(session);
+      if (typeof cleanup === 'function') detach.push(cleanup);
+    } }, action, focus);
+    if (stopped().length) {
+      await settleStops();
+      if (result.kept) {
+        throw Object.assign(new BridgeError('cancelled', '⏹ 调用已取消：键盘鼠标助手已停止，接管已结束，没有保留给后续步骤。' +
+          '\n给 agent：不要自动重试；先 read_page 核对页面，再决定下一步。'),
+        { steps: result.steps, sent: result.sent || [], inputDelivery: 'unknown', noRetry: true,
+          helperStop: stopped().map(s => s.helperStop).find(Boolean) || null });
+      }
+    }
+    if (unconfirmed()) {
+      throw Object.assign(new BridgeError('session_failed', '❌ 操作已执行，但无法确认鼠标键盘助手已经停止（没有结束回复，进程也没能确认退出）。' +
+        '\n给 agent：不要重试；先 read_page 核对页面。'), { steps: result.steps, sent: result.sent || [], helperStop: 'unconfirmed' });
+    }
+    return { ...result, ...facts(result.error),
+      ...(focus.terminal.terminalInterrupted && result.outcome === 'ok' ? { outcome: 'user', late: true, restored: false } : {}) };
+  } catch (error) {
+    if (stopped().length) {
+      await settleStops();
+      // A stopped session is not the job's hold any more: nothing is kept for a retry (taskRun releases the lease).
+      if (error.keptHold) { delete error.keptHold; error.noRetry = true; }
+    }
+    const terminal = facts(error);
+    Object.assign(error, terminal);
+    // HI2: with neither, whatever the helper may still do is unknown: never not_sent, never retried.
+    if (unconfirmed()) Object.assign(error, { inputDelivery: 'unknown', noRetry: true, helperStop: 'unconfirmed' });
+    throw error;
+  } finally { for (const cleanup of detach) cleanup(); }
+}
+
+async function runInputActionCore(ops, action, focus) {
+  const returnFocus = focus.returnFocus;
+  let restoreRequested = returnFocus?.mode === 'origin';
+  if (!ops.reuse && ops.inherit && !restoreRequested) {
+    throw Object.assign(new BridgeError('focus_handoff_conflict', '当前归还策略不能接过其他任务的原场景；没有发送输入。'),
+      { inputDelivery: 'not_sent', noRetry: true });
+  }
+  const pagePromptAuto = ops.pagePromptAuto || null;
+  // NAT-RETRY: sent with ordinary native requests only (bind, normal nativeChrome), never with restore.
+  const callTag = nativeCallTag(ops.nativeCall);
+  const checkAuto = () => {
+    if (!pagePromptAuto) return;
+    const reuse = ops.reuse;
+    if (!ops.takeover || !ops.keep || !reuse || reuse !== pagePromptAuto.kept ||
+        reuse.session !== pagePromptAuto.session || reuse.nativeState?.epoch !== pagePromptAuto.epoch ||
+        pagePromptAuto.attemptBudget !== 1 || pagePromptAuto.noRetarget !== true ||
+        !['chromePid', 'windowId', 'tabId', 'cgWindow'].every(k => reuse.nativeState?.target?.[k] === pagePromptAuto.target?.[k]) ||
+        typeof pagePromptAuto.check !== 'function') {
+      throw Object.assign(new BridgeError('page_auto_hold_changed', '原接管身份已变化，未自动操作。'), { inputDelivery: 'not_sent', noRetry: true });
+    }
+    pagePromptAuto.check();
+  };
+  // Refuse before idle, scene preparation or any possible Session acquisition.
+  checkAuto();
   const T = { start: Date.now() };  // diagnostic timing only (not ops.now)
   // Takeover: the hold comes first; the user's scene is recorded only once it is frozen. Right before
   // it the user finishes typing or clicking (hold: waitForHandsOff).
   let idleWait = ops.takeover ? 0 : await ops.waitForUserIdle();
   const idleEnd = ops.now();
   T.idleEnd = Date.now();
+  // HI1 v3: without takeover these reads come first; the call budget's boundary precedes each (no-op without a budget).
+  if (!ops.takeover) await ops.budgetCheck?.();
   let scene = ops.takeover ? null : await ops.snapshotScene();
+  if (!ops.takeover) await ops.budgetCheck?.();
   let pointer = ops.takeover ? null : await ops.mousepos();
   const steps = [];
   const keyed = new Map();
   const sent = new Map();
+  // An empty local ledger cannot erase delivery already reported by the error.
+  const sentKinds = error => [...new Set([...(Array.isArray(error?.sent) ? error.sent : []), ...sent.keys()])];
   let observer = null;
+  const nativeState = ops.reuse?.nativeState || {
+    epoch: null, target: null, restoreToken: null, sequence: 0, unknown: false, preserveSelection: false
+  };
+  const nativeFailure = (code, message) => Object.assign(new BridgeError(code, message), { inputDelivery: 'not_sent' });
+  const checkBoundary = async (restore = false) => {
+    try { checkAuto(); await (restore ? ops.beforeRestore?.() : ops.beforeSend?.()); }
+    catch (error) {
+      // A changed rule or expired auto snapshot cancels only this private attempt.
+      // It is not a task Stop and must not revoke an otherwise healthy task Session.
+      if (pagePromptAuto && String(error.code || '').startsWith('page_auto_')) throw error;
+      const reason = error.code === 'paused_by_user' ? 'pause' : error.code === 'conversation_waiting' ? 'conversation'
+        : error.code === 'cancelled' ? 'caller' : 'task';
+      if (reason !== 'pause') nativeState.revoked = true;
+      if (ops.nativeTransactions && session) await session.request({ op: 'revokeNative', reason }, { raw: true }).catch(() => {});
+      throw error;
+    }
+  };
+  const captureEpoch = reply => {
+    if (!ops.nativeTransactions) return;
+    if (!Number.isSafeInteger(reply?.epoch) || reply.epoch < 1 ||
+        (nativeState.epoch != null && nativeState.epoch !== reply.epoch)) {
+      throw nativeFailure('native_epoch_changed', '原生 Session 代次已失效，没有继续发送。');
+    }
+    nativeState.epoch = reply.epoch;
+  };
+  let settleMs = ops.reuse?.settleMs || 0;
   const ctx = {
     steps,
+    /** HI1 v3: the call budget's boundary for a prepare step right before its first write (activation, tab selection). */
+    budget: () => budgetCheck(),
+    /** HI v3.3: the first write or input request is issued now (after its chokepoint check): no budget check after it. */
+    issued: () => { if (!pagePromptAuto) ops.issued?.(); },
     /** Call right BEFORE posting input the page may act on (click, key, paste, enter, wheel)... */
-    sent(kind) { sent.set(kind, (sent.get(kind) || 0) + 1); },
+    sent(kind) {
+      // HI v3.2: the call's first write or input event checks the budget right before it is sent (index.js firstWrite).
+      if (!pagePromptAuto) ops.firstWrite?.();
+      if (pagePromptAuto && pagePromptAuto.dispatched) throw Object.assign(new BridgeError('page_auto_attempt_used', '自动处理已尝试，不会重复发送。'), { inputDelivery: 'not_sent', noRetry: true });
+      if (pagePromptAuto) pagePromptAuto.dispatched = true;
+      sent.set(kind, (sent.get(kind) || 0) + 1);
+    },
     /** ...and this when the helper reports that request posted none of it after all. */
     unsent(kind) { const n = (sent.get(kind) || 0) - 1; if (n > 0) sent.set(kind, n); else sent.delete(kind); },
+    /** Creation can activate Chrome late; its final restoration stays under the same hold. */
+    settleScene(ms) { settleMs = Math.max(settleMs, Number(ms) || 0); },
+    /** Mark a prepared field for the human; this grants no native write authority. */
+    async handToHuman(target) {
+      if (pagePromptAuto) throw nativeFailure('page_auto_handoff_forbidden', '自动处理不能发起人工交接。');
+      if (!nativeState.target || !target || ['chromePid', 'windowId', 'tabId', 'cgWindow'].some(k => target[k] !== nativeState.target[k])) {
+        throw nativeFailure('native_target_changed', '不能交接未经绑定的标签选择。');
+      }
+      if (!ops.nativeTransactions || !ops.takeover || ops.keep || !held || !session || !Number.isSafeInteger(nativeState.epoch) ||
+          nativeState.epoch < 1 || nativeState.unknown || nativeState.revoked) {
+        throw nativeFailure('native_session_required', '原接管无法确认，没有发起人工交接。');
+      }
+      const captured = session, epoch = nativeState.epoch;
+      await ctx.check();
+      if (session !== captured || nativeState.epoch !== epoch || nativeState.unknown || nativeState.revoked ||
+          ['chromePid', 'windowId', 'tabId', 'cgWindow'].some(k => target[k] !== nativeState.target?.[k])) {
+        throw nativeFailure('native_target_changed', '人工交接前原接管或目标已变化。');
+      }
+      focus.releaseReason = 'human_handoff';
+      restoreRequested = false;
+    },
+    async bindNativeTarget(target) {
+      if (pagePromptAuto) {
+        checkAuto();
+        if (!['chromePid', 'windowId', 'tabId', 'cgWindow'].every(k => target?.[k] === pagePromptAuto.target[k])) {
+          throw nativeFailure('page_auto_retarget', '自动处理不能改变原目标。');
+        }
+        return;
+      }
+      if (!ops.nativeTransactions) return;
+      if (!target || !['chromePid', 'windowId', 'tabId', 'cgWindow'].every(k => Number.isSafeInteger(target[k]) && target[k] > 0)) {
+        throw nativeFailure('native_target_unknown', '原生目标身份不完整，没有发送。');
+      }
+      if (!ops.takeover && !began) await begin({ ...target, windowBounds: target.bounds ? {
+        x: target.bounds.left, y: target.bounds.top, w: target.bounds.width, h: target.bounds.height
+      } : undefined });
+      await ctx.check();
+      const reply = await session.request({ op: 'bindNativeTarget', schema: 1, epoch: nativeState.epoch, ...callTag,
+        target: Object.fromEntries(['chromePid', 'windowId', 'tabId', 'cgWindow'].map(k => [k, target[k]])) });
+      captureEpoch(reply);
+      nativeState.target = { ...target };
+      if (!ops.takeover && !nativeState.restoreToken) await ctx.recordNativeScene(scene);
+    },
+    async recordNativeScene(original) {
+      if (pagePromptAuto) throw nativeFailure('page_auto_scene_forbidden', '自动处理不能重新记录场景。');
+      if (!ops.nativeTransactions || nativeState.restoreToken) return;
+      if (!original || !session || nativeState.epoch == null) throw nativeFailure('native_scene_unknown', '原场景尚未记录，没有发送。');
+      const reply = await session.request({ op: 'recordNativeScene', schema: 1, epoch: nativeState.epoch, scene: original });
+      captureEpoch(reply);
+      if (typeof reply.restoreToken !== 'string' || !reply.restoreToken) throw nativeFailure('native_scene_unknown', '原场景凭据缺失，没有发送。');
+      nativeState.restoreToken = reply.restoreToken;
+    },
+    async native(intent, { policy = 'normal', beforeCloseEnqueue = null } = {}) {
+      // Private synchronous gate for this held close attempt, never a generic
+      // callback or a restore hook. A Promise cannot grant enqueue authority.
+      if (beforeCloseEnqueue != null && (typeof beforeCloseEnqueue !== 'function' ||
+          Object.prototype.toString.call(beforeCloseEnqueue) === '[object AsyncFunction]' ||
+          policy !== 'normal' || intent?.kind !== 'closeTab' || intent.tabId !== nativeState.target?.tabId)) {
+        throw nativeFailure('native_session_required', '关闭发送边界无效，没有发送。');
+      }
+      if (pagePromptAuto && (policy !== 'normal' || intent?.kind !== 'dialogAnswer' || intent.autoConstraint !== pagePromptAuto.autoConstraint)) {
+        throw nativeFailure('page_auto_native_forbidden', '自动处理只能回答已验证的原对话框。');
+      }
+      const captured = session;
+      if (!ops.nativeTransactions || !captured || nativeState.epoch == null || nativeState.unknown || nativeState.revoked ||
+          !['normal', 'restore'].includes(policy) || (policy === 'restore' && intent?.kind !== 'restoreScene')) {
+        throw nativeFailure('native_session_required', '同一原生 Session 已失效，没有继续发送。');
+      }
+      if (policy === 'normal') await ctx.check();
+      else {
+        await checkBoundary(true);
+        const status = await captured.request({ op: 'status' }, { raw: true }).catch(() => null);
+        if (!status || status.ok === false || status.interrupted || status.takeover?.aborted ||
+            (ops.takeover && !status.takeover?.active) || (status.nativePaused && !status.takeover?.active)) {
+          throw nativeFailure('task_hold_lost', '接管已经结束，没有还原写入。');
+        }
+        captureEpoch(status);
+      }
+      // HI v3.2: ...and so does a native write (activation, tab selection, window move, dialog answer). Never a restore.
+      if (policy === 'normal' && !pagePromptAuto) { ops.firstWrite?.(); ops.issued?.(); }   // checked, then issued below
+      const operationId = `native-${++nativeState.sequence}`;
+      try {
+        if (beforeCloseEnqueue != null) {
+          const allowed = beforeCloseEnqueue();
+          if (allowed !== true) {
+            if (allowed && typeof allowed.then === 'function') Promise.resolve(allowed).catch(() => {});
+            throw nativeFailure('native_session_required', '关闭发送边界未同步授权，没有发送。');
+          }
+        }
+        const reply = await captured.request({ op: 'nativeChrome', schema: 1, operationId, epoch: nativeState.epoch,
+          intent: { ...intent, ...(policy === 'restore' ? { preserveSelection: nativeState.preserveSelection } : {}) },
+          policy, ...(policy === 'restore' ? { restoreToken: nativeState.restoreToken } : callTag) });
+        if (!reply || reply.epoch !== nativeState.epoch || reply.operationId !== operationId ||
+            !['sent', 'not_sent', 'unknown'].includes(reply.inputDelivery) || !Array.isArray(reply.stages)) throw Object.assign(new BridgeError('native_delivery_unknown', '原生回执缺少同代次凭据，不会重试或还原。'),
+          { reply, inputDelivery: 'unknown', stages: reply?.stages, noRetry: true });
+        if (reply.inputDelivery === 'unknown') throw Object.assign(new BridgeError('native_delivery_unknown', '原生发送状态未知，不会重试或还原。'),
+          { reply, inputDelivery: 'unknown', stages: reply.stages, noRetry: true });
+        return reply;
+      } catch (error) {
+        if (error.inputDelivery === 'unknown' || error.reply?.inputDelivery === 'unknown') {
+          nativeState.unknown = true; nativeState.error = error; error.nativeDeliveryUnknown = true; error.inputDelivery = 'unknown'; error.noRetry = true;
+        }
+        throw error;
+      }
+    },
+    async check() {
+      await checkBoundary();
+      if (ops.takeover) {
+        const q = await session?.request({ op: 'status' }, { raw: true }).catch(() => null);
+        if (!q || q.ok === false || q.interrupted || session?.interrupted || !q.takeover?.active || q.takeover.aborted) {
+          if (q?.takeover?.aborted || q?.error === 'aborted') throw sessionError(q);
+          const e = new Error('接管状态无法确认，已停止，没有继续发送。');
+          e.code = 'task_hold_lost';
+          e.by = q?.takeover?.abortedBy || q?.takeover?.releasedBy || null;
+          throw e;
+        }
+        captureEpoch(q);
+      }
+      if (ops.nativeTransactions && !ops.takeover && began) {
+        const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
+        if (!q || q.ok === false || q.interrupted || session.interrupted) throw sessionError(q || { error: 'session_failed' });
+        captureEpoch(q);
+      }
+      if (nativeState.unknown) throw Object.assign(nativeFailure('native_delivery_unknown', '此前发送状态未知，不会继续。'), { inputDelivery: 'unknown', noRetry: true });
+      await checkBoundary();
+    },
+    /** PERM1 r1 A3: a healthy physical hold right now (takeover mode, held, and the session's status confirms it). The
+     * probe of type_text needs it; monitored mode or a lost hold answers false (observe only). */
+    async holdHealthy() {
+      if (!ops.takeover || !held || !session) return false;
+      const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
+      return !!q && q.ok !== false && !q.interrupted && !session.interrupted && q.takeover?.active === true && !q.takeover.aborted;
+    },
     /** Record a completed step; a `key` replaces that key's earlier entry (running totals). */
     step(text, key = null) {
       if (key != null && keyed.has(key)) { steps[keyed.get(key)] = text; return; }
@@ -469,13 +794,76 @@ export async function runInputAction(ops, action) {
     }
   };
   let prep = null, session = null, out, err = null, began = false, failedAt = null, pre = null;
+  let priorCloseAborts = [];
+  // Closing is resource cleanup in every policy, and a failed reply is not
+  // permission to close or restore a second time through a fallback branch.
+  const closeSession = async ({ statuses = [], interruptions = [], userInterruption = false, retryBeforeInput = false } = {}) => {
+    if (!session) return null;
+    if (!focus.closed) {
+      // Freeze each source separately before close can replace or mutate the
+      // sticky Session record. beforeBegin is a local annotation, not identity.
+      const before = [err?.interrupted, err?.reply?.interrupted, session.interrupted,
+        ...statuses.map(s => s?.interrupted), ...interruptions].filter(Boolean).map(x => Object.freeze({ ...x }));
+      priorCloseAborts = Object.freeze([err?.reply, ...statuses].filter(s => s?.takeover?.aborted === true)
+        .map(s => Object.freeze({ aborted: true, abortedBy: s.takeover.abortedBy })));
+      const priorAbort = priorCloseAborts.length ? { takeover: priorCloseAborts[0] } : null;
+      focus.closed = true;
+      focus.end = await session.close().catch(() => null);
+      const sessionInterrupted = session.interrupted;
+      const postSources = [focus.end?.interrupted, sessionInterrupted];
+      const after = postSources.filter(Boolean).map(x => ({ ...x }));
+      const confirmedEnd = focus.end?.ok === true && focus.end?.takeover?.active !== true;
+      const repeated = complete => before.length > 0 && after.length > 0 &&
+        before.every(x => sameInterruption(before[0], x, complete)) &&
+        after.every(x => sameInterruption(before[0], x, complete));
+      focus.terminal = terminalInputFacts(focus.end, sessionInterrupted, priorAbort);
+      if ((before.length || userInterruption) && (!confirmedEnd || (userInterruption && !after.length))) {
+        focus.terminal.terminalInterrupted = true;
+        focus.terminal.noRetry = true;
+        if (before.length) focus.terminal.interrupted ||= mergeInterrupted(before) || before[0];
+      }
+      // Only the ordinary monitored, clean-before-input branch may retain its
+      // existing retry policy when confirmed close repeats that exact event.
+      if (retryBeforeInput && confirmedEnd && !focus.terminal.terminalAborted && postSources.every(Boolean) && repeated(true)) {
+        focus.terminal.terminalInterrupted = false;
+        delete focus.terminal.noRetry;
+      }
+      // A terminal Stop or newly discovered interruption cannot authorize a
+      // post-close recovery. Preserve the existing guarded app hand-back for
+      // an ordinary known event using its available clock fields (A3/A4).
+      // That weaker legacy recovery proof never grants retry permission.
+      focus.blockRecovery = focus.terminal.terminalAborted || err?.terminalInterrupted === true || err?.terminalAborted === true ||
+        (before.length > 0 && !confirmedEnd) || (after.length > 0 && !repeated(false));
+      T.releaseDone = Date.now();
+    }
+    return focus.end;
+  };
   // While the session holds the user's input (takeover), what they do never
   // reaches any app, but it still resets the idle counters: those checks are skipped.
   let held = false;
   // A long job's next action (index.js task hold): the session, the hold and the user's scene are
   // the job's, kept from its first action; nothing is held, begun or recorded again.
   const reuse = ops.reuse || null;
-  if (reuse) { session = reuse.session; held = true; began = true; scene = reuse.scene; pointer = reuse.pointer; }
+  if (reuse) { session = reuse.session; held = true; began = true; scene = reuse.scene; pointer = reuse.pointer; ops.onSession?.(session); }
+  const ensureSession = async () => {
+    checkAuto();
+    if (pagePromptAuto && !session) throw nativeFailure('page_auto_session_required', '原输入会话已结束，未重新接管。');
+    if (!session) { session = await ops.openSession(); ops.onSession?.(session); }
+    return session;
+  };
+  // HI1 (v3): the call budget's stage boundary (index.js inputBudgetGate), before the preflight, the hands-off wait,
+  // the hold and the activation. It throws; it aborts nothing, and a stage that has started runs to its end.
+  // Outside checkBoundary: a refusal here revokes nothing, so a job's kept hold survives it.
+  const budgetCheck = async () => { if (ops.budgetCheck) await ops.budgetCheck(); };
+  let dialogToken = null;
+  const inspectNativeDialog = async target => {
+    const own = await ensureSession();
+    const identity = Object.fromEntries(['chromePid', 'windowId', 'tabId', 'cgWindow'].map(k => [k, target[k]]));
+    const reply = await own.request({ op: 'inspectDialog', schema: 1, target: identity, ...(dialogToken ? { dialogToken } : {}) });
+    if (reply.known !== true || (reply.open && !reply.identity?.dialogToken)) throw nativeFailure('dialog_probe_unknown', '无法确认原生对话框身份。');
+    if (reply.open && !dialogToken) dialogToken = reply.identity.dialogToken;
+    return reply;
+  };
   // The previous agent's takeover handed over (lock.js): its user scene becomes ours once claimed.
   const inherit = !reuse && ops.takeover && ops.inherit ? ops.inherit : null;
   const windowChanged = (a, b) => {
@@ -485,9 +873,10 @@ export async function runInputAction(ops, action) {
   };
   const begin = async (p) => {
     if (reuse) { if (p.cgWindow !== reuse.cgWindow) throw windowChanged(reuse.cgWindow, p.cgWindow); return; }
-    if (!session) session = await ops.openSession();
+    await ensureSession();
     const b = await session.request({ op: 'begin', chromePid: p.chromePid, window: p.cgWindow,
       windowBounds: p.windowBounds, ...(ops.takeover && !held ? { takeover: true, ...ops.takeoverLimits } : {}) });
+    captureEpoch(b);
     if (b.inputMonitor === false) throw sessionError({ ok: false, error: 'no_input_monitor' });
     held = held || !!(b.takeover && b.takeover.active === true);
     began = true;
@@ -509,15 +898,18 @@ export async function runInputAction(ops, action) {
       T.held = Date.now();
       return;
     }
-    if (!session) session = await ops.openSession();
+    await ensureSession();
     // Wait for the user to be done typing or clicking only now, after the page work (preflight), so they
     // cannot start again in between — not when the input is already held (a hand-over from the previous agent).
-    if (!inherit && ops.waitForHandsOff) { idleWait = await ops.waitForHandsOff(); T.holdStart = Date.now(); }
+    if (!inherit && ops.waitForHandsOff) { await budgetCheck(); idleWait = await ops.waitForHandsOff(); T.holdStart = Date.now(); }
+    await budgetCheck();
+    await checkBoundary();
     // The veil: the Chrome window from the pre-check (the hole), what is being done, the target point.
     let veil = null;
     try { veil = ops.veil ? ops.veil(pre) : null; } catch {}
     const h = await session.request({ op: 'hold', ...ops.takeoverLimits, ...(veil ? { veil } : {}) }, { raw: true });
     if (!h || h.ok === false) throw sessionError(h || { ok: false, error: 'session_failed' });
+    captureEpoch(h);
     held = true;
     T.held = Date.now();
     // When the helper's tap began holding (its own clock), for the timing detail line.
@@ -532,12 +924,14 @@ export async function runInputAction(ops, action) {
       scene = inherit.scene;
       pointer = inherit.pointer;
       T.sceneRead = Date.now();
+      await ctx.recordNativeScene(scene);
       // Cancelled while it waited: the handed scene is ours now, so it is put back (below), nothing else done.
       if (ops.signal && ops.signal.aborted) throw Object.assign(new Error('调用已取消：接过的接管直接还原，没有操作。'), { code: 'cancelled' });
       return;
     }
     [scene, pointer] = await Promise.all([ops.snapshotScene(), h.pointer ? h.pointer : ops.mousepos()]);
     T.sceneRead = Date.now();
+    await ctx.recordNativeScene(scene);
   };
   try {
     // Page-only preparation (locate, arm the delivery listener) touches nothing of
@@ -545,11 +939,12 @@ export async function runInputAction(ops, action) {
     // Without takeover the session starts before activation and watches the user through it.
     if (ops.takeover && !reuse) {
       // Started now, primed (tap built, veil built, both off) while the page is being located.
-      session = await ops.openSession();
+      await ensureSession();
       session.request({ op: 'prime' }, { raw: true }).catch(() => {});
     }
     if (ops.preflight) {
-      pre = await ops.preflight();
+      await budgetCheck();
+      pre = await ops.preflight({ inspectNativeDialog, boundary: budgetCheck });
       T.preEnd = Date.now();
     }
     if (ops.takeover) await hold();
@@ -559,7 +954,7 @@ export async function runInputAction(ops, action) {
       if (!held) {
         await new Promise(r => setTimeout(r, ops.quietMs ?? PRE_ACTIVATE_QUIET_MS));
         const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
-        if (q && q.interrupted) throw new UserInterrupted({ ...q.interrupted, beforeBegin: true });
+        if (q && q.interrupted) throw new UserInterrupted({ ...q.interrupted, beforeBegin: true }, q);
       }
     }
     if (session && !held && await ops.userActedSince(idleEnd)) {
@@ -568,7 +963,17 @@ export async function runInputAction(ops, action) {
     // The call was cancelled while it waited for its turn: nothing activated, nothing sent.
     if (ops.signal && ops.signal.aborted) throw Object.assign(new Error('调用已取消，没有操作。'), { code: 'cancelled' });
     // Where the user's pointer was when this began: the display they are working on (index.js keeps the agent off it).
-    prep = await ops.prepare(pre, { pointer });
+    await budgetCheck();
+    if (ops.takeover || ops.beforeSend) await ctx.check();
+    prep = await ops.prepare(pre, { pointer, session, scene }, ctx);
+    // PERM1 (ruling 2, the deferred preflight): a Chrome popup answered inside this hold may have moved the page under
+    // it, so the preflight's page evidence (located geometry) is stale: the action measures again, under the hold.
+    if (prep?.popupResolved === true && pre && typeof pre === 'object') pre.stale = true;
+    checkAuto();
+    if (pagePromptAuto && (prep?.touchesScene !== false ||
+        !['chromePid', 'windowId', 'tabId', 'cgWindow'].every(k => prep?.target?.[k] === pagePromptAuto.target[k]))) {
+      throw nativeFailure('page_auto_retarget', '自动处理不允许前台或目标准备变化。');
+    }
     T.activated = Date.now();
     if (!session) {
       if (await ops.userActedSince(idleEnd)) {
@@ -580,36 +985,65 @@ export async function runInputAction(ops, action) {
     } else if (!began) {
       // Held without a pre-check (scroll, type without a marker): the window is known only now.
       await begin(prep);
-    } else if (prep.cgWindow !== pre.session.cgWindow) {
-      throw windowChanged(pre.session.cgWindow, prep.cgWindow);
+    } else if (prep.cgWindow !== (pre?.session?.cgWindow ?? nativeState.target?.cgWindow)) {
+      throw windowChanged(pre?.session?.cgWindow ?? nativeState.target?.cgWindow, prep.cgWindow);
     }
+    if (ops.takeover || ops.beforeSend) await ctx.check();
     out = await action(session, prep, ctx, pre);
     T.actionEnd = Date.now();
-    if (!ops.keep) ctx.panel('restore');
+    if (restoreRequested && !ops.keep && !ops.leaveVisible) ctx.panel('restore');
   } catch (e) {
     err = e;
+    if (e.inputDelivery === 'unknown' || e.reply?.inputDelivery === 'unknown') { nativeState.unknown = true; nativeState.error = e; e.nativeDeliveryUnknown = true; }
+    if (sent.size && e.inputDelivery === 'not_sent') { e.targetInputDelivery = 'not_sent'; e.inputDelivery = 'sent'; }
+    if (sent.size && !e.inputDelivery) e.inputDelivery = 'unknown';
+    if (sentKinds(e).length) e.noRetry = true;
+    if (sentKinds(e).length && e.code === 'paused_by_user') {
+      e.message = e.message.replace('这次什么也没做。', '已停止后续操作；此前可能已有操作送达。');
+    }
     failedAt = ops.now();
-    if (session && held && !(ops.keep && reuse && !sent.size)) session.request({ op: 'panel', fail: true }, { raw: true }).catch(() => {});
+    if (session && held && !(ops.keep && reuse && !sentKinds(e).length)) session.request({ op: 'panel', fail: true }, { raw: true }).catch(() => {});
     // Refused before anything of ours was posted: the user switching windows
     // during activation is a common cause, and the idle counter still tells.
-    if (!ops.takeover && !began && !(e instanceof UserInterrupted) && await ops.userActedSince(idleEnd).catch(() => false)) {
+    // Existing safety refusals keep their original error and terminal facts.
+    if (!ops.takeover && !began && !sentKinds(e).length && e.noRetry !== true &&
+        e.terminalInterrupted !== true && e.terminalAborted !== true && !(e instanceof UserInterrupted) &&
+        await ops.userActedSince(idleEnd).catch(() => false)) {
       const u = new UserInterrupted({ kind: 'input', t: null, beforeBegin: true });
       u.cause = e;
       err = u;
     }
   }
 
+  if (pagePromptAuto) {
+    // Private one-attempt work never restores, reacquires, retries, or hands off.
+    // It either leaves the same healthy hold intact, or closes that exact Session.
+    const status = await session?.request({ op: 'status' }, { raw: true }).catch(() => null);
+    const healthy = session === pagePromptAuto.session && nativeState.epoch === pagePromptAuto.epoch &&
+      status?.epoch === pagePromptAuto.epoch && status.ok !== false && !status.interrupted && !session?.interrupted &&
+      status.takeover?.active === true && status.takeover?.aborted !== true && !nativeState.unknown && !nativeState.revoked;
+    if (healthy && !err && prep) return { outcome: 'ok', out, idleWait, restored: false, steps, end: null, began, prep, timing: T,
+      kept: { session, scene, pointer, cgWindow: prep.cgWindow, chromePid: prep.chromePid, settleMs, nativeState, native: ctx.native, returnFocus: normalizeReturnFocus(returnFocus) } };
+    if (healthy && err && !sentKinds(err).length) { err.keptHold = true; err.steps = steps; err.sent = sentKinds(err); err.noRetry = true; throw err; }
+    if (sentKinds(err).length) nativeState.unknown = true;
+    await closeSession();
+    const error = err || nativeFailure('page_auto_hold_lost', '自动处理后原接管无法确认，已停止。');
+    error.noRetry = true; error.sent = sentKinds(error);
+    error.inputDelivery = err?.inputDelivery ?? err?.reply?.inputDelivery ?? (error.sent.length ? 'unknown' : 'not_sent');
+    throw error;
+  }
+
   // A long job's action that failed before anything of ours was posted (a tab lookup that missed for a
   // moment, a page read that timed out): the job keeps its hold and scene instead of putting
   // everything back and taking over again for the retry (seen live 2026-10-06 as needless switching).
-  if (ops.keep && reuse && err && !sent.size && !(err instanceof UserInterrupted) &&
-      !['user_cancelled', 'takeover_expired', 'task_hold_lost', 'window_changed', 'cancelled', 'conversation_waiting'].includes(err.code)) {
+  if (!nativeState.unknown && ops.keep && reuse && err && !sentKinds(err).length && !(err instanceof UserInterrupted) &&
+      !['user_cancelled', 'takeover_expired', 'task_hold_lost', 'window_changed', 'cancelled', 'conversation_waiting', 'paused_by_user'].includes(err.code)) {
     const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
-    if (q && !q.interrupted && q.takeover && q.takeover.active) {
+    if (q && q.ok !== false && !q.interrupted && q.takeover && q.takeover.active && !q.takeover.aborted) {
       if (ops.keep && session && held) session.request({ op: 'veil', veil: { label: { zh: '正在重试…', en: 'Retrying…' } } }, { raw: true }).catch(() => {});
       err.keptHold = true;
       err.steps = steps;
-      err.sent = [];
+      err.sent = sentKinds(err);
       throw err;
     }
   }
@@ -646,11 +1080,14 @@ export async function runInputAction(ops, action) {
   const touched = (prep ? prep.touchesScene !== false : ops.activates !== false) || !!(inherit && scene && inherit.touched);
   const observe = async (noteable, since) => {
     if (err || !observer) return;
+    // The end reply can be the first evidence of interruption after the last
+    // healthy status. It never authorizes a new write or attributed observation.
+    if (focus.terminal.terminalInterrupted) noteable = false;
     const untouched = async (target = prep) => ops.navigationUntouched
       ? await ops.navigationUntouched(target, since).catch(() => false)
       : false;
     // The observer gets the same facts noteNavigation is gated on (a tab the action opened is claimed on them, index.js).
-    const o = await observer({ noteable, since, untouched }).catch((e) => ({ out: `（交还前台后读取页面变化失败：${e && e.message ? e.message : e}）` }));
+    const o = await observer({ noteable, since, untouched }).catch((e) => ({ out: `（${restoreRequested ? '交还前台后' : '操作后'}读取页面变化失败：${e && e.message ? e.message : e}）` }));
     out = o.out;
     if (!noteable || !o.url || !ops.noteNavigation || !prep || !prep.target || prep.target.tabId == null) return;
     // Even a hand-over needs complete routing evidence; missing observation grants no ownership.
@@ -665,25 +1102,51 @@ export async function runInputAction(ops, action) {
   // the user's scene stay for the job's next action (released by releaseKept).
   if (ops.keep && !err && !user && !late && watching && held && prep) {
     const last = st2 || st;
-    if (last && last.takeover && last.takeover.active) {
+    if (last && last.ok !== false && !last.interrupted && last.takeover && last.takeover.active && !last.takeover.aborted) {
       await observe(true, ops.now());
       T.observeEnd = Date.now();
       return { outcome: 'ok', out, idleWait, restored: false, steps, end: null, began, prep, timing: T,
-        kept: { session, scene, pointer, cgWindow: prep.cgWindow, chromePid: prep.chromePid } };
+        kept: { session, scene, pointer, cgWindow: prep.cgWindow, chromePid: prep.chromePid, settleMs, nativeState, native: ctx.native, returnFocus: normalizeReturnFocus(returnFocus) } };
     }
   }
 
   // Done, still held, and another agent waits: its turn now, with this veil up until its own is.
   // Nothing is put back here; the scene goes with the turn and the last agent of the chain restores it.
-  if (ops.handoff && !ops.keep && !err && !user && !late && watching && held && prep) {
+  if (restoreRequested && ops.handoff && !ops.keep && !ops.releaseAfter && !settleMs && !err && !user && !late && watching && held && prep) {
     const last = st2 || st;
-    if (last && last.takeover && last.takeover.active) {
+    if (last && last.ok !== false && !last.interrupted && last.takeover && last.takeover.active && !last.takeover.aborted) {
       const h = await ops.handoff({ scene, pointer, touched }, { onOffer: () =>
         session.request({ op: 'veil', veil: { label: { zh: '交给排队的下一个任务…', en: 'Handing over to the next task…' } } }, { raw: true }).catch(() => {})
       }).catch(() => null);
       if (h && h.commit) {
-        const end = await session.close().catch(() => null);
-        await h.commit().catch(() => {});
+        const beforeClose = [st, st2].filter(Boolean).map(s => ({ ok: s.ok, interrupted: !!s.interrupted,
+          takeover: s.takeover ? { ...s.takeover } : null }));
+        const end = await closeSession({ statuses: [st, st2] });
+        // A caller abort belongs to this call, not to another authorized task. Input/Stop or
+        // unconfirmed release cannot transfer the already-claimed handoff to that task.
+        const localAbort = s => !s?.takeover?.aborted || ['caller', 'caller_cancel'].includes(s.takeover.abortedBy);
+        const transferable = end?.ok === true && end.takeover?.active === false &&
+          !end.interrupted && !session.interrupted && localAbort(end) &&
+          beforeClose.every(s => s.ok !== false && !s.interrupted && localAbort(s)) &&
+          !(h.stopped && h.terminalStop !== false) && !nativeState.unknown && !nativeState.revoked;
+        const cancelTransfer = async reason => {
+          try { return (await h.cancel?.(reason))?.cancelled === true; } catch { return false; }
+        };
+        if (!transferable) {
+          Object.assign(focus.terminal, { terminalInterrupted: true, noRetry: true });
+          focus.blockRecovery = true;
+          const handoffCancellationConfirmed = await cancelTransfer('terminal_or_unknown_close');
+          await observe(false);
+          T.observeEnd = Date.now();
+          return { outcome: 'user', late: true, out, idleWait, restored: false, steps, sent: sentKinds(err), end, began, prep, timing: T,
+            handoffCancellationConfirmed };
+        }
+        try { await h.commit(); }
+        catch (error) {
+          Object.assign(error, { steps, sent: sentKinds(error), noRetry: true, terminalInterrupted: true,
+            handoffCancellationConfirmed: await cancelTransfer('commit_failed') });
+          throw error;
+        }
         T.handedOver = Date.now();
         await observe(true, null);
         T.observeEnd = Date.now();
@@ -693,21 +1156,53 @@ export async function runInputAction(ops, action) {
   }
 
   if (user) {
-    const end = session ? await session.close().catch(() => null) : null;
+    const cleanBeforeInput = !ops.takeover && !held && !ops.keep && !reuse && !pagePromptAuto &&
+      focus.releaseReason === 'policy' && !sentKinds(err).length && out == null && !late && !err?.lateUser &&
+      !nativeState.unknown && !nativeState.revoked &&
+      (!err || err instanceof UserInterrupted) && !err?.noRetry && !err?.terminalInterrupted && !err?.terminalAborted &&
+      [err?.inputDelivery, err?.reply?.inputDelivery].every(delivery => delivery == null || delivery === 'not_sent');
+    const end = await closeSession({ statuses: [st, st2], userInterruption: true,
+      retryBeforeInput: cleanBeforeInput && !ops.signal?.aborted });
+    if (cleanBeforeInput && err instanceof UserInterrupted && ops.signal?.aborted &&
+        priorCloseAborts.every(abort => abort.abortedBy === 'caller') && end?.ok === true &&
+        end.takeover?.active !== true && end.takeover?.aborted === true && end.takeover.abortedBy === 'caller') {
+      // Caller abort may already be in the status, or arrive during close.
+      // Preserve that object and the terminal facts; never retry it.
+      err.message = '调用已取消，没有操作。\n' + err.message;
+      Object.assign(err, { code: 'cancelled', steps, sent: sentKinds(err), noRetry: true });
+      throw err;
+    }
+    if (nativeState.unknown && nativeState.error) {
+      Object.assign(nativeState.error, { steps, sent: sentKinds(nativeState.error), noRetry: true });
+      throw nativeState.error;
+    }
     const intr = mergeInterrupted([err && err.interrupted, session && session.interrupted, st && st.interrupted,
       end && end.interrupted]);
     const kind = intr ? intr.kind : null;
     // Input seen before `begin` came after the idle wait; nothing of ours was pressed since.
     const since = intr && intr.epoch != null ? intr.epoch
       : intr && intr.beforeBegin ? idleEnd : (failedAt ?? statusAt ?? idleEnd);
-    const appRestored = await handBackApp(ops, scene, prep, touched, intr, since);
+    const appRestored = !restoreRequested || focus.blockRecovery || ops.takeover ? null : await handBackApp(ops, scene, prep, touched, intr, since);
     await observe(false);
-    return { outcome: 'user', out, idleWait, restored: false, steps, sent: [...sent.keys()], end, error: err, began, prep, kind, appRestored };
+    return { outcome: 'user', out, idleWait, restored: false, steps, sent: sentKinds(err), end, error: err, began, prep, kind, appRestored };
   }
 
   let end = null, sceneRestored = false, closedAt = null, restoreReply = null;
+  if (nativeState.unknown || nativeState.revoked) late = true;
+  // Only the explicit GUI handoff may leave its successfully shown page visible.
+  if (ops.leaveVisible === true && !err && !user && !late) {
+    end = await closeSession();
+    return { outcome: 'ok', out, idleWait, restored: false, steps, end, began, prep, timing: T };
+  }
   if (watching) {
-    if (!late && scene && touched && scene.appPid != null && prep && scene.appPid !== prep.chromePid) {
+    // An offer/observer may have awaited since st2: recheck immediately before cleanup writes.
+    if (ops.takeover && !late) {
+      const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
+      if (!held || !q || q.ok === false || q.interrupted || !q.takeover?.active || q.takeover.aborted) {
+        late = true; lateIntr = q?.interrupted || lateIntr;
+      }
+    }
+    if (restoreRequested && !ops.nativeTransactions && !late && scene && touched && scene.appPid != null && prep && scene.appPid !== prep.chromePid) {
       // Front to the user's app first, from the running session (fast); the
       // Chrome window/tab order is fixed right after, with Chrome already in
       // the background.
@@ -715,45 +1210,55 @@ export async function runInputAction(ops, action) {
       if (hb && hb.interrupted) { late = true; lateIntr = hb.interrupted; }
       T.handBack = Date.now();
     }
-    if (!late && scene && touched) {
+    if (restoreRequested && !late && scene && touched) {
       // Still holding right now (not merely at begin): only then may restore ignore input.
       const last = st2 || st;
-      const heldNow = held && !!(last && last.takeover && last.takeover.active);
-      const rs = await ops.restoreScene(scene, { since: statusAt, held: heldNow }).catch(() => null);
-      sceneRestored = !(rs && rs.activated === false);
+      const heldNow = held && !!(last && last.ok !== false && !last.interrupted && last.takeover && last.takeover.active && !last.takeover.aborted);
+      const rs = ops.takeover && !heldNow ? null
+        : await restoreHeldScene(ops, session, scene, { since: statusAt, held: heldNow, settleMs, native: ctx.native });
+      sceneRestored = !!rs && rs.ok !== false && rs.activated !== false;
       restoreReply = rs;
+      if (ops.takeover && !rs) late = true;
       if (rs && rs.userInput) { late = true; lateSince = statusAt; }
       T.restored = Date.now();
     }
-    if (!late && pointer) {
+    if (nativeState.unknown || nativeState.revoked) late = true;
+    if (restoreRequested && !late && pointer && ops.takeover) {
+      const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
+      if (!q || q.ok === false || q.interrupted || !q.takeover?.active || q.takeover.aborted) late = true;
+    }
+    if (restoreRequested && !late && pointer) {
       const w = await session.request({ op: 'warp', to: { x: pointer.x, y: pointer.y } }, { raw: true }).catch(() => null);
       if (w && w.interrupted) { late = true; lateIntr = w.interrupted; }
       else if (!w || w.ok === false) watching = false;
       T.warped = Date.now();
     }
-    end = await session.close().catch(() => null);
+    end = await closeSession({ statuses: [st, st2], interruptions: [lateIntr] });
     closedAt = ops.now();
     T.closed = Date.now();
   }
   let pointerBack = false;
-  if (!watching && inherit && scene && held && session && !end && !user) {
-    // The previous agent's scene was claimed but nothing was begun (the page check failed, a tab was
-    // gone): put it back while our hold still keeps the user's input away, THEN let go (Codex review A6) —
-    // only if it really still holds; given back meanwhile (Esc), the usual path below restores with a
-    // stop on the user's input (Codex review round 2, A11).
+  if (!watching && scene && held && session && !focus.closed && !user && !nativeState.unknown && !nativeState.revoked) {
+    // Fresh creation and inherited preparation can change a scene before begin.
+    // Check the hold even when no restoration was requested: an absent status
+    // is still evidence of a lost hold, not a successful current-mode release.
     const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
-    if (q && q.takeover && q.takeover.active && !q.takeover.aborted) {
-      const rs = await ops.restoreScene(scene, { since: ops.now(), held: true }).catch(() => null);
-      sceneRestored = !(rs && rs.activated === false);
+    const healthy = !!(q && q.ok !== false && !q.interrupted && q.takeover && q.takeover.active && !q.takeover.aborted);
+    if (restoreRequested && healthy) {
+      const rs = await restoreHeldScene(ops, session, scene, { since: ops.now(), held: true, settleMs, native: ctx.native });
+      sceneRestored = !!rs && rs.ok !== false && rs.activated !== false;
       restoreReply = rs;
       // The pointer only while still held (Esc during the restore: it is the user's again; Codex round 3, A11).
       const q2 = pointer ? await session.request({ op: 'status' }, { raw: true }).catch(() => null) : null;
-      if (q2 && q2.takeover && q2.takeover.active && !q2.takeover.aborted) { await ops.warp(pointer).catch(() => {}); }
+      if (!nativeState.unknown && !nativeState.revoked && q2 && q2.ok !== false && !q2.interrupted && q2.takeover && q2.takeover.active && !q2.takeover.aborted) { await session.request({ op: 'warp', to: pointer }, { raw: true }).catch(() => {}); }
       pointerBack = true;
     }
+    // A skipped restoration is not user input. An unhealthy hold (or an
+    // unsuccessful requested restore) still prevents a clean-success outcome.
+    if (ops.takeover) { pointerBack = true; if (!healthy || (restoreRequested && !sceneRestored)) late = true; }
   }
   if (!watching) {
-    if (session && !end) end = await session.close().catch(() => null);
+    if (session && !end) end = await closeSession({ statuses: [st, st2], interruptions: [lateIntr] });
     // Nothing of ours is posted after the idle wait (no session) or after the
     // last clean status (the action had returned), so from then on the idle
     // counter is the user's.
@@ -762,59 +1267,87 @@ export async function runInputAction(ops, action) {
     // Refused before anything of ours happened (no activation, no session begun: e.g. the hold was
     // refused because a key was down): nothing to put back, so the user's input since is not a
     // "late takeover" — that would also stop the retry (seen live 2026-10-06 while the user typed).
-    const touchedAny = began || !!prep;
+    const touchedAny = began || !!prep || sent.size > 0;
     const acted = () => touchedAny ? ops.userActedSince(base).catch(() => false) : Promise.resolve(false);
     if (!late && await acted()) { late = true; lateSince = base; }
-    if (!late && scene && touched && !sceneRestored) {
+    if (restoreRequested && !focus.blockRecovery && !late && scene && touched && !sceneRestored && !ops.takeover && !ops.nativeTransactions) {
       const rs = await ops.restoreScene(scene, { since: base }).catch(() => null);
       sceneRestored = !(rs && rs.activated === false);
       restoreReply = rs;
       if (rs && rs.userInput) { late = true; lateSince = base; }
     }
     if (!late && await acted()) { late = true; lateSince = base; }
-    if (!late && pointer && !pointerBack) await ops.warp(pointer).catch(() => {});
+    if (restoreRequested && !focus.blockRecovery && !late && pointer && !pointerBack && !ops.takeover && !ops.nativeTransactions) await ops.warp(pointer).catch(() => {});
   }
   let appRestored = null;
-  if (late && !sceneRestored) {
+  if (restoreRequested && !focus.blockRecovery && late && !sceneRestored && !ops.takeover && !ops.nativeTransactions) {
     const intr = mergeInterrupted([lateIntr, end && end.interrupted]);
     appRestored = await handBackApp(ops, scene, prep, touched, intr,
       intr && intr.epoch != null ? intr.epoch : (lateSince ?? statusAt ?? ops.now()));
   }
+  if (!err && nativeState.unknown) err = nativeState.error;
   if (err) {
     err.steps = steps;
-    err.sent = [...sent.keys()];
-    if (late) { err.lateUser = true; err.sceneRestored = sceneRestored; err.appRestored = appRestored; }
+    err.sent = sentKinds(err);
+    if (focus.terminal.terminalInterrupted) Object.assign(err, { sceneRestored, appRestored });
+    if (late && !nativeState.unknown && !nativeState.revoked) { err.lateUser = true; err.sceneRestored = sceneRestored; err.appRestored = appRestored; }
     throw err;
   }
-  T.handBack = T.handBack ?? Date.now();
+  if (restoreRequested) T.handBack = T.handBack ?? Date.now();
   await observe(!late, closedAt ?? ops.now());
   T.observeEnd = Date.now();
   if (late) return { outcome: 'user', late: true, out, idleWait, restored: false, sceneRestored, appRestored, steps, end, began, prep, timing: T, restore: restoreReply };
-  return { outcome: 'ok', out, idleWait, restored: true, steps, end, began, prep, timing: T, restore: restoreReply };
+  return { outcome: 'ok', out, idleWait, restored: restoreRequested, sceneRestored, appRestored, steps, end, began, prep, timing: T, restore: restoreReply };
+}
+
+/** Restore and catch delayed window activation before releasing a healthy hold. */
+async function restoreHeldScene(ops, session, scene, { since, held, settleMs = 0, native = null }) {
+  if (held) {
+    const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
+    if (!q || q.ok === false || q.interrupted || !q.takeover?.active || q.takeover.aborted) return null;
+  } else if (settleMs > 0) return null;
+  const restore = () => ops.restoreScene(scene, { since, held, native }).catch(() => null);
+  let reply = await restore();
+  if (held && settleMs > 0) {
+    await (ops.sleep ? ops.sleep(settleMs) : new Promise(resolve => setTimeout(resolve, settleMs)));
+    const q = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
+    if (!q || q.ok === false || q.interrupted || !q.takeover?.active || q.takeover.aborted) return null;
+    reply = await restore();
+  }
+  return reply;
 }
 
 /**
- * End a long job's hold (index.js task hold): the user's app, Chrome window/tab and pointer put back
- * as they were before its first action, then the session closed (the veil fades, input is theirs).
- * Still held → restored without watching for input; released (Esc, shake) → restored as after a cancel.
+ * End a long job's hold (index.js task hold). A valid origin policy restores the user's app,
+ * Chrome window/tab and pointer before closing. Current, invalid policy and human handoff close only.
+ * Restoration requires the same healthy hold; released (Esc, shake) means resource cleanup only.
  * @returns the session's end reply fields plus confirmed restoration facts. `restored` remains
  *          the helper's clipboard result; restoring a window is not inferred from an attempted write.
  */
-export async function releaseKept(ops, kept) {
+export async function releaseKept(ops, kept, { releaseReason = 'policy' } = {}) {
+  releaseReason = releaseReason === 'human_handoff' ? 'human_handoff' : 'policy';
+  const returnFocus = normalizeReturnFocus(kept.returnFocus);
+  const restoreRequested = returnFocus?.mode === 'origin' && releaseReason !== 'human_handoff';
   const { session, scene, pointer, chromePid } = kept;
   const st = await session.request({ op: 'status' }, { raw: true }).catch(() => null);
-  const heldNow = !!(st && st.takeover && st.takeover.active);
-  const handBack = scene && scene.appPid != null && scene.appPid !== chromePid
+  const heldNow = !kept.nativeState?.unknown && !kept.nativeState?.revoked && !!(st && st.ok !== false && !st.interrupted && st.takeover && st.takeover.active && !st.takeover.aborted);
+  const handBack = restoreRequested && !kept.native && heldNow && scene && scene.appPid != null && scene.appPid !== chromePid
     ? await session.request({ op: 'handBack', pid: scene.appPid }, { raw: true }).catch(() => null) : null;
-  const restore = scene ? await ops.restoreScene(scene, { since: ops.now(), held: heldNow }).catch(() => null) : null;
-  const warp = pointer
+  const restore = restoreRequested && heldNow && scene ? await restoreHeldScene(ops, session, scene,
+    { since: ops.now(), held: heldNow, settleMs: kept.settleMs, native: kept.native }) : null;
+  const q = restoreRequested && heldNow && pointer ? await session.request({ op: 'status' }, { raw: true }).catch(() => null) : null;
+  const canWarp = !kept.nativeState?.unknown && !kept.nativeState?.revoked && !!(q && q.ok !== false && !q.interrupted && q.takeover?.active && !q.takeover.aborted);
+  const warp = canWarp && pointer
     ? await session.request({ op: 'warp', to: { x: pointer.x, y: pointer.y } }, { raw: true }).catch(() => null) : null;
   const end = await session.close().catch(() => null);
-  return { ...(end || {}),
+  return { ...(end || {}), ...focusReturnMetadata(returnFocus, releaseReason),
+    ...terminalInputFacts(end, session.interrupted, st),
+    ...(kept.nativeState?.unknown ? { inputDelivery: 'unknown', noRetry: true,
+      stages: kept.nativeState.error?.stages || kept.nativeState.error?.reply?.stages || [] } : {}),
     inputReleased: end?.ok === true && end?.takeover?.active !== true,
     appRestored: restore?.ok === true && restore.appFrontmost === true && !restore.skipped && !restore.userInput,
-    pointerRestored: warp?.ok === true && !warp.interrupted &&
-      warp.warped?.x === pointer?.x && warp.warped?.y === pointer?.y,
+    pointerRestored: warp?.ok === true && warp.verified === true && !warp.interrupted &&
+      Math.hypot(warp.warped?.x - pointer?.x, warp.warped?.y - pointer?.y) <= 1,
     restoration: { handBack, scene: restore, pointer: warp },
   };
 }
@@ -850,7 +1383,7 @@ export function mergeInterrupted(list) {
  */
 export async function handBackApp(ops, scene, prep, touched, interrupted = null, since = null) {
   const intr = typeof interrupted === 'string' ? { kind: interrupted } : interrupted;
-  if (!ops.restoreApp || !scene || scene.appPid == null || !touched) return null;
+  if (ops.takeover || ops.nativeTransactions || !ops.restoreApp || !scene || scene.appPid == null || !touched) return null;
   if (prep && prep.chromePid != null && Number(scene.appPid) === Number(prep.chromePid)) return null;
   if (intr && (intr.kind === 'button' || intr.button === true)) return null;
   const r = await ops.restoreApp(scene, { noClickSince: since }).catch(() => null);
@@ -865,8 +1398,18 @@ export async function handBackApp(ops, scene, prep, touched, interrupted = null,
 export function userStopMessage(r) {
   const done = [...r.steps];
   const rep = r.error && r.error.reply;
+  const inputSent = (Array.isArray(r.sent) && r.sent.length > 0) ||
+    (Array.isArray(r.error?.sent) && r.error.sent.length > 0) ||
+    r.error?.inputDelivery === 'sent' || rep?.inputDelivery === 'sent';
+  let pending = '';
   if (rep) {
-    if (typeof rep.typed === 'number' && rep.typed > 0) done.push(`逐键输入了 ${rep.typed} 个字符`);
+    if (typeof rep.typed === 'number' && rep.typed > 0) {
+      if (rep.confirmationPending) pending = `本段已发送 ${rep.typed} 个字符，尚未读回确认；请先查看输入框，勿直接重复输入。`;
+      else done.push(`逐键输入了 ${rep.typed} 个字符`);
+    }
+    else if (rep.confirmationPending && rep.postedInput > 0) pending = '本段已有按键发出，输入框内容尚未读回确认；请先查看输入框，勿直接重复输入。';
+    if (rep.pastePosted === true) pending = '已发送 Cmd+V，输入框内容尚未读回确认；请先查看输入框，勿直接重复粘贴。';
+    else if (rep.pastePosted === false) pending = 'Cmd+V 尚未发送，没有粘贴文字。';
     if (typeof rep.sent === 'number' && rep.sent > 0) done.push(`滚轮发出 ${rep.sent} 格`);
     if (rep.restored === true) done.push('剪贴板已还原');
   }
@@ -874,8 +1417,9 @@ export function userStopMessage(r) {
   if (r.end && r.end.restored === false) done.push('⚠️ 剪贴板在此期间被改过，没有覆盖回去');
   const released = [...(rep && rep.released) || [], ...(r.end && r.end.released) || []];
   const lines = [
-    `⏸ 你开始操作了，已停止；完成了：${done.length ? done.join('；') : '还没有发出任何输入'}。`
+    `⏸ 你开始操作了，已停止；完成了：${done.length ? done.join('；') : pending ? '尚无已确认的输入' : inputSent ? '已有输入发出，页面结果尚未确认' : '还没有发出任何输入'}。`
   ];
+  if (pending) lines.push(pending);
   if (r.error && r.error.interrupted && r.error.interrupted.beforeBegin) {
     lines.push('（在把 Chrome 切到前面的过程中检测到了你的键盘鼠标输入）');
   }
@@ -886,6 +1430,12 @@ export function userStopMessage(r) {
 
 /** The "what was put back" line for a user outcome (also used after a completed action). */
 export function stopRestoreLine(r) {
+  if (r.focusRestoration === 'not_requested' || r.focusRestoration === 'policy_invalid') {
+    const released = r.inputReleased === true ? '键盘鼠标接管已结束。' : r.inputReleased === false ? '键盘鼠标释放尚未确认。' : '';
+    return (r.focusRestoration === 'policy_invalid'
+      ? '归还策略缺失或无效，没有请求焦点恢复。'
+      : '未请求焦点恢复。') + released + '请核对当前页面；等待用户明确继续，不会自动重试。';
+  }
   const kind = r.kind ?? [r.error && r.error.interrupted, r.end && r.end.interrupted].find(x => x && x.kind)?.kind;
   if (r.appRestored) {
     return '已把前台切回你原来用的 App（光标和 Chrome 窗口没有动）' +

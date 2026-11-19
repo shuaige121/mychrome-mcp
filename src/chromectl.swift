@@ -95,6 +95,30 @@ func processArgs(_ pid: pid_t) -> String {
     return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 }
 
+/// The same argument string as `ps -o args=`, read in-process (sysctl KERN_PROCARGS2, no child
+/// process): cheap enough for a check on every pre-warmed command. nil when it cannot be read.
+func processArgsNow(_ pid: pid_t) -> String? {
+    var mib: [Int32] = [CTL_KERN, KERN_ARGMAX], argmax: Int32 = 0, size = MemoryLayout<Int32>.size
+    guard sysctl(&mib, 2, &argmax, &size, nil, 0) == 0, argmax > 0 else { return nil }
+    var buffer = [UInt8](repeating: 0, count: Int(argmax))
+    mib = [CTL_KERN, KERN_PROCARGS2, pid]
+    size = buffer.count
+    guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+    // argc, the executable path, NUL padding, then argc NUL-terminated arguments (then the environment).
+    let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+    var i = MemoryLayout<Int32>.size
+    while i < size && buffer[i] != 0 { i += 1 }
+    while i < size && buffer[i] == 0 { i += 1 }
+    var args: [String] = []
+    while args.count < Int(argc) && i < size {
+        let start = i
+        while i < size && buffer[i] != 0 { i += 1 }
+        args.append(String(decoding: buffer[start..<i], as: UTF8.self))
+        i += 1
+    }
+    return args.count == Int(argc) ? args.joined(separator: " ") : nil
+}
+
 func onScreenWindowCount(_ pid: pid_t) -> Int {
     guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return 0 }
     return list.filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && ($0[kCGWindowLayer as String] as? Int) == 0 }.count
@@ -107,6 +131,13 @@ struct Candidate { let app: NSRunningApplication; let args: String; let onScreen
 /// then the oldest. CHROME_BRIDGE_PID overrides everything.
 func pickChrome() -> (NSRunningApplication?, [[String: Any]]) {
     var report: [[String: Any]] = []
+    // A bound cold command never falls back to another Chrome process.
+    if let i = CommandLine.arguments.firstIndex(of: "--pid") {
+        guard i + 1 < CommandLine.arguments.count, let pid = pid_t(CommandLine.arguments[i + 1]), pid > 0,
+              let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
+              app.bundleIdentifier == "com.google.Chrome" else { return (nil, []) }
+        return (app, [["pid": Int(pid), "reason": "explicit_pid"]])
+    }
     if let s = ProcessInfo.processInfo.environment["CHROME_BRIDGE_PID"], let pid = pid_t(s),
        let a = NSRunningApplication(processIdentifier: pid) {
         return (a, [["pid": pid, "reason": "CHROME_BRIDGE_PID"]])
@@ -165,16 +196,71 @@ func trace(_ what: String) {
 }
 trace("start")
 let catcher = ErrorCatcher()
-let (chromeProc, pickReport) = pickChrome()
-trace("pickChrome")
-// `chromectl --warm`: do the slow part (process start, choosing Chrome, the
-// ScriptingBridge connection) ahead of time, then wait for ONE command on stdin
-// as a JSON array of arguments, run it and exit like a normal invocation. The
-// caller keeps a few warm processes ready, so a command costs only its own work.
-let warm = CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "--warm"
-let warmChrome: SBApplication? = warm ? chromeProc.flatMap { SBApplication(processIdentifier: $0.processIdentifier) } : nil
-// The first Apple Event to Chrome also sets up the connection: pay that while waiting too.
-if let c = warmChrome { _ = (c.value(forKey: "windows") as? SBElementArray)?.count; trace("warm: first Apple Event") }
+// The ScriptingBridge boundary's state (see "ScriptingBridge boundary" below); set before any Apple Event.
+// Only the --warm-read pre-warm runs before its command is known; every other Apple Event belongs to a command.
+var sbPreCommand = CommandLine.arguments.count > 1 && CommandLine.arguments[1] == "--warm-read"
+var sbRecorded: ChromeNative.SBException?
+/// `chromectl --warm-read`, the read-only pre-warm the bridge keeps ready. The mode is its
+/// declaration at spawn: it runs only `warmReadCommands`, so it may choose Chrome and pay the
+/// first read-only Apple Event (counting windows) BEFORE its command arrives. Only once that
+/// Apple Event succeeded does it report ready, on fd 3 and never on stdout:
+/// {"ready":true,"protocol":1,"chromePid":<the pid it chose>}. Any failure exits with no ready
+/// line and no output; the caller then runs its command cold, which reports the cause.
+func preWarmReadOnly() -> (pick: (NSRunningApplication?, [[String: Any]]), chrome: SBApplication) {
+    // The caller's ready channel, checked before this process opens a descriptor of its own.
+    // A run without one (by hand, a timing script) still works; it only gets no notice.
+    var channel = stat()
+    let readyFD: Int32? = fstat(3, &channel) == 0 &&
+        [S_IFSOCK, S_IFIFO].contains(channel.st_mode & S_IFMT) ? 3 : nil
+    let pick = pickChrome()
+    trace("pickChrome")
+    guard let app = pick.0, !app.isTerminated,
+          let chrome = SBApplication(processIdentifier: app.processIdentifier) else { exit(1) }
+    chrome.delegate = catcher
+    let windows = (chrome.value(forKey: "windows") as? SBElementArray)?.count
+    trace("warm: first Apple Event")
+    guard windows != nil, catcher.last == nil else { exit(1) }
+    if let fd = readyFD {
+        let ready = try! JSONSerialization.data(withJSONObject: ["ready": true, "protocol": 1,
+                                                                 "chromePid": Int(app.processIdentifier)])
+        let line = ready + Data("\n".utf8)
+        guard line.withUnsafeBytes({ write(fd, $0.baseAddress, $0.count) }) == line.count else { exit(1) }
+        close(fd)
+    }
+    trace("warm-read: ready")
+    return (pick, chrome)
+}
+/// Is a pre-warmed binding still what pickChrome would choose? Checked when the command arrives,
+/// before anything runs, in-process (no `ps`, no Apple Event): pickChrome's own --pid and
+/// CHROME_BRIDGE_PID overrides first; otherwise exactly one non-headless Google Chrome must be
+/// running and be this pid. Several candidates, or one whose arguments cannot be read, is never
+/// assumed to match: the caller then runs the command cold, which chooses afresh.
+func preWarmBindingCurrent(_ pid: pid_t) -> Bool {
+    if let i = CommandLine.arguments.firstIndex(of: "--pid") {
+        return i + 1 < CommandLine.arguments.count && pid_t(CommandLine.arguments[i + 1]) == pid &&
+            NSRunningApplication(processIdentifier: pid).map { !$0.isTerminated } == true
+    }
+    if let s = ProcessInfo.processInfo.environment["CHROME_BRIDGE_PID"], let override = pid_t(s),
+       let app = NSRunningApplication(processIdentifier: override) {
+        return override == pid && !app.isTerminated
+    }
+    var candidates: [pid_t] = []
+    for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome") where !app.isTerminated {
+        guard let args = processArgsNow(app.processIdentifier) else { return false }
+        if !args.contains("--headless") { candidates.append(app.processIdentifier) }
+    }
+    return candidates == [pid]
+}
+// `chromectl --warm`: start ahead of time, then wait for ONE command on stdin as a JSON array
+// of arguments, run it and exit like a normal invocation. It reads its command first, so
+// protected and cold-only commands are refused before Chrome discovery or any Apple Event
+// (c31ca9b); it then chooses Chrome and sends its first Apple Event like a cold run.
+// `--warm-read` (above) is the pre-warm that is chosen and connected before its command.
+let warm = CommandLine.arguments.count > 1 && ["--warm", "--warm-read"].contains(CommandLine.arguments[1])
+let warmRead = warm && CommandLine.arguments[1] == "--warm-read"
+/// All a read-only pre-warm runs: no mutation, no cold-only native probe, no --pid binding.
+let warmReadCommands: Set<String> = ["list", "info", "eval", "scene", "profiles"]
+let preWarmed = warmRead ? preWarmReadOnly() : nil
 func readWarmCommand() -> [String] {
     guard let line = readLine(strippingNewline: true), let data = line.data(using: .utf8),
           let a = try? JSONSerialization.jsonObject(with: data) as? [String], !a.isEmpty else { exit(0) }
@@ -183,9 +269,27 @@ func readWarmCommand() -> [String] {
 let cmdArgs: [String] = warm ? readWarmCommand() : Array(CommandLine.arguments.dropFirst())
 trace("command")
 let cmd = cmdArgs.first ?? ""
-
-if cmd == "pick" {
-    emit(["ok": chromeProc != nil, "pid": chromeProc.map { Int($0.processIdentifier) } ?? NSNull(), "candidates": pickReport])
+// Protected mutations exist only in the captured cgevent Session owner.
+// Refuse before opening an Apple Event connection, including warm invocations.
+if ["open", "newwindow", "move", "close", "select", "activate", "restore"].contains(cmd) ||
+   (cmd == "dialog" && (cmdArgs.contains("--press") || cmdArgs.contains("--text"))) {
+    emit(["ok": false, "error": "native_session_required", "inputDelivery": "not_sent",
+          "message": "This native mutation requires the protected action Session."])
+}
+// A read-only pre-warm runs only what it declared at spawn; a bound command needs its own cold process.
+if warmRead && (!warmReadCommands.contains(cmd) || cmdArgs.contains("--pid")) {
+    emit(["ok": false, "error": "warm_read_refused", "inputDelivery": "not_sent",
+          "message": "This pre-warmed helper runs read-only commands only; nothing was sent."])
+}
+// Its Chrome may no longer be the one to choose (another instance started, or this one quit):
+// say so before running anything. The caller runs this same command cold; nothing was sent here.
+if warmRead, let bound = preWarmed?.pick.0 {
+    let current = preWarmBindingCurrent(bound.processIdentifier)
+    trace("warm-read: binding checked")
+    if !current {
+        emit(["ok": false, "error": "warm_binding_stale", "inputDelivery": "not_sent", "stage": "warm_binding",
+              "message": "The pre-warmed helper's Chrome is no longer the only choice; nothing was sent."])
+    }
 }
 // Files only: works while Chrome is closed too (`mychrome-mcp doctor` reads it before Chrome is open).
 if cmd == "profiles" { emit(profilesReport()) }
@@ -232,13 +336,22 @@ if cmd == "axwindows" {
     }
     emit(["ok": true, "pid": Int(pid), "windows": rows])
 }
-// Must stay before SBApplication initialization. A native menu can block all Apple Events.
-// Call this command cold: --warm has already sent an Apple Event before reading its command.
-if cmd == "axmenustate" {
-    guard !warm, cmdArgs.count == 1 else { fail("usage", "axmenustate (cold only)") }
-    do { emit(try nativeFrontMenuState()) }
-    catch let e as NativeInputProbeError { fail(e.code, e.message) }
-    catch { fail("ax_probe_failed", "The frontmost Chrome menu state could not be inspected.") }
+// axcontent/axinput inspect the Chrome pid they are given, so they run before Chrome discovery
+// and any Apple Event (discovery's choice was never used). Each still verifies that the pid is a
+// running Google Chrome and that the window belongs to it; --warm refuses them here as well.
+// Content geometry only. Never read titles, URLs or field values.
+if cmd == "axcontent" {
+    guard !warm, cmdArgs.count == 4, let pid = pid_t(cmdArgs[1]), pid > 0,
+          cmdArgs[2] == "--window", let window = Int(cmdArgs[3]), window > 0 else {
+        fail("usage", "axcontent <pid> --window <cgWindow> (cold only)")
+    }
+    do { emit(try nativePageContent(pid: pid, expectedWindow: window)) }
+    // Its details beside the code and message, as axinput: a stopped probe's limit and counts, or the
+    // identity check's enums. Never page text, titles, URLs or AX names.
+    catch let e as NativeInputProbeError {
+        emit(["ok": false, "error": e.code, "message": e.message].merging(e.details) { original, _ in original })
+    }
+    catch { fail("page_content_unavailable", "无法确认网页内容区域，这次没有截图。") }
 }
 if cmd == "axinput" {
     guard !warm, cmdArgs.count >= 4, let pid = pid_t(cmdArgs[1]), pid > 0,
@@ -258,21 +371,110 @@ if cmd == "axinput" {
     }
     catch { fail("ax_probe_failed", "The native input target could not be inspected.") }
 }
+// Dialogs use their own fixed-PID connection, only after a complete AX scan. An unbound probe
+// enumerates Chrome itself and refuses several instances, so discovery's choice would go unused.
+// Never let discovery or a warm Apple Event choose or block their target.
+if cmd == "dialog" { nativeDialogCommand(cmdArgs) }
+let (chromeProc, pickReport) = preWarmed?.pick ?? pickChrome()
+trace(warmRead ? "pre-warmed Chrome" : "pickChrome")
+let warmChrome: SBApplication? = preWarmed?.chrome ??
+    (warm ? chromeProc.flatMap { SBApplication(processIdentifier: $0.processIdentifier) } : nil)
+// The first Apple Event to Chrome also sets up the connection. --warm-read paid it before its command.
+if !warmRead, let c = warmChrome { _ = (c.value(forKey: "windows") as? SBElementArray)?.count; trace("warm: first Apple Event") }
+
+
+if cmd == "pick" {
+    emit(["ok": chromeProc != nil, "pid": chromeProc.map { Int($0.processIdentifier) } ?? NSNull(), "candidates": pickReport])
+}
+// Must stay before SBApplication initialization. A native menu can block all Apple Events.
+// Call this command cold: --warm has already sent an Apple Event before reading its command.
+if cmd == "axmenustate" {
+    guard !warm, cmdArgs.count == 1 else { fail("usage", "axmenustate (cold only)") }
+    do { emit(try nativeFrontMenuState()) }
+    catch let e as NativeInputProbeError { fail(e.code, e.message) }
+    catch { fail("ax_probe_failed", "The frontmost Chrome menu state could not be inspected.") }
+}
+// The command phase for every mode: from here a ScriptingBridge exception ends the command with its JSON failure line.
+sbPreCommand = false
 guard let chromeProc = chromeProc, !chromeProc.isTerminated,
       let chrome = warmChrome ?? SBApplication(processIdentifier: chromeProc.processIdentifier) else {
+    if cmd == "close" { emit(["ok": false, "error": "chrome_not_running", "stage": "close_identity", "inputDelivery": "not_sent"]) }
     fail("chrome_not_running", "Google Chrome 没有在运行（或只有 headless 实例）")
 }
 chrome.delegate = catcher
 trace("SBApplication")
+var closeCommandSent = false
 
 func check(_ stage: String = "apple_event") {
     if let m = catcher.last {
         // Stage names contain no script, title, URL, or field contents. Preserve
         // the original failure; never turn an uncertain lookup into "tab gone".
         let code = catcher.lastCode
-        emit(["ok": false, "error": classify(m, code), "osStatus": code, "stage": stage,
-              "message": "\(m)（Apple Event 阶段：\(stage)，code \(code)）"])
+        var result: [String: Any] = ["ok": false, "error": classify(m, code), "osStatus": code, "stage": stage,
+                                    "message": "\(m)（Apple Event 阶段：\(stage)，code \(code)）"]
+        if cmd == "close" { result["inputDelivery"] = closeCommandSent ? "unknown" : "not_sent" }
+        emit(result)
     }
+}
+
+// MARK: - ScriptingBridge boundary, chromectl's top-level side (CRASH1)
+// These names shadow ScriptingBridge's classes for this file, so its call sites keep their shape. Each wraps
+// native-chrome.swift's ChromeNative boundary, which sends every message inside the Objective-C @try shim.
+// A caught exception is never a value, never "absent" and never retried here:
+// - in the --warm-read pre-warm (before its command exists) it is recorded and the read gives nil, so the
+//   pre-warm still exits with no ready line and no output;
+// - everywhere else (cold, --warm, which reads its command first, and every command) it ends the command with
+//   one JSON failure line, as check() ends it, before any later branch (pick included) can report success;
+//   a recorded one is reported by the first boundary call after the pre-warm.
+func sbBoundary<T>(_ body: () throws -> T) -> T? {
+    if !sbPreCommand, let recorded = sbRecorded { sbFailure(recorded) }
+    do { return try body() } catch {
+        let caught = error as? ChromeNative.SBException ?? ChromeNative.SBException(nil, .value, "unknown")
+        if !sbPreCommand { sbFailure(caught) }
+        sbRecorded = sbRecorded ?? caught
+        return nil
+    }
+}
+/// The site's own failure family: chrome_error, as check() reports a failed Apple Event. A script command
+/// (executeJavascript:) may already have run: eval_result and noRetry, and it is never sent again.
+func sbFailure(_ caught: ChromeNative.SBException) -> Never {
+    let script = caught.operation == .perform
+    var result: [String: Any] = ["ok": false, "error": "chrome_error", "stage": script ? "eval_result" : "apple_event",
+                                 "exceptionName": caught.name, "sbOperation": caught.operation.rawValue, "sbKey": caught.key,
+                                 "message": "Chrome 的脚本接口抛出了异常（\(caught.name)），这次没有完成。"]
+    if script { result["noRetry"] = true }
+    emit(result)
+}
+func sbTopLevel(_ value: Any?) -> Any? {
+    if let array = value as? ChromeNative.SBElementArray { return SBElementArray(array) }
+    if let object = value as? ChromeNative.SBObject { return SBObject(object) }
+    return value
+}
+final class SBApplication {
+    let inner: ChromeNative.SBApplication
+    init?(processIdentifier pid: pid_t) {
+        guard let app = ChromeNative.SBApplication(processIdentifier: pid) else { return nil }
+        inner = app
+    }
+    var delegate: SBApplicationDelegate? { get { inner.delegate } set { inner.delegate = newValue } }
+    func value(forKey key: String) -> Any? { sbBoundary { sbTopLevel(try inner.value(forKey: key)) } ?? nil }
+}
+final class SBObject {
+    let inner: ChromeNative.SBObject
+    init(_ inner: ChromeNative.SBObject) { self.inner = inner }
+    func value(forKey key: String) -> Any? { sbBoundary { sbTopLevel(try inner.value(forKey: key)) } ?? nil }
+    func perform(_ selector: Selector, with argument: Any?) -> Unmanaged<AnyObject>? {
+        guard let value = sbBoundary({ try inner.perform(selector, with: argument) }) ?? nil else { return nil }
+        return Unmanaged.passRetained(value as AnyObject).autorelease()
+    }
+}
+final class SBElementArray {
+    let inner: ChromeNative.SBElementArray
+    init(_ inner: ChromeNative.SBElementArray) { self.inner = inner }
+    func value(forKey key: String) -> Any? { sbBoundary { sbTopLevel(try inner.value(forKey: key)) } ?? nil }
+    func object(withID identifier: Any) -> Any? { sbBoundary { sbTopLevel(try inner.object(withID: identifier)) } ?? nil }
+    func object(at index: Int) -> Any? { sbBoundary { sbTopLevel(try inner.object(at: index)) } ?? nil }
+    var count: Int? { sbBoundary { try inner.count } }
 }
 
 func windows() -> SBElementArray { chrome.value(forKey: "windows") as! SBElementArray }
@@ -319,8 +521,9 @@ func tabLookupWindowIds() -> [Int] {
     return ((first as? NSArray) ?? []).map { num($0) }
 }
 
-func boundsJSON(_ w: SBObject) -> [String: Any] {
+func boundsJSON(_ w: SBObject, capture: ((CGRect) -> Void)? = nil) -> [String: Any] {
     let r = (w.value(forKey: "bounds") as? NSValue)?.rectValue ?? .zero
+    capture?(r)
     return ["left": Int(r.origin.x), "top": Int(r.origin.y), "width": Int(r.size.width), "height": Int(r.size.height)]
 }
 
@@ -369,7 +572,7 @@ func cgWindowIds() -> [Int: Int] {
 }
 
 /// One Chrome window as matchWindows sees it (AppleScript: id, bounds, minimized, index 1 = front).
-struct ChromeWin { let id: Int; let rect: CGRect; let minimized: Bool; let index: Int? }
+typealias ChromeWin = ChromeNative.ChromeWin
 
 /// Chrome window id -> CG window number, matched by bounds (±2 pt). Several Chrome windows often
 /// share bounds (every maximized window on a display; seen live: a minimized and a normal window,
@@ -387,50 +590,7 @@ func matchWindows(_ cw: [ChromeWin], cg: [(num: Int, rect: CGRect, onScreen: Boo
                   onOrder: () -> [(num: Int, rect: CGRect)],
                   ax: () -> [(num: Int, title: String, minimized: Bool, rect: CGRect?)],
                   title: (Int) -> String) -> [Int: Int] {
-    var out: [Int: Int] = [:]
-    for k in cw.indices {
-        let hits = cg.filter { sameRect($0.rect, cw[k].rect) }
-        if hits.count == 1 { out[cw[k].id] = hits[0].num; continue }
-        let twins = cw.indices.filter { sameRect(cw[$0].rect, cw[k].rect) && cw[$0].minimized == cw[k].minimized }
-        guard hits.count > 1, twins.count == 1 else { continue }
-        let vis = hits.filter { $0.onScreen != cw[k].minimized }
-        if vis.count == 1 { out[cw[k].id] = vis[0].num }
-    }
-    let left = cw.indices.filter { k in out[cw[k].id] == nil && cg.contains { sameRect($0.rect, cw[k].rect) } }
-    if !left.isEmpty {
-        // Chrome's titles are read before and after the AX table: when a title changed in between (a page
-        // retitling itself, a tab switch), the AX snapshot may belong to other titles, so no window of
-        // that bounds group is matched by title (dropping only the changed one would make a rival vanish).
-        var titles: [Int: String] = [:]
-        for k in left { titles[k] = title(k) }
-        let axw = ax()
-        let changed = left.filter { title($0) != titles[$0] }
-        for k in left {
-            guard let t = titles[k], !t.isEmpty,
-                  !changed.contains(where: { sameRect(cw[$0].rect, cw[k].rect) && cw[$0].minimized == cw[k].minimized }) else { continue }
-            let rivals = left.filter { sameRect(cw[$0].rect, cw[k].rect) && cw[$0].minimized == cw[k].minimized && titles[$0] == t }
-            let same = axw.filter { $0.minimized == cw[k].minimized && ($0.rect.map { sameRect($0, cw[k].rect) } ?? false) }
-            // "<title> - Google Chrome…" first; Chrome may put a state in between ("- Audio playing").
-            let strict = same.filter { $0.title.hasPrefix(t + " - Google Chrome") }
-            let hits = strict.count == 1 ? strict : same.filter { $0.title.hasPrefix(t + " - ") }
-            if rivals.count == 1 && hits.count == 1 { out[cw[k].id] = hits[0].num }
-        }
-    }
-    if cw.allSatisfy({ $0.index != nil }), cw.contains(where: { w in !w.minimized && out[w.id] == nil }) {
-        let order = onOrder()
-        var done = Set(out.keys)
-        let taken = Set(out.values)
-        for k in cw.indices where !done.contains(cw[k].id) && !cw[k].minimized {
-            let group = cw.indices.filter { !cw[$0].minimized && sameRect(cw[$0].rect, cw[k].rect) && !done.contains(cw[$0].id) }
-            let hits = order.filter { sameRect($0.rect, cw[k].rect) && !taken.contains($0.num) }
-            // A single window left is paired too when Accessibility took its twins (the last of the group).
-            let axTookTwins = order.contains { sameRect($0.rect, cw[k].rect) && taken.contains($0.num) }
-            guard group.count > 1 || (group.count == 1 && axTookTwins), hits.count == group.count else { continue }
-            for (g, h) in zip(group.sorted { cw[$0].index! < cw[$1].index! }, hits) { out[cw[g].id] = h.num; done.insert(cw[g].id) }
-        }
-    }
-    let claimed = Dictionary(grouping: out.values, by: { $0 })
-    return out.filter { claimed[$0.value]!.count == 1 }
+    ChromeNative.matchWindows(cw, cg: cg, onOrder: onOrder, ax: ax, title: title)
 }
 
 // MARK: - Accessibility window numbers (from JustTab)
@@ -443,8 +603,7 @@ func matchWindows(_ cw: [ChromeWin], cg: [(num: Int, rect: CGRect, onScreen: Boo
 func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
 func axWindowNumber(_ w: AXUIElement) -> Int? {
-    var n: CGWindowID = 0
-    return _AXUIElementGetWindow(w, &n) == .success && n != 0 ? Int(n) : nil
+    ChromeNative.Probe().axWindowNumber(w)
 }
 
 /// Upper bound on one AX message to Chrome: a busy or hung Chrome then costs at most this per call
@@ -453,13 +612,7 @@ var axMessagingTimeout: Float { 1.0 }
 
 /// An app's AX windows, every element with the bounded timeout.
 func axWindows(pid: pid_t) -> [AXUIElement] {
-    let app = AXUIElementCreateApplication(pid)
-    AXUIElementSetMessagingTimeout(app, axMessagingTimeout)
-    var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
-          let wins = value as? [AXUIElement] else { return [] }
-    for w in wins { AXUIElementSetMessagingTimeout(w, axMessagingTimeout) }
-    return wins
+    ChromeNative.Probe().axWindows(pid: pid)
 }
 
 /// Each AX window of the pid that has a CG number: that number, its title, minimized state and frame.
@@ -476,20 +629,8 @@ func axWindowTable(pid: pid_t) -> [(num: Int, title: String, minimized: Bool, re
 /// macOS adds this tiny title-bar window to the recorded app while sharing one window.
 /// It is an AXDialog/layer-0 window, but does not take keyboard focus or block page content.
 /// Match the complete observed structure; ordinary dialogs and unknown AX failures stay protected.
-func axIsWindowSharingIndicator(_ w: AXUIElement) -> Bool {
-    func attr(_ e: AXUIElement, _ key: String) -> CFTypeRef? {
-        AXUIElementSetMessagingTimeout(e, axMessagingTimeout)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(e, key as CFString, &value) == .success else { return nil }
-        return value
-    }
-    guard attr(w, kAXSubroleAttribute) as? String == (kAXDialogSubrole as String),
-          attr(w, kAXRoleAttribute) as? String == (kAXWindowRole as String),
-          attr(w, kAXTitleAttribute) as? String == "Window",
-          let children = attr(w, kAXChildrenAttribute) as? [AXUIElement], children.count == 1 else { return false }
-    let button = children[0]
-    return attr(button, kAXRoleAttribute) as? String == (kAXButtonRole as String) &&
-           attr(button, kAXTitleAttribute) as? String == "WindowSharingSessionButton"
+func axIsWindowSharingIndicator(_ w: AXUIElement, timeout: Float = axMessagingTimeout) -> Bool {
+    ChromeNative.Probe().axIsWindowSharingIndicator(w, timeout: timeout)
 }
 
 /// Small input-source indicators can be attached to Chrome as an AXDialog.
@@ -497,47 +638,15 @@ func axIsWindowSharingIndicator(_ w: AXUIElement) -> Bool {
 /// shape below; a Caps Lock label alone is never enough to dismiss a dialog.
 /// Unknown labels, failed attributes, extra content and real dialogs stay protected.
 func axIsInputSourceIndicator(_ w: AXUIElement, pid: pid_t) -> Bool {
-    func attr(_ e: AXUIElement, _ key: String) -> CFTypeRef? {
-        AXUIElementSetMessagingTimeout(e, axMessagingTimeout)
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(e, key as CFString, &value) == .success else { return nil }
-        return value
-    }
-    guard attr(w, kAXRoleAttribute) as? String == (kAXWindowRole as String),
-          attr(w, kAXSubroleAttribute) as? String == (kAXDialogSubrole as String),
-          attr(w, kAXTitleAttribute) as? String == "",
-          attr(w, kAXModalAttribute) as? Bool == false,
-          attr(w, kAXFocusedAttribute) as? Bool == false,
-          attr(w, kAXMainAttribute) as? Bool == false,
-          let children = attr(w, kAXChildrenAttribute) as? [AXUIElement], children.count == 1 else { return false }
-    let button = children[0]
-    guard attr(button, kAXRoleAttribute) as? String == (kAXButtonRole as String),
-          let title = attr(button, kAXTitleAttribute) as? String,
-          let description = attr(button, kAXDescriptionAttribute) as? String,
-          attr(button, kAXFocusedAttribute) as? Bool == false else { return false }
-    // The incident retained the resolved button label, not which AX attribute
-    // supplied it. Accept its exact spelling in either otherwise-empty slot.
-    let inputSource = title.isEmpty && description == "com.tencent.inputmethod.wetype.pinyin"
-    let capsLock = (title.isEmpty && description == "Capslock Enabled") ||
-                   (title == "Capslock Enabled" && description.isEmpty)
-    guard inputSource || capsLock else { return false }
-    var buttonChildren: CFTypeRef?
-    let childrenStatus = AXUIElementCopyAttributeValue(button, kAXChildrenAttribute as CFString, &buttonChildren)
-    // AX reports noValue for this leaf button; unsupported/failed reads are not evidence of a leaf.
-    guard childrenStatus == .noValue ||
-          (childrenStatus == .success && (buttonChildren as? [AXUIElement])?.isEmpty == true) else { return false }
-    guard let number = axWindowNumber(w),
-          let focused = attr(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute),
-          CFGetTypeID(focused) == AXUIElementGetTypeID(),
-          let focusedNumber = axWindowNumber(focused as! AXUIElement), focusedNumber != number,
-          let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]],
-          let row = windows.first(where: { ($0[kCGWindowNumber as String] as? Int) == number }),
-          (row[kCGWindowOwnerPID as String] as? Int) == Int(pid),
-          (row[kCGWindowLayer as String] as? Int) == 3,
-          let bounds = row[kCGWindowBounds as String] as? NSDictionary,
-          let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double,
-          width > 0, width <= 120, height > 0, height <= 120 else { return false }
-    return true
+    ChromeNative.Probe().axIsInputSourceIndicator(w, pid: pid)
+}
+
+/// Chrome's unfocused Translate bubble does not suspend JavaScript. Require its
+/// observed nonmodal window, language tabs and exact toolbar buttons; a title
+/// alone cannot exempt a dialog. This changes only the page-dialog probe:
+/// window-order, keyboard-focus and point-occlusion guards still see the bubble.
+func axIsChromeTranslationBubble(_ w: AXUIElement) -> Bool {
+    ChromeNative.Probe().axIsChromeTranslationBubble(w)
 }
 
 /// On-screen layer-0 windows of one pid, front to back (CGWindowList order), excluding only the
@@ -556,6 +665,59 @@ func cgOnScreenOrder(pid: pid_t) -> [(num: Int, rect: CGRect)] {
 
 func cgWindowJSON(_ wid: Int) -> Any { cgWindowIds()[wid] ?? NSNull() }
 
+/// `info` uses the native owner's fresh reader/matcher. `list` deliberately
+/// retains the legacy metadata/heuristic path above; neither is a cached grant.
+/// This short-lived owner has no target, pin, Session, hold or write authority.
+func nativeInfoTarget(_ metadata: [String: Any], pid: pid_t, activeTab: Int,
+                      activeURL: String, bounds: CGRect) throws -> [String: Any] {
+    func changed() -> ChromeNative.Failure {
+        ChromeNative.Failure("native_target_changed", "native_window_binding",
+                             details: ["bindingReason": "snapshot_structure_changed"])
+    }
+    guard metadata["chromePid"] as? Int == Int(pid),
+          let window = ChromeNative.dialogInt(metadata["windowId"]),
+          let tab = ChromeNative.dialogInt(metadata["tabId"]),
+          let url = metadata["url"] as? String else { throw changed() }
+    let owner = ChromeNative.Owner(dry: false)
+    try owner.identity(pid)
+    // Synchronous value snapshots keep this standalone read on one thread;
+    // no Session control handling or ReadRunner/pump is invented here.
+    let initial = try ChromeNative.readSnapshot(pid)
+    let access = ChromeNative.Probe()
+    var validated: [ChromeNative.WindowRow]?
+    let mapping = try owner.cgMapping(pid, rows: initial, access: access,
+                                     captureRows: { validated = $0 })
+    guard let rows = validated else { throw ChromeNative.Failure("native_read_unknown", "native_read") }
+    guard let row = rows.first(where: { $0.id == window }), row.tabs.contains(tab),
+          row.activeTab == activeTab, row.bounds == bounds,
+          metadata["tabActive"] as? Bool == (row.activeTab == tab),
+          metadata["windowIndex"] as? Int == row.index,
+          metadata["minimized"] as? Bool == row.minimized,
+          metadata["tabCount"] as? Int == row.tabs.count,
+          let currentURL = row.tabURLs[tab], currentURL.utf8.elementsEqual(url.utf8),
+          let currentActiveURL = row.tabURLs[row.activeTab], currentActiveURL.utf8.elementsEqual(activeURL.utf8) else {
+        throw changed()
+    }
+    var result = metadata
+    result["ok"] = true
+    result["cgWindow"] = mapping[window] ?? NSNull()
+    result["bounds"] = ["left": Int(row.bounds.minX), "top": Int(row.bounds.minY),
+                        "width": Int(row.bounds.width), "height": Int(row.bounds.height)]
+    result["url"] = currentURL
+    // A WindowRow title describes its active tab, not every requested tab.
+    if tab == row.activeTab { result["title"] = row.title }
+    return result
+}
+
+func nativeInfoFailure(_ error: Error) -> [String: Any] {
+    if let failure = error as? ChromeNative.ReadFailure {
+        return ChromeNative.Failure(failure.code, "native_read", osStatus: failure.osStatus, details: failure.details).json
+    }
+    if let failure = error as? ChromeNative.Failure { return failure.json }
+    if let failure = error as? ChromeNative.DialogFailure { return failure.json }
+    return ChromeNative.Failure("native_read_unknown", "native_read").json
+}
+
 /// The window with index 1 (topmost Chrome window).
 func frontWindowId() -> Int? {
     let all = ids(windows())
@@ -571,16 +733,9 @@ func frontWindowId() -> Int? {
 /// always addressed to an explicit `window id` (ids exist only in their own
 /// process — a stray instance answers "no such window"), then re-checked by
 /// pid through ScriptingBridge.
-func runAppleScript(_ src: String) -> (String?, String?) {
-    var err: NSDictionary?
-    let out = NSAppleScript(source: src)?.executeAndReturnError(&err)
-    if let e = err { return (nil, (e[NSAppleScript.errorMessage] as? String) ?? "\(e)") }
-    return (out?.stringValue, nil)
-}
 
-func asQuote(_ s: String) -> String {
-    "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
-}
+
+
 
 /// Make the window with these bounds Chrome's MAIN window via Accessibility,
 /// so activating Chrome brings that window forward (activation restores the
@@ -588,27 +743,10 @@ func asQuote(_ s: String) -> String {
 /// the agent window ended up 2nd/3rd — seen live).
 /// With `cg` (the window's CG number) it is that exact window: by bounds alone a twin with the same
 /// bounds could be made main instead (JustTab matches by window number first, too).
-func axMakeMain(pid: pid_t, bounds r: NSRect, cg: Int? = nil) -> Bool {
-    let wins = axWindows(pid: pid)
-    let exact = cg.flatMap { n in wins.first { axWindowNumber($0) == n } }
-    guard let w = exact ?? wins.first(where: { w in
-        guard let wr = axRect(w) else { return false }
-        return abs(wr.origin.x - r.origin.x) < 2 && abs(wr.origin.y - r.origin.y) < 2 &&
-               abs(wr.size.width - r.size.width) < 2 && abs(wr.size.height - r.size.height) < 2
-    }) else { return false }
-    AXUIElementSetAttributeValue(w, kAXMainAttribute as CFString, kCFBooleanTrue)
-    AXUIElementPerformAction(w, kAXRaiseAction as CFString)
-    return true
-}
+
 
 func axRect(_ w: AXUIElement) -> CGRect? {
-    var pv: CFTypeRef?, sv: CFTypeRef?
-    var pos = CGPoint.zero, size = CGSize.zero
-    guard AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &pv) == .success,
-          AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sv) == .success else { return nil }
-    AXValueGetValue(pv as! AXValue, .cgPoint, &pos)
-    AXValueGetValue(sv as! AXValue, .cgSize, &size)
-    return CGRect(origin: pos, size: size)
+    ChromeNative.Probe().axRect(w)
 }
 
 func sameRect(_ a: CGRect, _ b: CGRect) -> Bool {
@@ -616,89 +754,62 @@ func sameRect(_ a: CGRect, _ b: CGRect) -> Bool {
     abs(a.size.width - b.size.width) <= 2 && abs(a.size.height - b.size.height) <= 2
 }
 
-/// Is Chrome's AX focused window (the key window) the one with these bounds?
-/// The "Leave" button of a page's leave-confirmation dialog (beforeunload) in any Chrome window, by
-/// its title in the languages Chrome shows; nil when there is none. Depth- and size-limited walk.
-func axLeaveButton(pid: pid_t) -> AXUIElement? {
-    let titles: Set<String> = ["leave", "leave site", "离开", "離開", "离开网站", "離開網站"]
-    var windowsRef: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &windowsRef) == .success,
-          let wins = windowsRef as? [AXUIElement] else { return nil }
-    var seen = 0
-    func walk(_ e: AXUIElement, _ depth: Int) -> AXUIElement? {
-        seen += 1
-        if depth > 14 || seen > 4000 { return nil }
-        var role: CFTypeRef?, title: CFTypeRef?, desc: CFTypeRef?
-        AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &role)
-        if (role as? String) == kAXButtonRole as String {
-            AXUIElementCopyAttributeValue(e, kAXTitleAttribute as CFString, &title)
-            AXUIElementCopyAttributeValue(e, kAXDescriptionAttribute as CFString, &desc)
-            for v in [title as? String, desc as? String] {
-                if let t = v?.trimmingCharacters(in: .whitespaces).lowercased(), titles.contains(t) { return e }
-            }
-        }
-        var kids: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &kids) == .success,
-              let list = kids as? [AXUIElement] else { return nil }
-        for k in list { if let hit = walk(k, depth + 1) { return hit } }
-        return nil
-    }
-    for w in wins { if let b = walk(w, 0) { return b } }
-    return nil
+// MARK: - bounded dialog model (also compiled with synthetic AX in tests)
+
+typealias DialogFailure = ChromeNative.DialogFailure
+typealias DialogIdentity = ChromeNative.DialogIdentity
+func dialogInt(_ value: Any?) -> Int? { ChromeNative.dialogInt(value) }
+func dialogIdentity(_ value: [String: Any]) throws -> DialogIdentity { try ChromeNative.dialogIdentity(value) }
+func dialogOptions(_ args: [String]) throws -> [String: String] { try ChromeNative.dialogOptions(args) }
+func axPageDialog(pid: pid_t) throws -> ChromeNative.PageDialog? { try ChromeNative.Probe().axPageDialog(pid: pid) }
+func inspectBoundDialog(pid: pid_t, target: [String: Any]?) throws -> ChromeNative.PageDialog? {
+    try ChromeNative.Probe().inspect(pid: pid, target: target)
 }
 
-/// A page's own dialog (alert / confirm / prompt, "<origin> says"): Chrome shows it as a separate,
-/// non-standard window holding its text and buttons; while it is up the page runs no script, so a
-/// read waits forever (live 2026-10-06). Returns its title, texts and buttons, or nil.
-/// The first text field in an AX subtree (a prompt() dialog's input).
-func axFirstTextField(in root: AXUIElement) -> AXUIElement? {
-    var seen = 0
-    func walk(_ e: AXUIElement, _ d: Int) -> AXUIElement? {
-        seen += 1
-        if d > 12 || seen > 600 { return nil }
-        var r: CFTypeRef?
-        AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r)
-        if (r as? String) == (kAXTextFieldRole as String) || (r as? String) == (kAXTextAreaRole as String) { return e }
-        var k: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &k) == .success, let kids = k as? [AXUIElement] else { return nil }
-        for c in kids { if let hit = walk(c, d + 1) { return hit } }
-        return nil
-    }
-    return walk(root, 0)
-}
-
-func axPageDialog(pid: pid_t) -> (title: String, texts: [String], buttons: [(String, AXUIElement)], window: AXUIElement, hasField: Bool)? {
-    func attr(_ e: AXUIElement, _ a: String) -> String {
-        var v: CFTypeRef?
-        AXUIElementCopyAttributeValue(e, a as CFString, &v)
-        return (v as? String) ?? ""
-    }
-    var wr: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &wr) == .success,
-          let wins = wr as? [AXUIElement] else { return nil }
-    for w in wins where attr(w, kAXSubroleAttribute) != (kAXStandardWindowSubrole as String) {
-        if axIsWindowSharingIndicator(w) || axIsInputSourceIndicator(w, pid: pid) { continue }
-        var texts: [String] = [], buttons: [(String, AXUIElement)] = []
-        var seen = 0
-        func walk(_ e: AXUIElement, _ d: Int) {
-            seen += 1
-            if d > 12 || seen > 600 { return }
-            let role = attr(e, kAXRoleAttribute)
-            if role == (kAXButtonRole as String) {
-                let t = attr(e, kAXTitleAttribute).isEmpty ? attr(e, kAXDescriptionAttribute) : attr(e, kAXTitleAttribute)
-                if !t.isEmpty { buttons.append((t, e)) }
-            } else if role == (kAXStaticTextRole as String) {
-                let v = attr(e, kAXValueAttribute).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !v.isEmpty { texts.append(String(v.prefix(300))) }
-            }
-            var k: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &k) == .success, let kids = k as? [AXUIElement] else { return }
-            for c in kids { walk(c, d + 1) }
+func nativeDialogCommand(_ args: [String]) -> Never {
+    do {
+        guard !warm else { throw DialogFailure(code: "dialog_probe_unknown", stage: "dialog_identity") }
+        let options = try dialogOptions(args)
+        func object(_ key: String) throws -> [String: Any]? {
+            guard let s = options[key] else { return nil }
+            guard let data = s.data(using: .utf8), let v = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw DialogFailure(code: "dialog_identity_required", stage: "dialog_identity") }
+            return v
         }
-        walk(w, 0)
-        if !buttons.isEmpty { return (attr(w, kAXTitleAttribute), texts, buttons, w, axFirstTextField(in: w) != nil) }
-    }
-    return nil
+        let button = options["--press"], text = options["--text"]
+        let expected = try object("--identity").map { try dialogIdentity($0) }
+        let target = try object("--target") ?? expected?.json
+        let pidString = options["--pid"]
+        let explicitPID = pidString.flatMap { pid_t($0) }
+        if pidString != nil && (explicitPID == nil || explicitPID! <= 0) { throw DialogFailure(code: "dialog_identity_required", stage: "dialog_identity") }
+        if button != nil && (expected == nil || explicitPID == nil) { throw DialogFailure(code: "dialog_identity_required", stage: "dialog_identity") }
+        let pid: pid_t
+        if let p = explicitPID, p > 0 { pid = p }
+        else {
+            // Conservative unbound probing must not select the first of several instances.
+            let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").filter { !$0.isTerminated && !processArgs($0.processIdentifier).contains("--headless") }
+            guard apps.count == 1 else { throw DialogFailure(code: apps.count > 1 ? "dialog_ambiguous" : "dialog_probe_unknown", stage: "dialog_identity") }
+            pid = apps[0].processIdentifier
+        }
+        guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
+              app.bundleIdentifier == "com.google.Chrome", expected == nil || expected?.chromePid == Int(pid) else {
+            throw DialogFailure(code: "dialog_identity_mismatch", stage: "dialog_identity")
+        }
+        if let t = target {
+            guard ["chromePid", "tabId", "windowId", "cgWindow"].allSatisfy({ dialogInt(t[$0]) != nil }), dialogInt(t["chromePid"]) == Int(pid) else { throw DialogFailure(code: "dialog_identity_required", stage: "dialog_identity") }
+        }
+        let inspect = { try inspectBoundDialog(pid: pid, target: target) }
+        guard button == nil else { throw DialogFailure(code: "native_session_required", stage: "dialog_identity") }
+        guard text == nil else { throw DialogFailure(code: "dialog_identity_required", stage: "dialog_identity") }
+        guard let d = try inspect() else { emit(["ok": true, "known": true, "open": false, "inputDelivery": "not_sent", "stage": "dialog_inspect"]) }
+        guard let identity = d.identity else { throw DialogFailure(code: "dialog_probe_unknown", stage: "dialog_binding") }
+        // PERM1 r1 A4: a positively identified page dialog (D's domain) vs an unclassified browser surface; r1 A1: attached.
+        let surface = ChromeNative.Probe().pageDialogSurface(d, pid: pid)
+        emit(["ok": true, "known": true, "open": true, "surface": surface.surface, "attached": surface.attached,
+              "title": d.title, "texts": d.texts, "buttons": d.buttons.map { $0.0 },
+              "hasField": d.hasField, "identity": identity.json, "complete": d.templateComplete, "origin": d.origin as Any? ?? NSNull(),
+              "originEvidence": d.origin == nil ? "unverified" : "native_current_snapshot", "inputDelivery": "not_sent", "stage": "dialog_inspect"])
+    } catch let e as DialogFailure { emit(e.json) }
+    catch { emit(DialogFailure(code: "dialog_probe_unknown", stage: "dialog_inspect", dialogProbePoint: .cli_inspect_catch).json.merging((error as NSError).domain == "MyChromeNativeReadFailure" ? (error as NSError).userInfo : [:]) { first, _ in first }) }
 }
 
 /// With `cg`, by window number (a twin with the same bounds does not count).
@@ -715,12 +826,164 @@ func axFocusedIs(pid: pid_t, bounds r: NSRect, cg: Int? = nil) -> Bool {
     return sameRect(fr, r)
 }
 
+/// Activation must prove the exact CG window; equal geometry is not identity.
+/// Split the remaining allowance across both AX requests instead of inheriting the 1 s default.
+func axFocusedExactly(pid: pid_t, cg: Int, remaining: Double) -> Bool {
+    guard cg > 0, remaining > 0 else { return false }
+    let app = AXUIElementCreateApplication(pid)
+    let timeout = Float(min(0.06, remaining / 3))
+    AXUIElementSetMessagingTimeout(app, timeout)
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value) == .success,
+          let v = value, CFGetTypeID(v) == AXUIElementGetTypeID() else { return false }
+    let focused = v as! AXUIElement
+    AXUIElementSetMessagingTimeout(focused, timeout)
+    return axWindowNumber(focused) == cg
+}
+
+/// Read-only bounded settling after the one activation request. Never raises or selects again.
+func settleExactFocus(pid: Int, cg: Int?, now: () -> Double, pause: (Double) -> Void,
+                      sample: (Double) -> (frontmostPid: Int, onTop: Bool, key: Bool))
+    -> (ready: Bool, frontmostPid: Int, onTop: Bool, key: Bool, waitedMs: Int) {
+    let start = now(), deadline = start + 1.0
+    var state = (frontmostPid: 0, onTop: false, key: false)
+    guard let cg = cg, cg > 0 else { return (false, state.frontmostPid, false, false, 0) }
+    while now() < deadline {
+        state = sample(max(0, deadline - now()))
+        let elapsed = now() - start
+        if elapsed <= 1.0 && state.frontmostPid == pid && state.onTop && state.key {
+            return (true, state.frontmostPid, true, true, Int(elapsed * 1000))
+        }
+        let remaining = deadline - now()
+        if remaining > 0 { pause(min(0.005, remaining)) }
+    }
+    return (false, state.frontmostPid, state.onTop, state.key, Int((now() - start) * 1000))
+}
+
+/// Usually CG alone answers. Only a small set of proven recording indicators may be skipped.
+/// No page title, field value or broad AX traversal is needed in this final focus check.
+func focusTopWindowMatches(pid: pid_t, cg: Int, remaining: Double) -> Bool {
+    guard cg > 0, remaining > 0 else { return false }
+    let deadline = ProcessInfo.processInfo.systemUptime + remaining
+    let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    let ordered = rows.filter { ($0[kCGWindowOwnerPID as String] as? Int) == Int(pid) && ($0[kCGWindowLayer as String] as? Int) == 0 }
+        .compactMap { $0[kCGWindowNumber as String] as? Int }
+    guard let at = ordered.firstIndex(of: cg), at <= 3 else { return false }
+    if at == 0 { return true }
+    var above = Set(ordered.prefix(at))
+    let app = AXUIElementCreateApplication(pid)
+    let timeout = Float(min(0.01, remaining / 100))
+    AXUIElementSetMessagingTimeout(app, timeout)
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
+          let windows = value as? [AXUIElement], windows.count <= 64 else { return false }
+    for window in windows {
+        // Keep room for the predicate's six bounded AX reads.
+        guard ProcessInfo.processInfo.systemUptime + Double(timeout) * 7 < deadline else { return false }
+        AXUIElementSetMessagingTimeout(window, timeout)
+        guard let id = axWindowNumber(window), above.contains(id) else { continue }
+        guard axIsWindowSharingIndicator(window, timeout: timeout) else { return false }
+        above.remove(id)
+        if above.isEmpty { return true }
+    }
+    return false
+}
+
+func waitForExactChromeFocus(pid: pid_t, cg: Int?)
+    -> (ready: Bool, frontmostPid: Int, onTop: Bool, key: Bool, waitedMs: Int) {
+    settleExactFocus(pid: Int(pid), cg: cg, now: { ProcessInfo.processInfo.systemUptime }, pause: spin) { remaining in
+        let started = ProcessInfo.processInfo.systemUptime
+        // General cgOnScreenOrder has 1 s per-AX-message timeouts, unsuitable for this loop.
+        let onTop = cg.map { focusTopWindowMatches(pid: pid, cg: $0, remaining: remaining * 0.6) } == true
+        let allowance = max(0, remaining - (ProcessInfo.processInfo.systemUptime - started))
+        let key = onTop && cg.map { axFocusedExactly(pid: pid, cg: $0, remaining: allowance) } == true
+        // Check after AX too: another app may have taken focus during a slow reply.
+        return (Int(frontApp()?.processIdentifier ?? 0), onTop, key)
+    }
+}
+
 // MARK: - Read-only native input probe
 
 struct NativeInputProbeError: Error {
     let code: String
     let message: String
     var details: [String: Any] = [:]
+}
+
+/// A read-only AX probe's caps; every probe also has the fixed 1.8 s deadline, the only `ax_probe_timeout`.
+/// Every probe except page-content bounds keeps 220 reads, and the old code and text when that cap trips.
+struct AXProbeBudget {
+    let maxReads: Int, maxVisited: Int
+    /// Name the limit and its counts in the message; a tripped cap is `page_content_unavailable`.
+    let namesLimits: Bool
+    static let standard = AXProbeBudget(maxReads: 220, maxVisited: 120, namesLimits: false)
+    /// 3 reads (window list, window position and size), then at most 3 per visited node: its role, then
+    /// visibleChildren and the children fallback, or for the WebArea its position and size. So the read cap
+    /// never stops a walk that the node cap allows; the deadline still bounds the time.
+    static let pageContent = AXProbeBudget(maxReads: 3 + 3 * 300, maxVisited: 300, namesLimits: true)
+}
+
+/// Find one outer WebArea; nested frame WebAreas belong to that page and are not separate crops.
+/// Unknown/oversized/ambiguous geometry is not permission to capture browser chrome.
+func pageContentBounds(root: AXUIElement, window: CGRect, probe: NativeInputProbe) throws -> CGRect {
+    var candidates: [CGRect] = []
+    func walk(_ node: AXUIElement, _ depth: Int) throws {
+        probe.visited += 1
+        guard probe.visited <= probe.budget.maxVisited else { throw probe.stopped("visited") }
+        guard depth <= 12 else { throw probe.stopped("depth") }
+        if try probe.role(node) == "AXWebArea" {
+            guard let r = try probe.rect(node), r.minX.isFinite, r.minY.isFinite,
+                  r.width.isFinite, r.height.isFinite, r.width > 0, r.height > 0,
+                  r.minX >= window.minX, r.minY > window.minY,
+                  r.maxX <= window.maxX, r.maxY <= window.maxY else {
+                throw NativeInputProbeError(code: "page_content_unavailable", message: "网页内容边界不可靠，这次没有截图。")
+            }
+            candidates.append(r)
+            return
+        }
+        let visible = try probe.value(node, kAXVisibleChildrenAttribute) as? [AXUIElement]
+        let children = try visible ?? (probe.value(node, kAXChildrenAttribute) as? [AXUIElement] ?? [])
+        for child in children { try walk(child, depth + 1) }
+    }
+    try walk(root, 0)
+    guard candidates.count == 1 else {
+        throw NativeInputProbeError(code: "page_content_unavailable", message: "找不到唯一的网页内容区域，这次没有截图。")
+    }
+    return candidates[0]
+}
+
+func nativePageContent(pid: pid_t, expectedWindow: Int) throws -> [String: Any] {
+    guard AXIsProcessTrusted() else {
+        throw NativeInputProbeError(code: "no_accessibility", message: "Accessibility permission is required to identify the page content area; no screenshot was taken.")
+    }
+    _ = try nativeChromeIdentity(pid: pid)
+    guard let rows = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(expectedWindow)) as? [[String: Any]],
+          let row = rows.first, row[kCGWindowOwnerPID as String] as? Int == Int(pid),
+          row[kCGWindowLayer as String] as? Int == 0, row[kCGWindowIsOnscreen as String] as? Bool == true,
+          let bounds = row[kCGWindowBounds as String] as? NSDictionary,
+          let window = CGRect(dictionaryRepresentation: bounds) else {
+        throw NativeInputProbeError(code: "page_content_unavailable", message: "目标网页窗口不可见或已变化，这次没有截图。")
+    }
+    let probe = NativeInputProbe(.pageContent), app = AXUIElementCreateApplication(pid)
+    let windows = try probe.value(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
+    guard windows.count <= 64 else {
+        throw NativeInputProbeError(code: "page_content_unavailable", message: "无法及时确认目标网页窗口，这次没有截图。")
+    }
+    var matches: [AXUIElement] = []
+    for candidate in windows {
+        guard ProcessInfo.processInfo.systemUptime < probe.deadline else {
+            throw NativeInputProbeError(code: "page_content_unavailable", message: "无法及时确认目标网页窗口，这次没有截图。")
+        }
+        AXUIElementSetMessagingTimeout(candidate, 0.06)
+        if axWindowNumber(candidate) == expectedWindow { matches.append(candidate) }
+    }
+    guard matches.count == 1, let frame = try probe.rect(matches[0]), sameRect(frame, window) else {
+        throw NativeInputProbeError(code: "page_content_unavailable", message: "无法确认目标网页窗口，这次没有截图。")
+    }
+    let rect = try pageContentBounds(root: matches[0], window: window, probe: probe)
+    let json: (CGRect) -> [String: Double] = { ["x": $0.minX, "y": $0.minY, "w": $0.width, "h": $0.height] }
+    return ["ok": true, "pid": Int(pid), "cgWindow": expectedWindow, "rect": json(rect),
+            "windowBounds": json(window), "source": "ax-web-area"]
 }
 
 /// Missing direct metadata can be corroborated by one same-PID workspace record.
@@ -758,13 +1021,29 @@ func nativeChromeIdentity(pid: pid_t) throws -> String {
 /// All AX traversal is bounded and omits field values, selected text, window titles and URLs.
 /// The app-specific hit test reaches renderer accessibility nodes across iframe/shadow boundaries.
 final class NativeInputProbe {
-    let deadline = ProcessInfo.processInfo.systemUptime + 1.8
-    var reads = 0
+    let budget: AXProbeBudget, started: TimeInterval, deadline: TimeInterval
+    var reads = 0, visited = 0
+    init(_ budget: AXProbeBudget = .standard) {
+        self.budget = budget
+        started = ProcessInfo.processInfo.systemUptime
+        deadline = started + 1.8
+    }
+    /// The limit that stopped the probe ("reads", "visited", "depth" or "deadline") with its counts.
+    func stopped(_ limit: String) -> NativeInputProbeError {
+        let ms = Int(((ProcessInfo.processInfo.systemUptime - started) * 1000).rounded())
+        let details: [String: Any] = ["limit": limit, "reads": reads, "maxReads": budget.maxReads,
+                                      "visited": visited, "maxVisited": budget.maxVisited, "elapsedMs": ms]
+        guard budget.namesLimits || limit == "visited" || limit == "depth" else {
+            return NativeInputProbeError(code: "ax_probe_timeout", message: "Native target inspection timed out; no input was sent.", details: details)
+        }
+        let counts = "limit=\(limit) reads=\(reads)/\(budget.maxReads) visited=\(visited)/\(budget.maxVisited) elapsedMs=\(ms)"
+        return NativeInputProbeError(code: limit == "deadline" ? "ax_probe_timeout" : "page_content_unavailable",
+                                     message: "网页内容区域没能在检查上限内确认，这次没有截图（\(counts)）。", details: details)
+    }
     func value(_ e: AXUIElement, _ attribute: String) throws -> CFTypeRef? {
         reads += 1
-        guard reads <= 220, ProcessInfo.processInfo.systemUptime < deadline else {
-            throw NativeInputProbeError(code: "ax_probe_timeout", message: "Native target inspection timed out; no input was sent.")
-        }
+        guard reads <= budget.maxReads else { throw stopped("reads") }
+        guard ProcessInfo.processInfo.systemUptime < deadline else { throw stopped("deadline") }
         AXUIElementSetMessagingTimeout(e, 0.12)
         var result: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(e, attribute as CFString, &result)
@@ -876,6 +1155,26 @@ func nativeFrontMenuState() throws -> [String: Any] {
     return ["ok": true, "known": true, "menuOpen": menu, "pid": Int(pid), "window": windowID]
 }
 
+/// FOCUS4 (G-h): the AX element at the landing point (or, with no point, the focused element) belongs to the bound
+/// window. AXFocusedWindow is not a prerequisite (it can be unavailable while the window is visibly in front); it still
+/// binds the one exemption, an open menu (its items sit in their own window), to the target. Missing control evidence
+/// (no element, no window number) never matches.
+func nativeWindowMatches(expected: Int, hit: Int?, focused: Int?, menu: Bool) -> Bool {
+    hit == expected || (menu && focused == expected)
+}
+
+/// FOCUS4 r2 A2: whether a native menu is open, from complete AX focus evidence only (as nativeFrontMenuState):
+/// "open" on positive evidence; "closed" only with a focused element, every role on its parent chain read, the chain
+/// ending at its window or application, and an explicit expansion value `false` for each popup button on it; else
+/// "unknown" (no focused element, an incomplete chain, a popup without an expansion value).
+func nativeMenuState(focused: Bool, roles: [String], menu: Bool, popupExpanded: [Bool?]) -> String {
+    if menu { return "open" }
+    guard focused, let last = roles.last, last == kAXWindowRole || last == kAXApplicationRole,
+          roles.allSatisfy({ !$0.isEmpty }) else { return "unknown" }
+    guard popupExpanded.allSatisfy({ $0 == false }) else { return "unknown" }
+    return "closed"
+}
+
 func nativeInputProbe(pid: pid_t, expectedWindow: Int, point: CGPoint?) throws -> [String: Any] {
     guard AXIsProcessTrusted() else {
         throw NativeInputProbeError(code: "no_accessibility", message: "Accessibility permission is required for native target inspection.")
@@ -904,6 +1203,8 @@ func nativeInputProbe(pid: pid_t, expectedWindow: Int, point: CGPoint?) throws -
     let hitWindowID = try probe.windowNumber(hitChain)
     let roleNames = hitChain.map { $0.1 }
     let menu = try probe.menuOpen(focusedChain)
+    let popupExpanded: [Bool?] = try focusedChain.filter { $0.1 == kAXPopUpButtonRole }.map { try probe.value($0.0, kAXExpandedAttribute) as? Bool }
+    let menuState = nativeMenuState(focused: focused != nil, roles: focusedChain.map { $0.1 }, menu: menu, popupExpanded: popupExpanded)
     var blocker: Any = NSNull()
     if let p = point,
        let stack = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
@@ -923,9 +1224,9 @@ func nativeInputProbe(pid: pid_t, expectedWindow: Int, point: CGPoint?) throws -
     return ["ok": true, "pid": Int(pid), "expectedWindow": expectedWindow, "identitySource": identitySource,
             "frontmost": NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
             "focusedWindow": focusedWindowID ?? NSNull(), "hitWindow": hitWindowID ?? NSNull(),
-            "windowMatches": focusedWindowID == expectedWindow && (hitWindowID == expectedWindow || menu),
+            "windowMatches": nativeWindowMatches(expected: expectedWindow, hit: hitWindowID, focused: focusedWindowID, menu: menu),
             "nodeFound": hit != nil, "roles": roleNames,
-            "nativePopup": roleNames.contains(kAXPopUpButtonRole), "menuOpen": menu,
+            "nativePopup": roleNames.contains(kAXPopUpButtonRole), "menuOpen": menu, "menuState": menuState,
             "nativeMenuOpen": menu && focusedChain.contains(where: { $0.1 == kAXPopUpButtonRole }),
             "documentToken": try probe.documentToken(hitChain) ?? NSNull(),
             "focusedDocumentToken": try probe.documentToken(focusedChain) ?? NSNull(),
@@ -954,38 +1255,7 @@ func fourCC(_ s: String) -> FourCharCode { s.utf8.reduce(0) { ($0 << 8) | FourCh
 
 /// `make new tab at end of tabs of window id <wid> with properties {URL:url}`,
 /// as a raw Apple Event sent to one pid. Returns an error message or nil.
-func makeTab(pid: pid_t, windowId: Int, url: String) -> String? {
-    // Object specifiers must be built with CreateObjSpecifier: a record's
-    // flattened data under type 'obj ' is not one (Chrome answered -1700).
-    // Shape copied from what AppleScript sends (AEDebugSends=1).
-    func dup(_ d: NSAppleEventDescriptor) -> AEDesc { var out = AEDesc(); AEDuplicateDesc(d.aeDesc!, &out); return out }
-    var nullDesc = AEDesc(descriptorType: typeNull, dataHandle: nil)
-    var winKey = dup(NSAppleEventDescriptor(string: String(windowId)))
-    var win = AEDesc()
-    guard CreateObjSpecifier(fourCC("cwin"), &nullDesc, fourCC("ID  "), &winKey, false, &win) == noErr else { return "objspec window" }
-    var all = fourCC("all "); var allKey = AEDesc()
-    AECreateDesc(fourCC("abso"), &all, 4, &allKey)
-    var tabs = AEDesc()
-    guard CreateObjSpecifier(fourCC("CrTb"), &win, fourCC("indx"), &allKey, false, &tabs) == noErr else { return "objspec tabs" }
-    let loc = NSAppleEventDescriptor.record()
-    loc.setDescriptor(NSAppleEventDescriptor(aeDescNoCopy: &tabs), forKeyword: fourCC("kobj"))
-    loc.setDescriptor(NSAppleEventDescriptor(enumCode: fourCC("end ")), forKeyword: fourCC("kpos"))
-    let props = NSAppleEventDescriptor.record()
-    props.setDescriptor(NSAppleEventDescriptor(string: url), forKeyword: fourCC("URL "))
-    let ev = NSAppleEventDescriptor(eventClass: fourCC("core"), eventID: fourCC("crel"),
-                                    targetDescriptor: NSAppleEventDescriptor(processIdentifier: pid),
-                                    returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
-    ev.setParam(NSAppleEventDescriptor(typeCode: fourCC("CrTb")), forKeyword: fourCC("kocl"))
-    ev.setParam(loc, forKeyword: fourCC("insh"))
-    ev.setParam(props, forKeyword: fourCC("prdt"))
-    do {
-        let reply = try ev.sendEvent(options: [.waitForReply], timeout: 10)
-        if let e = reply.paramDescriptor(forKeyword: fourCC("errn")), e.int32Value != 0 {
-            return "Apple Event error \(e.int32Value) \(reply.paramDescriptor(forKeyword: fourCC("errs"))?.stringValue ?? "")"
-        }
-        return nil
-    } catch { return "\(error)" }
-}
+
 
 func frontApp() -> NSRunningApplication? { NSWorkspace.shared.frontmostApplication }
 
@@ -1033,147 +1303,6 @@ case "list":
     emit(["ok": true, "driver": "chromectl", "chromePid": Int(chromeProc.processIdentifier),
           "frontmost": frontApp()?.localizedName ?? "", "windows": out])
 
-case "open":
-    guard argv.count >= 1 else { fail("usage", "open <url> [windowId] [--select]") }
-    let wid: Int
-    if argv.count >= 2, let x = Int(argv[1]) { wid = x } else {
-        guard let f = frontWindowId() else { fail("no_window", "Chrome 没有窗口") }
-        wid = f
-    }
-    guard let w = window(id: wid) else { fail("no_such_window", "window \(wid) gone") }
-    let before = Set(ids(tabs(w)))
-    let prevFront = frontWindowId()
-    // Make the tab with a raw Apple Event addressed to THIS Chrome's pid.
-    // AppleScript's `tell application "Google Chrome"` is routed by name and
-    // was seen bound to another (headless) instance with one window, so the
-    // agent window was "not found" (2026-09-30).
-    let prevIdx = num(w.value(forKey: "activeTabIndex"))
-    let err = makeTab(pid: chromeProc.processIdentifier, windowId: wid, url: argv[0])
-    if err == nil && !selectFlag && prevIdx > 0 { w.setValue(prevIdx, forKey: "activeTabIndex") }
-    if let e = err { fail("open_failed", "新开标签失败：\(e)") }
-    // `make new tab` raises its window to the front of Chrome; when Chrome is
-    // the user's active app that window also takes the keyboard, and the
-    // user's typing went into an agent tab (seen live). Put their window back.
-    if let pf = prevFront, pf != wid, frontWindowId() != pf, let fw = window(id: pf) {
-        fw.setValue(1, forKey: "index")
-    }
-    let added = Set(ids(tabs(w))).subtracting(before)
-    guard let tid = added.first else { fail("open_failed", "新标签没有出现在目标 Chrome（pid \(chromeProc.processIdentifier)）的窗口 \(wid) 里") }
-    check()
-    emit(["ok": true, "driver": "chromectl", "tabId": tid, "windowId": wid, "selected": selectFlag])
-
-case "newwindow":
-    guard argv.count >= 5, let l = Int(argv[1]), let tp = Int(argv[2]), let r = Int(argv[3]), let b = Int(argv[4]) else {
-        fail("usage", "newwindow <url> <left> <top> <right> <bottom>")
-    }
-    // `make new window` cannot name a window id; verify by pid afterwards
-    // that the new window really belongs to the chosen process.
-    let before = Set(ids(windows()))
-    let wasFront = frontApp()?.processIdentifier == chromeProc.processIdentifier
-    var out: String? = nil
-    // Open the window in the USER's profile. `make new window` lands in
-    // whichever profile Chrome picks — seen live: the agent window opened in
-    // another person's profile (other logins, Apple-Events JS setting off).
-    // The Chrome binary with --profile-directory forwards to the running
-    // instance (process singleton) and exits; no second Chrome starts.
-    let wantProfile = argv.count >= 6 ? argv[5] : nil
-    if let prof = targetProfile(wantProfile) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-        p.arguments = ["--profile-directory=\(prof)", "--new-window", argv[0]]
-        // Chrome prints "Opening in existing browser session." — keep our stdout pure JSON.
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        try? p.run()
-        p.waitUntilExit()
-        var waited = 0
-        while waited < 6000 && Set(ids(windows())).subtracting(before).isEmpty { spin(0.1); waited += 100 }
-        if let wid = Set(ids(windows())).subtracting(before).first, let w = window(id: wid) {
-            w.setValue(NSValue(rect: NSRect(x: l, y: tp, width: r - l, height: b - tp)), forKey: "bounds")
-            out = String(wid)
-        }
-    } else {
-        let (o, err) = runAppleScript("""
-        tell application "Google Chrome"
-            set w to make new window
-            set bounds of w to {\(l), \(tp), \(r), \(b)}
-            set URL of active tab of w to \(asQuote(argv[0]))
-            return (id of w as text)
-        end tell
-        """)
-        if let e = err { fail("newwindow_failed", "新建窗口失败：\(e)") }
-        out = o
-    }
-    let added = Set(ids(windows())).subtracting(before)
-    guard let wid = added.first, let w = window(id: wid) else {
-        fail("wrong_instance", "新窗口（id \(out ?? "?")）没有出现在目标 Chrome（pid \(chromeProc.processIdentifier)）里：AppleScript 连到了别的 Chrome 实例。请关掉多余的 Chrome 后重试。")
-    }
-    let t = w.value(forKey: "activeTab") as? SBObject
-    check()
-    // A new window brings Chrome forward, but only some time after it appears (seen 2026-10-13: the
-    // caller handed the front back first, then Chrome came forward over the user's app). Wait for it
-    // (up to 1.5 s), so a hand-back after this reply is not undone.
-    var forwardMs = 0
-    if !wasFront {
-        while forwardMs < 1500 && frontApp()?.processIdentifier != chromeProc.processIdentifier { spin(0.02); forwardMs += 20 }
-    }
-    emit(["ok": true, "driver": "chromectl", "windowId": wid, "tabId": num(t?.value(forKey: "id")),
-          "chromeCameForward": !wasFront && frontApp()?.processIdentifier == chromeProc.processIdentifier, "forwardMs": forwardMs])
-
-case "move":
-    // Move one window (the agent's own: index.js only passes those) to new bounds, e.g. onto the display
-    // the user is not working on. Never activates or raises anything.
-    guard argv.count >= 5, let l = Int(argv[1]), let tp = Int(argv[2]), let r = Int(argv[3]), let b = Int(argv[4]),
-          let wid = Int(argv[0]) else {
-        fail("usage", "move <windowId> <left> <top> <right> <bottom>")
-    }
-    guard let w = window(id: wid) else { fail("no_such_window", "找不到窗口 \(wid)") }
-    w.setValue(NSValue(rect: NSRect(x: l, y: tp, width: r - l, height: b - tp)), forKey: "bounds")
-    check()
-    let nb = (w.value(forKey: "bounds") as? NSValue)?.rectValue ?? .zero
-    emit(["ok": true, "driver": "chromectl", "windowId": wid,
-          "bounds": ["left": Int(nb.origin.x), "top": Int(nb.origin.y), "width": Int(nb.width), "height": Int(nb.height)]])
-
-case "close":
-    // close <tabId> [--leave]: --leave answers the page's own "leave this site?" prompt (beforeunload)
-    // with Leave, so closing an agent tab never leaves that dialog on the user's screen (round 5).
-    guard let tid = argv.first.flatMap(Int.init) else { fail("usage", "close <tabId> [--leave]") }
-    guard let (_, t, _) = findTab(tid) else { emit(["ok": true, "closed": false, "reason": "already gone"]) }
-    t.perform(NSSelectorFromString("close"))
-    check()
-    var answered = false
-    if argv.contains("--leave") {
-        let t0 = Date()
-        while findTab(tid) != nil && Date().timeIntervalSince(t0) < 3 {
-            if !answered, let b = axLeaveButton(pid: chromeProc.processIdentifier) {
-                answered = AXUIElementPerformAction(b, kAXPressAction as CFString) == .success
-            }
-            usleep(150_000)
-        }
-    }
-    emit(["ok": true, "closed": findTab(tid) == nil, "leavePrompt": answered])
-
-case "dialog":
-    // dialog [--press <button title>]: the page dialog (alert / confirm / prompt) if one is up; --press answers it.
-    guard let d = axPageDialog(pid: chromeProc.processIdentifier) else { emit(["ok": true, "open": false]) }
-    if let i = argv.firstIndex(of: "--press"), i + 1 < argv.count {
-        let want = argv[i + 1]
-        // prompt(): the text goes into the dialog's field first (--text).
-        if let j = argv.firstIndex(of: "--text"), j + 1 < argv.count {
-            guard let field = axFirstTextField(in: d.window) else {
-                emit(["ok": false, "error": "no_text_field", "message": "这个对话框没有输入框（不是 prompt），不能填文字"])
-            }
-            AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, argv[j + 1] as CFString)
-        }
-        guard let b = d.buttons.first(where: { $0.0 == want }) else {
-            emit(["ok": false, "error": "no_such_button", "message": "对话框里没有「\(want)」按钮", "buttons": d.buttons.map { $0.0 }])
-        }
-        let ok = AXUIElementPerformAction(b.1, kAXPressAction as CFString) == .success
-        usleep(250_000)
-        emit(["ok": ok, "open": true, "pressed": want, "stillOpen": axPageDialog(pid: chromeProc.processIdentifier) != nil])
-    }
-    emit(["ok": true, "open": true, "title": d.title, "texts": d.texts, "buttons": d.buttons.map { $0.0 }, "hasField": d.hasField])
-
 case "scene":
     var wid: Any = NSNull(), tid: Any = NSNull()
     // Element order is not z-order under ScriptingBridge; ask for index 1.
@@ -1185,203 +1314,7 @@ case "scene":
     let f = frontApp()
     trace("scene")
     emit(["ok": true, "app": f?.localizedName ?? "", "appPid": f.map { Int($0.processIdentifier) } ?? NSNull(),
-          "chromeWindow": wid, "chromeTab": tid])
-
-case "restore":
-    // restore <appPid> <windowId> <tabId> [--stop-on-input] [--if-chrome-front]
-    //         [--since <epochMs>] [--no-click-since <epochMs>]   (any id may be "-")
-    // When the user's app is not Chrome, it goes to the front FIRST and only
-    // then Chrome's window order / active tab are put back: reordering while
-    // Chrome is still frontmost makes the user's window key for a moment, and
-    // their tab gets a window focus followed by blur (plan A3). So the reorder
-    // is skipped whenever Chrome is still in front at that point (the app did
-    // not come forward in time, or it has quit), and reported.
-    //   --stop-on-input   skip the reorder once HID input arrived after start
-    //                     (the user took over while we were putting things back)
-    //   --if-chrome-front do nothing unless Chrome is frontmost at start (used to
-    //                     hand the front back to the user's app after they took over)
-    //   --since <epochMs> with --stop-on-input: count input from this wall-clock
-    //                     time instead of this process's start (the caller's last
-    //                     check of the user; nothing of its own is posted after it)
-    //   --no-click-since <epochMs>  do not activate the app when a mouse button
-    //                     went down after this time: the user clicked a window of
-    //                     their choice (reply skipped: "user_clicked")
-    // With --stop-on-input the app is not activated either once input arrived
-    // (reply activated: false).
-    var flags = Set<String>(), values: [String: Double] = [:], pos: [String] = []
-    var ai = 0
-    while ai < argv.count {
-        let a = argv[ai]
-        if a == "--since" || a == "--no-click-since" {
-            if ai + 1 < argv.count, let v = Double(argv[ai + 1]) { values[a] = v }
-            ai += 2; continue
-        }
-        if a.hasPrefix("--") { flags.insert(a) } else { pos.append(a) }
-        ai += 1
-    }
-    let t0 = values["--since"].map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
-    let stopOnInput = flags.contains("--stop-on-input")
-    // Nothing of ours is posted while this runs (activation and window order
-    // post no input events), so any input after t0 is the user's (F13, F18).
-    func userActed() -> Bool {
-        stopOnInput && idleSeconds() * 1000 < Date().timeIntervalSince(t0) * 1000 - 50
-    }
-    func userClicked() -> Bool {
-        guard let since = values["--no-click-since"] else { return false }
-        let downs: [CGEventType] = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
-        let age = downs.map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? .infinity
-        return age * 1000 < Date().timeIntervalSince1970 * 1000 - since
-    }
-    /// Whether anything was changed (a window or tab given back).
-    @discardableResult func putBackChrome() -> Bool {
-        var changed = false
-        if pos.count >= 3, let wid = Int(pos[1]), let w = window(id: wid) {
-            if let tid = Int(pos[2]), let k = ids(tabs(w)).firstIndex(of: tid), num(w.value(forKey: "activeTabIndex")) != k + 1 {
-                w.setValue(k + 1, forKey: "activeTabIndex"); changed = true
-            }
-            if num(w.value(forKey: "index")) != 1 { w.setValue(1, forKey: "index"); changed = true }
-        }
-        return changed
-    }
-    let chromePid = chromeProc.processIdentifier
-    func chromeFront() -> Bool { frontApp()?.processIdentifier == chromePid }
-    if flags.contains("--if-chrome-front") && !chromeFront() {
-        emit(["ok": true, "skipped": "chrome_not_front", "appFrontmost": false, "chromeReordered": false])
-    }
-    guard let pidS = pos.first, let pid = pid_t(pidS), pid != chromePid else {
-        // The user was in Chrome itself: put its window and tab back.
-        if userActed() { emit(["ok": true, "chromeReordered": false, "userInput": true]) }
-        emit(["ok": true, "chromeReordered": putBackChrome()])
-    }
-    guard let a = NSRunningApplication(processIdentifier: pid) else {
-        // The user's app has quit since the snapshot.
-        let reorder = !chromeFront() && !userActed() && putBackChrome()
-        emit(["ok": true, "appFrontmost": false, "appGone": true, "chromeReordered": reorder, "userInput": userActed()])
-    }
-    // Checked right before activating: the user may have taken over since the
-    // caller's last look (Node's own work and this process's start take time).
-    if userClicked() {
-        emit(["ok": true, "skipped": "user_clicked", "appFrontmost": false, "chromeReordered": false, "activated": false])
-    }
-    if userActed() {
-        emit(["ok": true, "appFrontmost": false, "chromeReordered": false, "userInput": true, "activated": false])
-    }
-    a.activate(options: [])
-    var waited = 0
-    while waited < 1000 && frontApp()?.processIdentifier != pid && !userActed() {
-        spin(0.005); waited += 5
-    }
-    trace("restore: app activate+wait (\(waited) ms polled)")
-    let appFront = frontApp()?.processIdentifier == pid
-    let acted = userActed()
-    var reordered = false
-    if !acted && !chromeFront() { reordered = putBackChrome(); trace("restore: putBackChrome"); if stopOnInput { spin(0.05) } }
-    // Reordering a background Chrome might re-activate it (plan A3 risk, unmeasured): look right after,
-    // and give the front back once more unless the user acted or clicked meanwhile. Reported as seen
-    // after this (appFrontmost), with whether Chrome came forward (chromeReactivated).
-    var reactivated = false, appFrontEnd = appFront
-    if reordered {
-        spin(0.03)
-        if chromeFront() {
-            reactivated = true
-            trace("restore: Chrome came forward after the reorder")
-            if !userActed() && !userClicked() {
-                a.activate(options: [])
-                var w2 = 0
-                while w2 < 500 && frontApp()?.processIdentifier != pid && !userActed() { spin(0.005); w2 += 5 }
-            }
-        }
-        appFrontEnd = frontApp()?.processIdentifier == pid
-    }
-    trace("restore: done")
-    emit(["ok": true, "waitedMs": waited, "appFrontmost": appFrontEnd, "chromeReordered": reordered,
-          "userInput": acted, "chromeReactivated": reactivated, "activated": true])
-
-case "activate" where argv.contains("--lean"):
-    // activate --lean --tab T --window W [--cg N]: the foreground path, with what the caller
-    // already knows (window id, CG window from its pre-check) and nothing else read: no tab
-    // search, no title/URL list, the active tab set only if it is not already, 5 ms polling.
-    //   --assume-active   the pre-check saw the tab active in a non-minimized window
-    //   --bounds l,t,w,h  the window's bounds from the pre-check
-    guard let tid = tabArg, let wi = argv.firstIndex(of: "--window"), wi + 1 < argv.count,
-          let wid = Int(argv[wi + 1]) else {
-        fail("no_such_tab", "找不到标签（可能已关闭或被移到别的窗口）。请重新调用 list_tabs。")
-    }
-    let assume = argv.contains("--assume-active")
-    var r = NSRect.zero
-    if let bi = argv.firstIndex(of: "--bounds"), bi + 1 < argv.count {
-        let n = argv[bi + 1].split(separator: ",").compactMap { Double($0) }
-        if n.count == 4 { r = NSRect(x: n[0], y: n[1], width: n[2], height: n[3]) }
-    }
-    // A lazy reference: no round trip until a property is read; the active-tab read below
-    // is the one that also proves the window still exists (an error otherwise).
-    guard assume || ids(windows()).contains(wid) else { fail("no_such_tab", "窗口 \(wid) 已经不在了。") }
-    let w = windows().object(withID: String(wid)) as! SBObject
-    trace("lean: window")
-    if !assume, (w.value(forKey: "minimized") as? Bool) == true { w.setValue(false, forKey: "minimized") }
-    // Always read once: the user may have switched this window's tab since the pre-check.
-    if num((w.value(forKey: "activeTab") as? SBObject)?.value(forKey: "id")) != tid {
-        check()
-        guard let k = ids(tabs(w)).firstIndex(of: tid) else { fail("no_such_tab", "标签 \(tid) 已经不在窗口 \(wid) 里。") }
-        w.setValue(k + 1, forKey: "activeTabIndex")
-    }
-    check()
-    trace("lean: tab")
-    if r == .zero { r = rectOf(w) }
-    if !assume, num(w.value(forKey: "index")) != 1 { w.setValue(1, forKey: "index") }
-    // The CG window from the caller's pre-check, if it is still this window (owner, bounds); else
-    // matched now. Raise, on-top and key-window checks then go by window number, not by bounds
-    // (a twin window with the same bounds would pass those).
-    // With a twin (another Chrome window with these bounds) the pre-check's number is not trusted: the
-    // window order may have changed since; matched afresh, and after the raise Chrome itself must say
-    // this window is its front one (a wrong number would raise the twin and pass the checks below).
-    let twins = cgWindows(pid: chromeProc.processIdentifier).filter { sameRect($0.rect, r) }.count > 1
-    var cgN: Int? = nil
-    if twins {
-        cgN = cgWindowIds()[wid]
-    } else if let ci = argv.firstIndex(of: "--cg"), ci + 1 < argv.count, let n = Int(argv[ci + 1]),
-       let d = (CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(n)) as? [[String: Any]])?.first,
-       (d[kCGWindowOwnerPID as String] as? Int) == Int(chromeProc.processIdentifier),
-       let b = d[kCGWindowBounds as String] as? NSDictionary, let cr = CGRect(dictionaryRepresentation: b), sameRect(cr, r) {
-        cgN = n
-    } else {
-        cgN = cgWindowIds()[wid]
-    }
-    trace("lean: cg")
-    let axOk = axMakeMain(pid: chromeProc.processIdentifier, bounds: r, cg: cgN)
-    trace("lean: raised")
-    chromeProc.activate(options: [])
-    var waited = 0
-    while waited < 1000 && frontApp()?.processIdentifier != chromeProc.processIdentifier { spin(0.005); waited += 5 }
-    trace("lean: active (\(waited) ms)")
-    // Not matched before (e.g. a window still coming back from the Dock): once more, now it is up.
-    if cgN == nil { cgN = cgWindowIds()[wid] }
-    func isTarget(_ f: (num: Int, rect: CGRect)?) -> Bool {
-        guard let f = f else { return false }
-        return cgN.map { f.num == $0 } ?? sameRect(f.rect, r)
-    }
-    // On top: Chrome's frontmost on-screen window is this one (CG list, no Apple Event); with a twin,
-    // Chrome's own order must agree (one Apple Event).
-    func front() -> Bool {
-        isTarget(cgOnScreenOrder(pid: chromeProc.processIdentifier).first) && (!twins || num(w.value(forKey: "index")) == 1)
-    }
-    var onTop = front()
-    if !onTop {
-        // AX raise did not reorder Chrome's windows: do it through Chrome, then look again. With a twin the
-        // number may have been the twin's (window order changed while matching): matched once more.
-        w.setValue(1, forKey: "index")
-        spin(0.005)
-        if twins { cgN = cgWindowIds()[wid] }
-        onTop = front()
-    }
-    let key = axFocusedIs(pid: chromeProc.processIdentifier, bounds: r, cg: cgN)
-    check()
-    trace("lean: checks")
-    emit(["ok": true, "lean": true, "tabId": tid, "windowId": wid, "chromePid": Int(chromeProc.processIdentifier),
-          "driver": "chromectl", "tabActive": true,
-          "bounds": ["left": Int(r.origin.x), "top": Int(r.origin.y), "width": Int(r.size.width), "height": Int(r.size.height)],
-          "axMain": axOk, "frontmost": frontApp()?.localizedName ?? "", "waitedMs": waited,
-          "targetOnTop": onTop, "keyWindowIsTarget": key, "cgWindow": cgN ?? NSNull()])
+          "chromeWindow": wid, "chromeTab": tid, "chromePid": Int(chromeProc.processIdentifier)])
 
 case "eval" where argv.contains("--lean"):
     // Lean eval: only the script result and the tab URL — no window/tab
@@ -1402,12 +1335,6 @@ case "eval" where argv.contains("--lean"):
 
 default:
     // Commands on one resolved target tab.
-    var expectWindow: Int? = nil
-    if cmd == "select" {
-        guard let x = argv.first.flatMap(Int.init) else { fail("usage", "select <tabId> [--window <windowId>]") }
-        tabArg = x
-        if let i = argv.firstIndex(of: "--window"), i + 1 < argv.count { expectWindow = Int(argv[i + 1]) }
-    }
     let w: SBObject, t: SBObject, wid: Int
     if let tid = tabArg {
         guard let hit = findTab(tid) else { fail("no_such_tab", "找不到标签 \(tid)（可能已关闭）。请重新调用 list_tabs。") }
@@ -1421,13 +1348,16 @@ default:
     }
     trace("findTab")
     let tid = num(t.value(forKey: "id"))
+    let activeObject = w.value(forKey: "activeTab") as? SBObject
+    let activeTab = num(activeObject?.value(forKey: "id"))
+    var targetBounds = CGRect.zero
     var target: [String: Any] = [
         "tabId": tid, "windowId": wid,
-        "tabActive": num((w.value(forKey: "activeTab") as? SBObject)?.value(forKey: "id")) == tid,
+        "tabActive": activeTab == tid,
         "windowIndex": num(w.value(forKey: "index")),
         "minimized": (w.value(forKey: "minimized") as? Bool) ?? false,
         "url": str(t.value(forKey: "URL")), "title": str(t.value(forKey: "title")),
-        "tabCount": ids(tabs(w)).count, "bounds": boundsJSON(w),
+        "tabCount": ids(tabs(w)).count, "bounds": boundsJSON(w, capture: { targetBounds = $0 }),
         "driver": "chromectl", "chromePid": Int(chromeProc.processIdentifier)
     ]
     check("target_metadata")
@@ -1435,80 +1365,17 @@ default:
 
     switch cmd {
     case "info":
-        target["ok"] = true
         // Browser-side metadata remains readable while a new document is loading.
         // URL stability alone does not mean an OAuth/HTTP redirect chain has finished.
         target["loading"] = (t.value(forKey: "loading") as? Bool) ?? true
         check("info_loading")
         target["frontmost"] = frontApp()?.localizedName ?? ""
-        target["cgWindow"] = cgWindowJSON(wid)
-        emit(target)
-
-    case "select":
-        // Only the window's active tab changes: no activation, no index. If
-        // Chrome raised the window anyway, the previous front Chrome window is
-        // put back, as `open` does. With --window, refuse when the tab is no
-        // longer in that window (the user dragged it into one of theirs).
-        if let ew = expectWindow, ew != wid {
-            fail("tab_moved", "标签 \(tid) 已经不在窗口 \(ew) 里（现在在窗口 \(wid)），没有切换。")
-        }
-        let prevFront = frontWindowId()
-        let prevApp = frontApp()?.processIdentifier
-        var changed = false
-        if let k = ids(tabs(w)).firstIndex(of: tid), num(w.value(forKey: "activeTabIndex")) != k + 1 {
-            w.setValue(k + 1, forKey: "activeTabIndex"); changed = true
-        }
-        var putBack = false
-        if changed, let pf = prevFront, pf != wid, frontWindowId() != pf, let fw = window(id: pf) {
-            fw.setValue(1, forKey: "index"); putBack = true
-        }
-        check()
-        target["ok"] = true
-        target["changed"] = changed
-        target["prevFrontPutBack"] = putBack
-        target["tabActive"] = num((w.value(forKey: "activeTab") as? SBObject)?.value(forKey: "id")) == tid
-        target["windowIndex"] = num(w.value(forKey: "index"))
-        target["frontmost"] = frontApp()?.localizedName ?? ""
-        target["frontmostChanged"] = frontApp()?.processIdentifier != prevApp
-        target["cgWindow"] = cgWindowJSON(wid)
-        emit(target)
-
-    case "activate":
-        // Make this tab the one on screen, raising ONLY its window: select the
-        // tab, raise the window inside Chrome, then activate the process
-        // without .activateAllWindows (AppleScript `activate` raised every
-        // Chrome window over the user's app — seen live).
-        if (w.value(forKey: "minimized") as? Bool) == true { w.setValue(false, forKey: "minimized") }
-        if let k = ids(tabs(w)).firstIndex(of: tid) { w.setValue(k + 1, forKey: "activeTabIndex") }
-        trace("activeTabIndex")
-        w.setValue(1, forKey: "index")
-        trace("index=1")
-        // By window number when it can be matched now (twins share bounds); by bounds otherwise.
-        let axOk = axMakeMain(pid: chromeProc.processIdentifier, bounds: rectOf(w), cg: cgWindowIds()[wid])
-        trace("axMakeMain")
-        chromeProc.activate(options: [])
-        var waited = 0
-        while waited < 1000 && frontApp()?.processIdentifier != chromeProc.processIdentifier {
-            spin(0.05); waited += 50
-        }
-        trace("activate+wait (\(waited) ms polled)")
-        // Belt and braces: if activation still put another window on top.
-        if num(w.value(forKey: "index")) != 1 { w.setValue(1, forKey: "index"); spin(0.05) }
-        target["axMain"] = axOk
-        let onTop = num(w.value(forKey: "index")) == 1 && num((w.value(forKey: "activeTab") as? SBObject)?.value(forKey: "id")) == tid
-        check()
-        trace("onTop check")
-        target["ok"] = true
-        target["frontmost"] = frontApp()?.localizedName ?? ""
-        target["waitedMs"] = waited
-        target["targetOnTop"] = onTop
-        target["bounds"] = boundsJSON(w)
-        let cgN = cgWindowIds()[wid]
-        target["cgWindow"] = cgN ?? NSNull()
-        trace("cgWindow")
-        target["keyWindowIsTarget"] = axFocusedIs(pid: chromeProc.processIdentifier, bounds: rectOf(w), cg: cgN)
-        trace("axFocused")
-        emit(target)
+        let activeURL = activeTab == tid ? str(target["url"]) : str(activeObject?.value(forKey: "URL"))
+        check("target_metadata")
+        do {
+            emit(try nativeInfoTarget(target, pid: chromeProc.processIdentifier, activeTab: activeTab,
+                                      activeURL: activeURL, bounds: targetBounds))
+        } catch { emit(nativeInfoFailure(error)) }
 
     case "eval":
         guard let path = argv.first, let js = try? String(contentsOfFile: path, encoding: .utf8) else {

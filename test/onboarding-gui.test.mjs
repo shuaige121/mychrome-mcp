@@ -154,6 +154,61 @@ case "language-and-copy":
     let check = OnboardingCheck(["title": "助手 / Helpers", "detail": "中文\\nEnglish detail"])
     precondition(check.localized(check.title, english: true, title: true) == "Helpers")
     precondition(check.localized(check.detail, english: true) == "English detail")
+case "ui-language":
+    // I18N1 (new fix): CHROME_BRIDGE_UI_LANG en|zh > CHROME_BRIDGE_LANG > the settings file's uiLanguage en|zh > the Mac's first
+    // preferred language (zh* Chinese, anything else English); auto or a bad value decides nothing.
+    precondition(uiLanguageEnglish(environment: [:], setting: nil, languages: ["en-SG", "zh-Hans"]))
+    precondition(!uiLanguageEnglish(environment: [:], setting: nil, languages: ["zh-Hans-SG", "en"]))
+    precondition(!uiLanguageEnglish(environment: [:], setting: nil, languages: ["zh-Hant-TW"]))
+    precondition(uiLanguageEnglish(environment: [:], setting: nil, languages: ["fr-FR"]))
+    precondition(uiLanguageEnglish(environment: [:], setting: nil, languages: []))
+    precondition(uiLanguageEnglish(environment: [:], setting: "en", languages: ["zh-Hans"]), "setting en")
+    precondition(!uiLanguageEnglish(environment: [:], setting: "zh", languages: ["en"]), "setting zh")
+    precondition(!uiLanguageEnglish(environment: [:], setting: "auto", languages: ["zh-Hans"]))
+    precondition(!uiLanguageEnglish(environment: [:], setting: "EN", languages: ["zh-Hans"]))
+    precondition(uiLanguageEnglish(environment: ["CHROME_BRIDGE_UI_LANG": "en"], setting: "zh", languages: ["zh"]), "env en")
+    precondition(!uiLanguageEnglish(environment: ["CHROME_BRIDGE_UI_LANG": "zh"], setting: "en", languages: ["en"]), "env zh")
+    precondition(uiLanguageEnglish(environment: ["CHROME_BRIDGE_UI_LANG": "auto"], setting: "en", languages: ["zh"]), "env auto")
+    precondition(uiLanguageEnglish(environment: ["CHROME_BRIDGE_UI_LANG": "fr"], setting: "en", languages: ["zh"]), "env bad value")
+    precondition(!uiLanguageEnglish(environment: ["CHROME_BRIDGE_UI_LANG": "auto", "CHROME_BRIDGE_LANG": "zh"], setting: "en", languages: ["en"]), "older variable")
+    precondition(uiLanguageEnglish(environment: ["CHROME_BRIDGE_LANG": "en"], setting: "zh", languages: ["zh"]), "older variable en")
+    precondition(uiLanguageChoice(environment: [:], setting: "auto") == nil && uiLanguageChoice(environment: [:], setting: nil) == nil)
+    let settingsFile = directory + "/settings.json"
+    precondition(uiLanguageSetting(path: settingsFile) == nil)
+    try! #"{"version":1,"uiLanguage":"en","notify":false}"#.write(toFile: settingsFile, atomically: true, encoding: .utf8)
+    precondition(uiLanguageSetting(path: settingsFile) == "en")
+    try! "{ broken".write(toFile: settingsFile, atomically: true, encoding: .utf8)
+    precondition(uiLanguageSetting(path: settingsFile) == nil)
+    precondition(onboardingEnglish(environment: [:], languages: ["zh-Hans"], setting: "en"))
+    precondition(onboardingText("中文", "English") == (uiEnglish() ? "English" : "中文"))
+case "global-change":
+    // I18N1 r1 A3 (new fix): the production model, constructed first; then the global choice changes. An explicit choice
+    // applies when the guide opens and while it is open; the guide's own remembered language only without one.
+    precondition(store.save(dismissal: "presented", english: false))
+    model.present(node: node, environment: [:], setting: nil)
+    precondition(!model.english, "remembered language without an explicit choice")
+    model.refreshLanguage(environment: [:], setting: "en", languages: ["zh-Hans"])
+    precondition(model.english, "the global choice changed to English while the guide is open")
+    model.english = false
+    model.refreshLanguage(environment: [:], setting: "en", languages: ["zh-Hans"])
+    precondition(!model.english, "an unchanged global choice undid the guide's own picker")
+    model.refreshLanguage(environment: ["CHROME_BRIDGE_UI_LANG": "zh"], setting: "en", languages: ["en"])
+    precondition(!model.english, "the variable")
+    model.dismiss()
+    model.present(node: node, environment: [:], setting: "en")
+    precondition(model.english, "reopened after the global choice became English")
+    model.dismiss()
+    model.present(node: node, environment: ["CHROME_BRIDGE_UI_LANG": "zh"], setting: "en")
+    precondition(!model.english, "reopened with CHROME_BRIDGE_UI_LANG=zh")
+    model.refreshLanguage(environment: [:], setting: nil, languages: ["en"])
+    precondition(store.stored?["language"] as? String == "en")
+    precondition(model.english, "back to follow-system: the guide's remembered language (English, saved when it was last dismissed)")
+case "remembered-language":
+    // The guide's own remembered language applies only when nothing chose a language explicitly (run with and without
+    // CHROME_BRIDGE_UI_LANG=en; prints the language the guide shows).
+    precondition(store.save(dismissal: "presented", english: false))
+    model.present(node: node)
+    print(model.english ? "en" : "zh")
 case "node-selection":
     precondition(onboardingNode(root: ROOT_DIR, connectedNodes: [node], environment: [:], bundled: nil) == node)
     precondition(onboardingNode(root: ROOT_DIR, connectedNodes: [node], environment: [:], bundled: "/missing") == node)
@@ -212,7 +267,7 @@ execFileSync('/usr/bin/swiftc', [swift, '-o', binary], { timeout: 60_000, stdio:
 for (const scenario of [
   'first-return-skip-reopen', 'missing-node', 'failed-diagnostics', 'repeated-checks-stale',
   'unknown-preference', 'symlink-preference', 'truthful-readiness', 'language-and-copy', 'node-selection',
-  'task-continuation', 'task-language-fallback',
+  'task-continuation', 'task-language-fallback', 'ui-language', 'global-change',
   'process-ok', 'process-blocked', 'process-failed', 'process-invalid', 'process-oversized',
   'process-cancel', 'process-timeout', 'process-unavailable',
 ]) {
@@ -221,13 +276,22 @@ for (const scenario of [
   });
 }
 
+test('I18N1: the remembered guide language yields to an explicit choice (CHROME_BRIDGE_UI_LANG), not the other way round', () => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !['CHROME_BRIDGE_UI_LANG', 'CHROME_BRIDGE_LANG'].includes(k)));
+  const show = (extra, dir) => execFileSync(binary, ['remembered-language', path.join(tmp, dir), process.execPath, script],
+    { encoding: 'utf8', timeout: 10_000, env: { ...env, ...extra } }).trim().split('\n').at(-2);
+  assert.equal(show({}, 'remembered-auto'), 'zh', 'no explicit choice: the remembered language');
+  assert.equal(show({ CHROME_BRIDGE_UI_LANG: 'en' }, 'remembered-explicit'), 'en', 'an explicit choice wins over the remembered language');
+});
+
 test('native entry points reopen the guide and quit cancels local work', () => {
   const menu = readFileSync(new URL('../src/menubar.swift', import.meta.url), 'utf8');
   const conversation = readFileSync(new URL('../src/conversation-ui.swift', import.meta.url), 'utf8');
   assert.match(menu, /if m\.onboarding\.shouldAutoPresent \{ controller\?\.showOnboarding\(\) \}/);
   assert.match(menu, /func prepareForExit\(\) \{\s*onboarding\.stop\(\)/);
   assert.match(conversation, /model\.openOnboarding\?\(\)/);
-  assert.match(source, /Live conversation text and direct replies to Claude terminal sessions are currently unsupported/);
+  assert.match(source, /A Claude Code terminal session appears in this GUI as a read-only mirror/);
+  assert.doesNotMatch(source, /不支持在此 GUI|currently unsupported/);
   assert.match(source, /read-only|Read-only/);
   assert.match(source, /state\.command\("codexNote", group: "connection"\)/);
   assert.match(source, /~\/\.codex\/config\.toml/);

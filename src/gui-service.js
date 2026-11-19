@@ -5,6 +5,38 @@ import { discoverConversations } from './conversation-discovery.js';
 
 const threadIdOK = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,256}$/.test(value);
 
+/**
+ * CC-LIVE: an external Claude Code session, read-only. Its source (src/visible-feed-claude.js) belongs to the
+ * connection; this host only subscribes. Assistant prose and the user's typed prompts, with their role; no reply.
+ */
+function connectClaudeHost({ threadId, source = null, reason = null, onChange }) {
+  const unsubscribe = source ? source.subscribe(onChange) : () => {};
+  const threadStatus = { busy: 'active', idle: 'idle', waiting: 'waiting' };
+  return {
+    snapshot() {
+      if (!source) {
+        return { threadId, status: 'unavailable', reason: reason || 'transcript_unavailable', canSend: false, readOnly: true,
+          threadStatus: '', entries: [], pending: [] };
+      }
+      const state = source.snapshot();
+      // Another session's entries never appear under this row's identity (the service rotates the binding first).
+      if (state.sessionId !== threadId) {
+        return { threadId, status: 'connecting', reason: 'session_changed', canSend: false, readOnly: true,
+          threadStatus: '', entries: [], pending: [] };
+      }
+      return { threadId, status: state.status, reason: state.reason, canSend: false, readOnly: true,
+        threadStatus: threadStatus[state.threadStatus] ?? '', pending: [],
+        entries: state.entries.map(entry => ({ id: entry.id, role: entry.role, text: entry.text, at: entry.at })) };
+    },
+    async send() { const error = new Error('read_only'); error.code = 'read_only'; error.delivery = 'not_sent'; throw error; },
+    close() { unsubscribe(); },
+  };
+}
+
+/** CC-LIVE: the Claude row is the session its source follows now (the launch id until a registry change). */
+const claudeSession = (fallback, descriptor) => descriptor?.source ? descriptor.source.snapshot().sessionId ?? null
+  : descriptor ? fallback : null;
+
 /** The only GUI state allowed across a worker replacement. Never copy a snapshot or receipt. */
 export function normalizeConversationBinding(value) {
   if (!value || value.version !== 1 || value.provider !== 'Codex'
@@ -19,6 +51,7 @@ export async function startConversationService({
   reconnectClock = { setTimeout, clearTimeout },
 }) {
   let host = null, threadId = null, bindingId = randomUUID(), provider = null, transport, published;
+  let claude = { source: null, reason: null };   // CC-LIVE: the connection's Claude source, when the client is Claude
   let manualThreadId = null, discovered = new Set(), discoveredAt = 0;
   let restored = normalizeConversationBinding(restoreBinding), restoredAutomaticThreadId = null;
   let bindingRequest = 0;
@@ -30,9 +63,15 @@ export async function startConversationService({
   const fail = code => { const error = new Error(code); error.code = code; error.delivery = 'not_sent'; throw error; };
   const empty = () => ({
     threadId, status: 'unavailable', canSend: false, entries: [], pending: [],
-    reason: provider && provider !== 'Codex' ? 'unsupported_client' : 'unbound_thread',
+    reason: provider === 'Claude' ? 'transcript_unavailable' : provider && provider !== 'Codex' ? 'browser_only' : 'unbound_thread',
   });
   const snapshot = () => {
+    // CC-LIVE: after a registry change the source follows a new session id. Rotate the row's identity (thread id
+    // and a new bindingId, published to presence) before any entry of that session can be read under the old one.
+    if (provider === 'Claude' && claude.source && !rebinding && !closed) {
+      const current = claudeSession(threadId, claude);
+      if (current !== threadId) applyBinding(current, 'Claude', false, claude);
+    }
     const state = host?.snapshot() ?? empty();
     const revision = Number.isSafeInteger(state.resetRevision) ? state.resetRevision : 0;
     if (host && revision !== hostResetRevision) {
@@ -107,7 +146,8 @@ export async function startConversationService({
   transport = await startGuiIPC({
     base, snapshot, routines,
     discover: async () => {
-      if (provider !== 'Codex') fail('unsupported_client');
+      if (provider === 'Claude') fail('read_only_mirror');
+      if (provider !== 'Codex') fail('browser_only');
       const before = bindingId;
       const rows = await discover();
       if (provider !== 'Codex' || before !== bindingId) fail('conversation_changed');
@@ -115,6 +155,7 @@ export async function startConversationService({
       return rows;
     },
     bind: async selected => {
+      if (provider === 'Claude') fail('read_only_mirror');
       if (provider !== 'Codex' || !discovered.has(selected) || Date.now() - discoveredAt > 120_000) fail('conversation_not_listed');
       const request = ++bindingRequest;
       const before = bindingId;
@@ -125,6 +166,7 @@ export async function startConversationService({
       applyBinding(selected, provider);
     },
     send: async payload => {
+      if (provider === 'Claude') fail('read_only');   // a read-only mirror: nothing is ever sent to a terminal
       if (!host || payload.bindingId !== bindingId || payload.threadId !== threadId) {
         const error = new Error('conversation_changed');
         error.code = 'conversation_changed'; error.delivery = 'not_sent'; throw error;
@@ -132,9 +174,12 @@ export async function startConversationService({
       return host.send(payload);
     },
   });
-  function applyBinding(next, nextProvider, reconnect = false) {
+  function applyBinding(next, nextProvider, reconnect = false, nextClaude = { source: null, reason: null }) {
     if (closed) return;
-    if (!reconnect && next === threadId && nextProvider === provider) { scheduleReconnect(); return; }
+    if (!reconnect && next === threadId && nextProvider === provider
+        && (nextProvider !== 'Claude' || (nextClaude.source === claude.source && nextClaude.reason === claude.reason))) {
+      scheduleReconnect(); return;
+    }
     reconnectClock.clearTimeout(retryTimer); retryTimer = null;
     reconnectClock.clearTimeout(stableTimer); stableTimer = null; stableBinding = null;
     if (!reconnect) retryCount = 0;
@@ -149,13 +194,15 @@ export async function startConversationService({
     hostResetRevision = 0;
     if (!reconnect) resetRevision = 0;
     threadId = next; provider = nextProvider; bindingId = randomUUID();
+    claude = provider === 'Claude' ? nextClaude : { source: null, reason: null };
     if (threadId && provider === 'Codex') host = connect({ threadId, onChange: publish });
+    else if (provider === 'Claude') host = connectClaudeHost({ threadId, ...claude, onChange: publish });
     rebinding = false;
     publish();
   }
   publish();
   return {
-    bind(nextThreadId, nextProvider) {
+    bind(nextThreadId, nextProvider, nextClaude = null) {
       // Startup can precede initialize/clientInfo. Unknown is not a different client,
       // and carried identity alone is never permission to join its old Codex host.
       if (!nextProvider) return;
@@ -170,7 +217,11 @@ export async function startConversationService({
       if (nextProvider !== 'Codex') {
         manualThreadId = null;
         restoredAutomaticThreadId = null;
-        applyBinding(null, nextProvider);
+        // CC-LIVE: a Claude client's row is the session its own source follows (index.js passes the launch id with
+        // the connection's source descriptor), never a carried or inherited Codex thread.
+        if (nextProvider === 'Claude') applyBinding(claudeSession(next, nextClaude), nextProvider, false,
+          { source: nextClaude?.source ?? null, reason: nextClaude?.reason ?? null });
+        else applyBinding(null, nextProvider);
         return;
       }
       if (next) restoredAutomaticThreadId = null;

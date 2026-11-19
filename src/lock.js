@@ -15,7 +15,7 @@
  * the first waiter (offer / claim / transfer below): no putting the user's things back and taking
  * over again between two agents; the last one in the chain puts them back.
  */
-import { mkdir, rm, writeFile, readFile, rename, stat, readdir } from 'node:fs/promises';
+import { mkdir, rm, writeFile, readFile, rename, link, stat, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -61,6 +61,17 @@ async function writeJson(p, obj) {
   await rename(tmp, p);
 }
 
+/** Publish complete JSON without replacing a competing decision (link keeps wx's winner). */
+async function writeExclusiveJson(p, obj) {
+  const tmp = path.join(path.dirname(p), `.${path.basename(p)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`);
+  let created = false;
+  try {
+    await writeFile(tmp, JSON.stringify(obj), { flag: 'wx' });
+    created = true;
+    await link(tmp, p);
+  } finally { if (created) await rm(tmp, { force: true }).catch(() => {}); }
+}
+
 async function holder() {
   const j = await readJson(path.join(LOCK_DIR, 'owner.json'));
   if (j) return j;
@@ -68,7 +79,7 @@ async function holder() {
   try {
     const s = await stat(LOCK_DIR);
     return { pid: null, since: s.mtimeMs };
-  } catch { return null; }
+  } catch (error) { return error.code === 'ENOENT' ? null : { pid: null }; }
 }
 
 /** Replace owner.json atomically (older servers read the same file, temp name included). */
@@ -162,7 +173,8 @@ async function enqueue(label, info = {}, inherit = false) {
   await mkdir(QUEUE_DIR, { recursive: true });
   const name = `${String(Date.now()).padStart(14, '0')}-${String(process.pid).padStart(7, '0')}-${String(++SEQ).padStart(5, '0')}.json`;
   const p = path.join(QUEUE_DIR, name);
-  const body = { pid: process.pid, label, who: info.who ?? null, task: info.task ?? null, inherit: !!inherit, since: Date.now() };
+  const body = { pid: process.pid, label, who: info.who ?? null, task: info.task ?? null,
+    inherit: !!inherit, handoffProtocol: 2, since: Date.now() };
   let removed = false, chain = Promise.resolve();
   // Beats and the removal one after another: a beat already writing cannot put the ticket back after
   // remove() (Codex review round 2, A10).
@@ -231,10 +243,12 @@ const cancelledError = () => Object.assign(new Error('调用已取消，排队�
  * `stallMs`: refused only after this long WITHOUT progress (the holder changed or our place moved up),
  * never while the queue moves (Codex review A8). `signal`: the call was cancelled → the place is given up.
  * @param opts.ticket  a ticket kept from an earlier wait whose hand-over fell through (keeps its place)
+ * @param opts.onWait  optional synchronous diagnostic callback(ms), including failed/cancelled waits
  */
-async function acquire(label, stallMs, { info = {}, inherit = false, ticket = null, signal = null } = {}) {
+async function acquire(label, stallMs, { info = {}, inherit = false, ticket = null, signal = null, onWait = null } = {}) {
   const t0 = Date.now();
-  if (signal && signal.aborted) throw cancelledError();
+  // Given up before waiting: a ticket kept from a hand-over that fell through is not left behind, beating (HI1 v3).
+  if (signal && signal.aborted) { if (ticket) await ticket.remove(); throw cancelledError(); }
   const tk = ticket || await enqueue(label, info, inherit);
   let lastHolder = null, ahead = 0, keep = false, progressAt = Date.now(), lastKey = null, lastIdx = Infinity;
   try {
@@ -254,7 +268,7 @@ async function acquire(label, stallMs, { info = {}, inherit = false, ticket = nu
         lastHolder = got.holder;
         if (inherit && lastHolder && lastHolder.token) {
           const o = await readJson(OFFER());
-          if (o && o.id && o.from === lastHolder.token && o.to === tk.name) {
+          if (o && o.protocol === 2 && o.id && o.from === lastHolder.token && o.to === tk.name) {
             keep = true;
             PENDING.add(tk.name);
             return { token: newToken(), waitedMs: Date.now() - t0, ahead, waitedFor: lastHolder.label || null,
@@ -277,6 +291,9 @@ async function acquire(label, stallMs, { info = {}, inherit = false, ticket = nu
       await sleep(POLL_MS);
     }
   } finally {
+    // Observe every acquisition attempt, including cancellation/failure. Never
+    // include the action or let diagnostic reporting affect input decisions.
+    try { onWait?.(Math.max(0, Date.now() - t0)); } catch {}
     if (!keep) await tk.remove();
   }
 }
@@ -285,38 +302,50 @@ async function acquire(label, stallMs, { info = {}, inherit = false, ticket = nu
  * Take the holder's takeover over (after this waiter's own veil is up, so the user's input stays
  * held): one decision file per offer, created exclusively — the holder's cancel and this claim
  * cannot both win. Then wait until the holder has closed its session and written us in as owner.
- * A holder that died meanwhile left nothing put back: we take the lock the usual way and still
- * put the user's things back at the end. If someone else holds the lock meanwhile (the holder was
- * wedged long enough to be stolen from) and it does not come free within CLAIM_STRANGER_MS, the
- * claim gives up: false, nothing restored by us.
+ * A missing holder cannot distinguish a crash from Stop or an unconfirmed close. Only an explicit
+ * matching transfer receipt permits this inherited action; an abandoned claim never reacquires.
  * @returns {Promise<boolean>} false: the offer was withdrawn, nothing of the holder's is ours
  */
-const CLAIM_STRANGER_MS = 30_000;
+function handoffLost(reason, error = null) {
+  return Object.assign(error || new Error('交接没有确认完成，没有继续操作；请重新确认后再开始。'),
+    { ...(error?.code ? {} : { code: 'handoff_lost' }), noRetry: true, terminalInterrupted: true, handoffReason: reason });
+}
 async function claim(label, got) {
   const { offer, ticket } = got.handoff;
   try {
-    await mkdir(QUEUE_DIR, { recursive: true });
-    await writeFile(DECISION(offer.id), JSON.stringify({ taken: true, token: got.token, pid: process.pid, label }), { flag: 'wx' });
-  } catch (e) {
-    if (e.code === 'EEXIST') { await ticket.beat(); PENDING.delete(ticket.name); return false; }
-    throw e;
-  }
-  let strangerSince = null;
-  for (;;) {
-    const h = await holder();
-    if (h && h.token === got.token) break;
-    const holderGone = !h || (h.pid && !alive(h.pid)) || Date.now() - h.since > STALE_MS;
-    if (holderGone) {
-      const g = await tryAcquire(label);
-      if (g.ok) { got.token = g.token; break; }
-    } else if (h.token !== offer.from) {
-      strangerSince ??= Date.now();
-      if (Date.now() - strangerSince > CLAIM_STRANGER_MS) { PENDING.delete(ticket.name); return false; }
+    if (offer.protocol !== 2) throw handoffLost('unverified_protocol');
+    try {
+      await mkdir(QUEUE_DIR, { recursive: true });
+      await writeExclusiveJson(DECISION(offer.id), { protocol: 2, taken: true, token: got.token, pid: process.pid, label });
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const decision = await readJson(DECISION(offer.id));
+      if (decision?.cancel && decision.terminal !== true) { await ticket.beat(); return false; }
+      throw handoffLost(decision?.terminal ? 'terminal_cancel' : 'decision_unknown');
     }
-    await sleep(25);
-  }
-  await ticket.remove();
-  return true;
+    for (;;) {
+      const decision = await readJson(DECISION(offer.id));
+      if (decision?.terminal) throw handoffLost('terminal_cancel');
+      const h = await holder();
+      if (h && h.token === got.token) {
+        if (h.handoffId !== offer.id || h.handoffFrom !== offer.from) {
+          throw handoffLost('transfer_unverified');
+        }
+        await ticket.remove();
+        return true;
+      }
+      // A still-live exact giver can be slow closing its helper. Abandoning only because its
+      // timestamp aged would let its later commit write an owner that no longer has a claimant.
+      // An unreadable owner is unknown, not evidence that the giver has relinquished it.
+      if (!h || (h.pid && !alive(h.pid)) || (h.token && h.token !== offer.from)) throw handoffLost('transfer_unconfirmed');
+      await sleep(25);
+    }
+  } catch (error) {
+    // An owner write can precede a terminal decision or ticket-cleanup failure. makeTurn has
+    // not set claimed yet, so its caller cannot release this token for us. Never touch a peer's.
+    await release(got.token).catch(() => {});
+    throw handoffLost(error.handoffReason || 'claim_failed', error);
+  } finally { PENDING.delete(ticket.name); }
 }
 
 /**
@@ -327,47 +356,80 @@ async function claim(label, got) {
  *   still can be (the user took the keyboard and mouse back).
  * @returns null: nobody took it (the caller puts things back as usual) — `stopped` set on the result
  *          of shouldStop when that is why; or {to, commit(), stopped}: call commit() right after
- *          closing the session (it writes the waiter in as owner); `stopped`: shouldStop said so but
- *          the waiter had already claimed.
+ *          closing the session (it resolves only after a matching owner write); cancel() refuses the
+ *          claimed action after terminal/unknown close. `stopped`: shouldStop said so after claim.
+ *          shouldStop may return {stop:true, terminal:false} for a proven caller-only withdrawal.
  */
 async function offer(turn, payload, { onOffer = null, shouldStop = null } = {}) {
   const q = await queueList();
   const head = q[0];
-  if (!head || !head.inherit) return null;
+  // Older claimants cannot consume terminal cancellation and may reacquire after close. They
+  // remain in the ordinary queue; only a versioned claimant may inherit this held scene.
+  if (!head || !head.inherit || head.handoffProtocol !== 2) return null;
   const h = await holder();
   if (!h || h.token !== turn.token) return null;
   if (onOffer) onOffer(head);
   const id = `${turn.token}-${++SEQ}`;
-  await writeJson(OFFER(), { id, from: turn.token, to: head.name, at: Date.now(), fromLabel: h.label || null, ...payload });
+  await writeJson(OFFER(), { ...payload, protocol: 2, id, from: turn.token, to: head.name, at: Date.now(), fromLabel: h.label || null });
   const t0 = Date.now();
-  let stopped = false, lastStopCheck = 0;
+  let stopped = false, terminalStop = false, lastStopCheck = 0;
   for (;;) {
     const d = await readJson(DECISION(id));
     if (d && d.taken) {
+      let state = 'pending', ownerWriteAttempted = false;
+      const removeOffer = async () => {
+        if ((await readJson(OFFER()))?.id === id) await rm(OFFER(), { force: true });
+      };
       return {
         to: { label: d.label || head.label, who: head.who, task: head.task, pid: d.pid },
-        stopped,
+        stopped, terminalStop,
+        async cancel(reason = 'terminal_close') {
+          if (state === 'committed') return { cancelled: false, transferred: true };
+          if (state === 'committing') throw handoffLost('commit_in_progress');
+          state = 'cancelled';
+          try {
+            await writeJson(DECISION(id), { ...d, cancel: true, terminal: true, reason });
+            await removeOffer().catch(() => {});
+            // Publication can stop a claimant that has not accepted yet, but cannot revoke
+            // action already started from a possibly landed owner write.
+            return { cancelled: !ownerWriteAttempted, transferred: ownerWriteAttempted ? null : false };
+          } catch (error) { throw handoffLost('cancellation_unconfirmed', error); }
+        },
         async commit() {
-          turn.transferred = true;
-          if (turn.stopHeartbeat) await turn.stopHeartbeat();
-          await ownerWrite(async () => {
-            const cur = await holder();
-            if (cur && cur.token === turn.token) await writeOwner({ pid: d.pid, since: Date.now(), label: d.label, token: d.token });
-            await rm(OFFER(), { force: true }).catch(() => {});
-          });
-          await rm(DECISION(id), { force: true }).catch(() => {});
+          if (state === 'committed') return { transferred: true };
+          if (state !== 'pending') throw handoffLost('offer_not_pending');
+          state = 'committing';
+          try {
+            await ownerWrite(async () => {
+              const cur = await holder();
+              if (!cur || cur.token !== turn.token) throw handoffLost('owner_changed');
+              ownerWriteAttempted = true;
+              await writeOwner({ pid: d.pid, since: Date.now(), label: d.label, token: d.token, handoffId: id, handoffFrom: turn.token });
+              const ack = await holder();
+              if (!ack || ack.token !== d.token || ack.handoffId !== id || ack.handoffFrom !== turn.token) throw handoffLost('owner_write_unconfirmed');
+              turn.transferred = true;
+              state = 'committed';
+            });
+          } catch (error) { state = 'failed'; throw handoffLost('commit_failed', error); }
+          if (turn.stopHeartbeat) await turn.stopHeartbeat().catch(() => {});
+          await removeOffer().catch(() => {});
+          // Keep the per-offer decision until the existing expiry sweep: a terminal decision
+          // racing the owner acknowledgement must remain visible to the claimant.
+          return { transferred: true };
         }
       };
     }
     if (shouldStop && !stopped && Date.now() - lastStopCheck >= 200) {
       lastStopCheck = Date.now();
-      stopped = !!(await Promise.resolve(shouldStop()).catch(() => false));
+      const stop = await Promise.resolve(shouldStop()).catch(() => ({ stop: true, terminal: true }));
+      stopped = typeof stop === 'object' && stop !== null ? stop.stop === true : !!stop;
+      terminalStop = stopped && stop?.terminal !== false;
     }
     const still = !stopped && Date.now() - t0 < HANDOFF_WAIT_MS && (await queueList()).some(x => x.name === head.name);
     if (!still) {
       try {
         await mkdir(QUEUE_DIR, { recursive: true });
-        await writeFile(DECISION(id), '{"cancel":true}', { flag: 'wx' });
+        await writeExclusiveJson(DECISION(id), { cancel: true, terminal: terminalStop });
       } catch (e) {
         if (e.code === 'EEXIST') continue;          // claimed at the same moment: read it
         return null;
@@ -375,7 +437,7 @@ async function offer(turn, payload, { onOffer = null, shouldStop = null } = {}) 
       // The cancel stays (see DECISION): this holder now puts things back, and a waiter that sees the
       // offer only now must not claim it meanwhile.
       await rm(OFFER(), { force: true }).catch(() => {});
-      return stopped ? { stopped: true, to: null, commit: null } : null;
+      return stopped ? { stopped: true, terminalStop, to: null, commit: null } : null;
     }
     await sleep(25);
   }
@@ -415,8 +477,8 @@ function makeTurn(label, got) {
  * @returns {Promise<{token, waitedMs, waitedFor, ahead, handoff, claim(), offer(), release():Promise<void>}>}
  */
 let lease = null;
-export async function acquireLease(label, { timeoutMs = TURN_TIMEOUT_MS, heartbeatMs = HEARTBEAT_MS, info = {}, inherit = false, ticket = null, signal = null } = {}) {
-  const got = await acquire(label, timeoutMs, { info, inherit, ticket, signal });
+export async function acquireLease(label, { timeoutMs = TURN_TIMEOUT_MS, heartbeatMs = HEARTBEAT_MS, info = {}, inherit = false, ticket = null, signal = null, onWait = null } = {}) {
+  const got = await acquire(label, timeoutMs, { info, inherit, ticket, signal, onWait });
   if (signal && signal.aborted && !got.handoff) {
     // Cancelled just as the turn came (nothing held yet): give it up (Codex review round 2, A9).
     await release(got.token).catch(() => {});
@@ -457,15 +519,16 @@ export function holdsLease() { return !!lease; }
  * @param opts.signal   the call's AbortSignal: cancelled while waiting → the place is given up
  * @param opts.timeoutMs  refused after this long with no progress in the queue (see acquire)
  * @param opts.heartbeatMs / opts.heartbeatCapMs  see STALE_MS (tests shorten them)
+ * @param opts.onWait  optional synchronous diagnostic callback for each acquisition attempt
  * @returns {Promise<{result:any, waitedMs:number, waitedFor:string|null, ahead:number, inherited:boolean}>}
  */
 export async function withInputLock(label, fn, { timeoutMs = TURN_TIMEOUT_MS, heartbeatMs = HEARTBEAT_MS, heartbeatCapMs = HEARTBEAT_CAP_MS,
-  info = {}, inherit = false, signal = null } = {}) {
+  info = {}, inherit = false, signal = null, onWait = null } = {}) {
   if (lease) return { result: await fn(null), waitedMs: 0, waitedFor: null, ahead: 0, inherited: false };
   const t0 = Date.now();
   let ticket = null;
   for (;;) {
-    const got = await acquire(label, timeoutMs, { info, inherit, ticket, signal });
+    const got = await acquire(label, timeoutMs, { info, inherit, ticket, signal, onWait });
     const waitedMs = Date.now() - t0;
     const turn = makeTurn(label, got);
     const hb = startHeartbeat(() => got.token, heartbeatMs, heartbeatCapMs);
@@ -477,7 +540,7 @@ export async function withInputLock(label, fn, { timeoutMs = TURN_TIMEOUT_MS, he
       const result = await fn(turn);
       return { result, waitedMs, waitedFor: got.waitedFor, ahead: got.ahead, inherited: !!got.handoff && turn.claimed };
     } catch (e) {
-      if (e && e.code === 'handoff_lost' && !turn.claimed && !(signal && signal.aborted)) { retry = true; ticket = got.handoff.ticket; }
+      if (e && e.code === 'handoff_lost' && e.noRetry !== true && e.terminalInterrupted !== true && !turn.claimed && !(signal && signal.aborted)) { retry = true; ticket = got.handoff.ticket; }
       else throw e;
     } finally {
       await hb.stop();

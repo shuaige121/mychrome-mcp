@@ -75,10 +75,21 @@ function makeDom(html = PAGE, url = 'https://shop.test/login') {
   w.Element.prototype.attachShadow = function (o) { w.__shadowMode = o.mode; return attach.call(this, { ...o, mode: 'open' }); };
   return w;
 }
-const runRead = (w) => JSON.parse(w.eval(readSrc.replaceAll('__READ__', () => JSON.stringify({}))));
+const runRead = (w, request = {}) => JSON.parse(w.eval(readSrc.replaceAll('__READ__', () => JSON.stringify(request))));
 // `entered.at` (when the page saw the Return) is checked here and left out, so the results compare as data.
 const askRaw = (w, a) => JSON.parse(w.eval(askSrc.replaceAll('__ASK__', () => JSON.stringify(a))));
+// Synthetic native focus belongs to the fixture; ask.js must only verify it.
+function prepareField(w, marker, token = 'fixture-focus') {
+  let el = w.__chromeBridge?.markers?.[marker];
+  if (el?.tagName === 'LABEL' && el.control) el = el.control;
+  if (el?.isConnected) {
+    el.focus({ preventScroll: true });
+    w.__chromeBridgeFieldTarget = { token, el, marker, url: w.location.href };
+  }
+  return token;
+}
 const ask = (w, a) => {
+  if (a.arm) a = { ...a, focusToken: prepareField(w, a.marker) };
   const r = askRaw(w, a);
   if (r.entered) {
     assert.ok(Number.isFinite(r.entered.at) && Math.abs(r.entered.at - Date.now()) < 5000, `entered.at: ${JSON.stringify(r.entered)}`);
@@ -124,7 +135,7 @@ console.log('src/page/ask.js (jsdom)');
   const a = ask(w, { arm: 't1', marker: m, text: TEXT });
   assert.deepEqual([a.ok, a.armed, a.kind, a.password, a.filled], [true, true, 'single', true, false]);
   assert.equal(w.document.activeElement.id, 'pw', 'the field is not focused');
-  assert.equal(w.__scrolled, 'pw', 'the field was not scrolled into view');
+  assert.equal(w.__scrolled, undefined, 'the page script must not scroll the field');
   assert.equal(host(w).length, 1);
   assert.equal(w.__shadowMode, 'closed');
   assert.match(noteText(w), /需要你输入：登录密码.*输入完成后按回车，再回到原 AI 对话说“继续”.*MyChrome · AI 在等你/);
@@ -145,7 +156,7 @@ console.log('src/page/ask.js (jsdom)');
   assert.equal(host(w).length, 0, 'the highlight stayed after the Return, until the agent looks');
   assert.equal(w.document.title, '登录', 'the tab title was not put back');
   assert.equal(ask(w, { read: 't2' }).entered.how, 'enter');
-  ok('arms on a password field: scrolled into view, focused, page dimmed around it, ring + note (closed shadow root, clicks pass through), tab title marked; a new arm replaces the old; gone the moment the user presses Return');
+  ok('arms on a password field: native focus verified without script focus or scroll, page dimmed around it, ring + note (closed shadow root, clicks pass through), tab title marked; a new arm replaces the old; gone the moment the user presses Return');
 }
 {
   // Codex r3 B3: the page keeps the mark but adds to its title ("(1) 【需要你输入】登录"): put back to the page's own title.
@@ -374,29 +385,88 @@ console.log('src/page/ask.js (jsdom)');
   ok('the field leaving the page is reported (connected:false) and disarms; disarm removes the highlight, only with its own token');
 }
 
+{
+  const w = makeDom(); runRead(w); const marker = markerOf(w, '#pw');
+  const el = w.document.querySelector('#pw');
+  w.__chromeBridgeFieldTarget = { token: 'bound', el, marker, url: w.location.href };
+  const focus = el.focus.bind(el); let attempted = 0; el.focus = () => attempted++;
+  assert.equal(askRaw(w, { arm: 'missing', marker, focusToken: 'bound', text: TEXT }).error, 'focus_unconfirmed');
+  assert.equal(attempted, 0); assert.equal(host(w).length, 0);
+  focus();
+  w.__chromeBridgeFieldTarget.el = w.document.querySelector('#user');
+  assert.equal(askRaw(w, { arm: 'replaced', marker, focusToken: 'bound', text: TEXT }).error, 'focus_unconfirmed');
+  assert.equal(host(w).length, 0);
+  ok('ask verifies fresh element identity and activeElement; it never performs focus or reports ready after failed native focus');
+}
+
 /* ------------------------------------------------------------- the wiring */
 
 console.log('wait_for_user with field (src/index.js, fake bridge running ask.js in jsdom)');
 const idx = await import('../src/index.js');
 const T = await import('../src/tabs.js');
-let page, log, notes, clickAt = 0, idleUnknown = false, onIdle = null;
+let page, log, notes, clickAt = 0, idleUnknown = false, onIdle = null, nativeHeld = false;
 function fakeBridge() {
   const fake = Object.fromEntries(idx.__bridgeKeysForTests().map(k => [k, async () => { throw new Error(`B.${k} reached in ask.test`); }]));
-  const target = () => ({ tabId: 10, windowId: 7, url: page.location.href, title: page.document.title });
+  const target = () => ({ tabId: 10, windowId: 7, chromePid: 42, cgWindow: 70, tabActive: true,
+    bounds: { left: 0, top: 0, width: 1200, height: 900 }, url: page.location.href, title: page.document.title });
   return Object.assign(fake, {
-    pageScript: async (name, vars = {}) => ({ name, vars }),
+    pageDialog: async () => ({ ok: true, open: false }),
+    openInputSession: async () => ({
+      request: async req => {
+        log.push(req.op);
+        if (req.op === 'hold') { nativeHeld = true; return { ok: true, epoch: 1, pointer: { x: 10, y: 20 }, heldAt: Date.now() }; }
+        if (req.op === 'recordNativeScene') return { ok: true, epoch: 1, restoreToken: 'r'.repeat(64) };
+        if (req.op === 'nativeChrome' && req.intent.kind === 'restoreScene') page.__preserveSelection = req.intent.preserveSelection;
+        if (req.op === 'click') {
+          const bound = page.__chromeBridgeFieldTarget;
+          if (bound) bound.el.focus({ preventScroll: true });
+        }
+        return { ok: true, epoch: 1, operationId: req.operationId, stages: [], inputDelivery: req.op === 'nativeChrome' ? 'sent' : undefined, inputMonitor: true, takeover: { active: nativeHeld },
+          ...(req.op === 'warp' ? { verified: true, warped: req.to } : {}) };
+      },
+      close: async () => { log.push('release'); nativeHeld = false; return { ok: true, takeover: { active: false } }; },
+    }),
+    snapshotScene: async () => ({ appPid: 99, chromeWindow: 7, chromeTab: 11 }),
+    restoreScene: async (scene, options) => {
+      await options.native({ kind: 'restoreScene' }, { policy: 'restore' });
+      assert.equal(nativeHeld, true, 'field setup must restore before releasing input');
+      log.push(`restore ${page.__preserveSelection ? 10 : scene.chromeTab}`);
+      return { ok: true, appFrontmost: true };
+    },
+    // A script stays {name, vars}; as text (G2: gatedPageScript composes block.js and the script into one eval) it
+    // carries itself encoded, and the eval below runs that composition: block.js first, the script only when clean.
+    pageScript: async (name, vars = {}) => ({ name, vars, toString: () => `\u0001${Buffer.from(JSON.stringify({ name, vars })).toString('base64')}\u0001` }),
     evalInPage: async (s, tab) => {
+      if (typeof s === 'string') {
+        const [gate, inner] = [...s.matchAll(/\u0001([A-Za-z0-9+/=]+)\u0001/g)].map(m => JSON.parse(Buffer.from(m[1], 'base64').toString()));
+        assert.equal(gate?.name, 'block', 'a composed eval starts with block.js');
+        if (page.gone) { const { BridgeError } = await import('../src/bridge.js'); throw new BridgeError('no_such_tab', '找不到标签'); }
+        const v = JSON.parse(page.eval(blockSrc));
+        if (!v || v.error || v.blocked === undefined || typeof v.blocked !== 'object') return { ok: true, gateOnly: true, gate: null, target: target() };
+        if (v.blocked) return { ok: true, gateOnly: true, gate: v, target: target() };
+        s = inner;
+      }
       log.push(`eval ${s.name} ${tab} ${JSON.stringify(s.vars.ASK || {}).slice(0, 40)}`);
       if (page.gone) { const { BridgeError } = await import('../src/bridge.js'); throw new BridgeError('no_such_tab', '找不到标签'); }
       if (s.name === 'block') return { ...JSON.parse(page.eval(blockSrc)), target: target() };
+      if (s.name === 'locate') {
+        const marker = Number(s.vars.MARKER), el = page.__chromeBridge.markers[marker];
+        page.__chromeBridgeFieldTarget = { token: 'native-focus', el: el?.control || el, marker, url: page.location.href };
+        return { bounds: target().bounds, focusToken: 'native-focus', view: { innerWidth: 1200, innerHeight: 800, outerWidth: 1200, outerHeight: 900 },
+        aim: { x: 100, y: 112 }, rect: { x: 10, y: 100, width: 200, height: 24 },
+        visible: { x: 10, y: 100, width: 200, height: 24 }, hitOk: true, chain: [] };
+      }
       if (s.name !== 'ask') throw new Error(`unexpected page script ${s.name}`);
       const r = askRaw(page, s.vars.ASK);   // as the server gets it (entered.at included)
       if (!r.ok) { const { BridgeError } = await import('../src/bridge.js'); throw new BridgeError(r.error, r.message); }
       return { ...r, target: target() };
     },
-    selectTab: async (id) => { log.push(`select ${id}`); return { ok: true }; },
-    activateChrome: async (id) => { log.push(`activate ${id}`); return { ok: true, targetOnTop: true }; },
-    chromeInfo: async () => (page.gone ? Promise.reject(new Error('gone')) : { url: page.location.href }),
+    selectTab: async (id, opts) => { await opts.native({ kind: 'selectTab', tabId: id, windowId: opts.windowId }); assert.equal(nativeHeld, true); assert.equal(opts.windowId, 7); log.push(`select ${id}`); return { ok: true }; },
+    activateChrome: async (id, hint, opts) => { await opts.native({ kind: 'activate', tabId: id, windowId: hint.windowId }); log.push(`activate ${id}`); return { ok: true, targetOnTop: true,
+      ...target(), tabId: id, frontmostPid: 42, keyWindowIsTarget: true,
+      geometry: { mode: 'fit-current', beforeBounds: { ...target().bounds }, displayId: 1,
+        branch: 'usable', changed: false, possiblyChanged: false } }; },
+    chromeInfo: async () => (page.gone ? Promise.reject(new Error('gone')) : target()),
     openNavigationObserver: async () => ({
       startedAt: Date.now(),
       untouched: async (_target, since) => { if (onIdle) onIdle(); return !idleUnknown && clickAt < since; },
@@ -404,9 +474,10 @@ function fakeBridge() {
     }),
     // The user's last mouse button down (clickAt, epoch ms; 0 = long ago), as the helper says it: seconds ago.
     cgevent: async (args) => {
+      if (args[0] === 'displays') return { displays: [] };
+      if (args[0] === 'mousepos') return { x: 10, y: 20 };
       if (args[0] !== 'idle') throw new Error(`B.cgevent ${args[0]} reached in ask.test`);
-      if (onIdle) onIdle();
-      return idleUnknown ? { ok: true, idle: 100 } : { ok: true, idle: 100, clickIdle: (Date.now() - clickAt) / 1000 };
+      return idleUnknown ? { ok: true, idle: 100, keyIdle: 100, held: [] } : { ok: true, idle: 100, keyIdle: 100, held: [], clickIdle: (Date.now() - clickAt) / 1000 };
     },
     listTabs: async () => ({ ok: true, frontmost: 'WeChat', chromePid: 42, windows: [{ id: 7, index: 1, minimized: false, mode: 'normal',
       tabs: [{ id: 10, url: page.location.href, title: page.document.title, active: true }] }] })
@@ -415,9 +486,9 @@ function fakeBridge() {
 async function world() {
   page = makeDom();
   runRead(page);
-  log = []; notes = []; clickAt = 0; idleUnknown = false; onIdle = null;
+  log = []; notes = []; clickAt = 0; idleUnknown = false; onIdle = null; nativeHeld = false;
   idx.__setBridgeForTests(fakeBridge());
-  idx.__notifyForTests({ send: (t) => notes.push(t), everyMs: 60_000 });
+  idx.__notifyForTests({ send: (t) => { assert.equal(nativeHeld, false, 'notification must follow input release'); notes.push(t); }, everyMs: 60_000 });
   idx.__setWaitPollForTests(20, 15, 400);
   await T.registerTab(10, page.location.href, { windowId: 7, agentName: 'ask-test' });
 }
@@ -437,6 +508,103 @@ const taskFile = path.join(tmp, 'lock', 'tasks', `${process.pid}.json`);
 const readTask = async () => JSON.parse(await readFile(taskFile, 'utf8').catch(() => 'null'));
 const later = (ms, f) => setTimeout(f, ms);
 
+{
+  // Both preflight and verified release can be slow. The real ask.js Return
+  // happens only after the ready notification, using the unchanged 600ms minimum.
+  await world();
+  idx.__setWaitPollForTests(20, 15, 0);
+  const fake = fakeBridge(), evaluate = fake.evalInPage, open = fake.openInputSession, observe = fake.openNavigationObserver;
+  let initialBlockAt = null, readyAt = null, observerAt = null, enteredAt = null, observedSince = null, reads = 0, timer = null;
+  let entered; const returnSent = new Promise(resolve => { entered = resolve; });
+  fake.evalInPage = async (script, tab) => {
+    if (script.name === 'block' && initialBlockAt == null) {
+      initialBlockAt = Date.now();
+      await new Promise(resolve => setTimeout(resolve, 350));
+    }
+    const result = await evaluate(script, tab);
+    if (script.name === 'ask' && script.vars.ASK?.read) { reads++; enteredAt ||= result.entered?.at; }
+    return result;
+  };
+  fake.openInputSession = async (...args) => {
+    const session = await open(...args), close = session.close;
+    session.close = async () => { await new Promise(resolve => setTimeout(resolve, 450)); return close(); };
+    return session;
+  };
+  fake.openNavigationObserver = async options => {
+    observerAt = Date.now();
+    assert.equal(nativeHeld, false); assert.ok(readyAt != null);
+    const observer = await observe(options), untouched = observer.untouched;
+    observer.untouched = async (target, since) => { observedSince = since; return untouched(target, since); };
+    return observer;
+  };
+  idx.__setBridgeForTests(fake);
+  idx.__notifyForTests({ send: text => {
+    assert.equal(nativeHeld, false); notes.push(text); readyAt = Date.now();
+    timer = later(25, () => { key(page, page.document.querySelector('#pw')); entered(); });
+  }, everyMs: 60_000 });
+  const callAt = Date.now();
+  const result = await call('wait_for_user', { tab: 10, field: markerOf(page, '#pw'), reason: '预算回归输入', minutes: 0.01 });
+  if (timer) await returnSent;
+  assert.equal(result.isError, false, result.text);
+  assert.ok(readyAt - initialBlockAt >= 600, 'fixture setup did not exceed the unchanged minimum user wait');
+  assert.match(result.text, /^✅ 用户在 \[\d+\] 输入完按了回车/, `reads=${reads}; ${result.text}`);
+  assert.match(result.text, /等了 0 秒/, 'displayed user wait must exclude slow setup and release');
+  assertContinuationRequired(result.text);
+  assert.ok(reads > 0); assert.ok(observerAt >= readyAt); assert.equal(observedSince, enteredAt);
+  const helped = idx.__ledgerForTests().get(10)?.helped;
+  assert.ok(helped?.since >= callAt && helped.since <= initialBlockAt, 'helped.since must retain the original call boundary');
+  assert.ok(helped.until >= readyAt);
+  assert.equal(log.filter(entry => entry === 'click').length, 1); assert.equal(log.filter(entry => entry === 'release').length, 1);
+  assert.equal(notes.length, 1); assert.equal(host(page).length, 0); assert.equal(await readTask(), null);
+  ok('slow preflight and verified release do not consume the field wait; trusted Return after readiness is observed, with original ownership timing and explicit continuation');
+}
+{
+  await world();
+  const fake = fakeBridge(), evaluate = fake.evalInPage;
+  let first = true, readyAt = null, timer = null, reads = 0;
+  let changed; const pageChanged = new Promise(resolve => { changed = resolve; });
+  fake.evalInPage = async (script, tab) => {
+    if (script.name === 'block') {
+      reads++;
+      if (first) { first = false; await new Promise(resolve => setTimeout(resolve, 700)); }
+    }
+    return evaluate(script, tab);
+  };
+  idx.__setBridgeForTests(fake);
+  idx.__notifyForTests({ send: text => {
+    assert.equal(nativeHeld, false); notes.push(text); readyAt = Date.now();
+    timer = later(25, () => { page.history.replaceState({}, '', '/signed-in'); changed(); });
+  }, everyMs: 60_000 });
+  const callAt = Date.now();
+  const result = await call('wait_for_user', { tab: 10, reason: '等待用户登录', minutes: 0.01 });
+  if (timer) await pageChanged;
+  assert.equal(result.isError, false, result.text); assert.ok(readyAt - callAt >= 600);
+  assert.match(result.text, /^✅ 页面已经变了/); assert.match(result.text, /等了 0 秒/);
+  assertContinuationRequired(result.text);
+  assert.ok(reads > 1); assert.equal(notes.length, 1); assert.equal(await readTask(), null);
+  assert.ok(log.every(entry => entry.startsWith('eval block ')), 'plain wait must remain read-only');
+  ok('slow initial page check does not consume a reason-only wait; navigation after readiness is observed without input');
+}
+{
+  for (const kind of ['setup_error', 'stop']) {
+    await world();
+    const fake = fakeBridge(), select = fake.selectTab, observe = fake.openNavigationObserver, controller = new AbortController();
+    let observers = 0;
+    fake.selectTab = async (...args) => {
+      if (kind === 'setup_error') throw new Error('inert field setup failure');
+      const result = await select(...args); controller.abort(); return result;
+    };
+    fake.openNavigationObserver = async options => { observers++; return observe(options); };
+    idx.__setBridgeForTests(fake);
+    const result = await idx.callTool({ params: { name: 'wait_for_user', arguments: {
+      tab: 10, field: markerOf(page, '#pw'), reason: '不应开始等待', minutes: 0.01,
+    } } }, { signal: controller.signal });
+    assert.equal(result.isError, true, kind); assert.equal(notes.length, 0, kind); assert.equal(observers, 0, kind);
+    assert.equal(host(page).length, 0, kind); assert.equal(nativeHeld, false, kind);
+    assert.equal(log.some(entry => entry.startsWith('eval ask ')), false, kind);
+  }
+  ok('setup failure or Stop during setup releases input without an ask-ready notice or user-wait observer');
+}
 {
   await world();
   const m = markerOf(page, '#pw');
@@ -459,7 +627,9 @@ const later = (ms, f) => setTimeout(f, ms);
   assert.doesNotMatch(notes[0], /观察|自动|自己接着做/);
   assert.equal(menu && menu.alert, '需要你处理：shop.test 在高亮的框里输入：登录密码');
   assert.equal(menu && menu.alertTab, 10, 'the menu bar does not know which tab waits (「带我去」)');
-  assert.ok(!log.some(l => l.startsWith('activate')), 'the wait brought Chrome forward by itself');
+  assert.ok(log.indexOf('hold') < log.indexOf('activate 10'), 'field preparation must hold before activation');
+  assert.equal(log.some(x => x.startsWith('restore ') || x === 'handBack' || x === 'warp'), false, 'successful handoff must not restore focus');
+  assert.equal(log.filter(x => x === 'release').length, 1, 'handoff releases exactly once before notification');
   assert.equal(host(page).length, 0, 'the highlight stayed');
   assert.equal(await readTask(), null, 'the menu-bar alert stayed after the user was done');
   ok('Return ends observation without a chat reply: result, page hint and notification require explicit continue before reading and resuming; no private value returned');
@@ -487,6 +657,28 @@ const later = (ms, f) => setTimeout(f, ms);
     assert.equal(await readTask(), null);
   } finally { process.env.CHROME_BRIDGE_LANG = 'zh'; }
   ok('trusted form submit ends the real field wait; English page hint and notification ask for continue in the original AI conversation');
+}
+{
+  // I18N1 (new fix): CHROME_BRIDGE_UI_LANG=en wins over the older CHROME_BRIDGE_LANG=zh this file sets: the page hint and the
+  // notification are English, the agent's result stays as it is.
+  await world();
+  process.env.CHROME_BRIDGE_UI_LANG = 'en';
+  try {
+    let hint;
+    later(60, () => {
+      hint = noteText(page);
+      const button = page.document.querySelector('#go');
+      button.addEventListener('click', event => event.preventDefault());
+      trusted(button, new page.MouseEvent('click', { bubbles: true, cancelable: true }));
+      trusted(page.document.querySelector('#login'), new page.Event('submit', { bubbles: true, cancelable: true }));
+    });
+    const result = await call('wait_for_user', { tab: 10, field: markerOf(page, '#pw'), reason: 'login password', minutes: 0.05 });
+    assert.equal(result.isError, false, result.text);
+    assert.match(result.text, /提交了表单/);
+    assert.match(hint, /Press Return when done, then say "continue" in your original AI conversation/, 'I18N1 field highlight: English under CHROME_BRIDGE_UI_LANG=en');
+    assert.match(notes[0], /^Needs you: type login password in the highlighted field/, 'I18N1 field notification: English under CHROME_BRIDGE_UI_LANG=en');
+  } finally { delete process.env.CHROME_BRIDGE_UI_LANG; }
+  ok('I18N1: CHROME_BRIDGE_UI_LANG=en makes the field highlight and its notification English (it wins over CHROME_BRIDGE_LANG)');
 }
 {
   // Run the production detector and wait loop against a real jsdom page; no chat signal is supplied.
@@ -797,8 +989,8 @@ const later = (ms, f) => setTimeout(f, ms);
     // A cbmenu built before --goto starts a whole panel instead and never exits (2026-10-18: npm test hung 30 h).
     wrote = await new Promise(res => execFile(process.env.CBMENU_BIN || path.join(ROOT, 'bin', 'cbmenu'), ['--goto', String(process.pid), '10'], { env: process.env, timeout: 5000 },
       (err, out) => { try { res(err ? { error: String(err) } : JSON.parse(out)); } catch { res({ error: `not JSON: ${JSON.stringify(out)}` }); } }));
-    await until(() => log.includes('activate 10'), 3000, 'the tab brought forward').catch(() => {});
-    shownBeforeReturn = log.includes('activate 10');
+    await until(() => log.filter(l => l === 'activate 10').length === 2, 3000, 'the user-requested tab activation').catch(() => {});
+    shownBeforeReturn = log.filter(l => l === 'activate 10').length === 2;
     key(page, page.document.querySelector('#pw'));
   })();
   const r = await call('wait_for_user', { tab: 10, field: m, reason: '登录密码', minutes: 0.2 });
@@ -807,7 +999,7 @@ const later = (ms, f) => setTimeout(f, ms);
   assert.equal(wrote.file, G.file, 'cbmenu --goto wrote somewhere else');
   assert.match(r.text, /^✅ 用户在 \[\d+\] 输入完按了回车/, r.text);
   assert.equal(shownBeforeReturn, true, 'the tab was not brought forward while the wait was on');
-  assert.equal(log.filter(l => l === 'activate 10').length, 1, log.join('\n'));
+  assert.equal(log.filter(l => l === 'activate 10').length, 2, 'one protected setup and one explicit user goto');
   watcher.close();
   // What does nothing: no request, a tab nobody waits on, the wait over, a stale request, a pause; a failed activation is said so.
   const B = idx.__blocksForTests();
@@ -843,7 +1035,10 @@ const later = (ms, f) => setTimeout(f, ms);
   assert.equal(await req({ tab: '10', at: String(Date.now()) }), 'ignored', 'malformed number types were accepted');
   assert.equal(await req(), 'shown');
   assert.equal(await reason(), 'shown');
-  assert.deepEqual(log, ['activate 10']);
+  assert.deepEqual(log.filter(x => x.startsWith('activate ')), ['activate 10']);
+  assert.ok(log.indexOf('hold') < log.indexOf('activate 10'));
+  assert.ok(log.indexOf('activate 10') < log.indexOf('release'));
+  assert.equal(log.some(x => x.startsWith('restore ') || x === 'warp'), false, 'explicit GUI handoff stays visible');
   // Exact request re-delivery is idempotent; reusing an id for a different target is refused.
   log = [];
   const duplicate = request();
@@ -851,7 +1046,10 @@ const later = (ms, f) => setTimeout(f, ms);
   assert.equal(await req(duplicate), 'shown');
   assert.equal(await req({ ...duplicate, tab: 11 }), 'ignored');
   assert.equal(await reason(), 'request_conflict');
-  assert.deepEqual(log, ['activate 10']);
+  assert.deepEqual(log.filter(x => x.startsWith('activate ')), ['activate 10']);
+  assert.ok(log.indexOf('hold') < log.indexOf('activate 10'));
+  assert.ok(log.indexOf('activate 10') < log.indexOf('release'));
+  assert.equal(log.some(x => x.startsWith('restore ') || x === 'warp'), false, 'explicit GUI handoff stays visible');
   // Queued behind another agent (it holds the input lock until told to let go; the request is seen in the queue):
   // The wait ends or MyChrome is paused while queued → nothing. Admission freshness and queue time
   // are separate: a still-current request does not expire just because another AI had the mouse.
@@ -883,7 +1081,10 @@ const later = (ms, f) => setTimeout(f, ms);
   assert.equal(await whileQueued(() => ({ tab: 10, at: (at = Date.now() - 9_000) }), () => until(() => Date.now() > at + 10_100, 3000)), 'shown', 'a valid request expired only because it spent time in the queue');
   log = [];
   assert.equal(await whileQueued(() => ({ tab: 10, at: Date.now() }), () => {}), 'shown', 'queued, then the lock came: not shown');
-  assert.deepEqual(log, ['activate 10']);
+  assert.deepEqual(log.filter(x => x.startsWith('activate ')), ['activate 10']);
+  assert.ok(log.indexOf('hold') < log.indexOf('activate 10'));
+  assert.ok(log.indexOf('activate 10') < log.indexOf('release'));
+  assert.equal(log.some(x => x.startsWith('restore ') || x === 'warp'), false, 'explicit GUI handoff stays visible');
   // This session's own job holds the lock (the lock lets it in at once, mid-action): not then (Codex r14 A2).
   log = [];
   const own = await L.acquireLease('own job');
@@ -911,7 +1112,10 @@ const later = (ms, f) => setTimeout(f, ms);
   await release();
   assert.equal(await running, 'shown');
   assert.equal((await result()).id, second.id, 'a late completion overwrote the most recent click result');
-  assert.deepEqual(log, ['activate 10']);
+  assert.deepEqual(log.filter(x => x.startsWith('activate ')), ['activate 10']);
+  assert.ok(log.indexOf('hold') < log.indexOf('activate 10'));
+  assert.ok(log.indexOf('activate 10') < log.indexOf('release'));
+  assert.equal(log.some(x => x.startsWith('restore ') || x === 'warp'), false, 'explicit GUI handoff stays visible');
   log = [];
   // An absolute queue timeout reports failure and never activates later when the other agent leaves.
   const timeoutRelease = await holdLock();
@@ -933,6 +1137,13 @@ const later = (ms, f) => setTimeout(f, ms);
   assert.doesNotMatch(JSON.stringify(await result()), /https:|shop\.test|Chrome is gone/, 'a raw page/error detail leaked into the GUI response');
   idx.__setBridgeForTests({ ...fakeBridge(), activateChrome: async () => ({ ok: false }) });
   assert.equal(await req(), 'failed', 'an unsuccessful activation was reported as shown');
+  for (const patch of [{ keyWindowIsTarget: false }, { targetOnTop: false },
+    { frontmostPid: 99 }, { tabId: 11 }, { cgWindow: null }]) {
+    idx.__setBridgeForTests({ ...fakeBridge(), activateChrome: async () => ({ ok: true,
+      targetOnTop: true, tabId: 10, windowId: 7, chromePid: 42, frontmostPid: 42,
+      keyWindowIsTarget: true, cgWindow: 70, ...patch }) });
+    assert.equal(await req(), 'failed', `unverified target reported shown: ${JSON.stringify(patch)}`);
+  }
   idx.__setBridgeForTests(fakeBridge());
   // Startup scan recovers an already-written request even when no fs.watch event is delivered.
   const startup = request();

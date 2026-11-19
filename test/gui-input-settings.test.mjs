@@ -30,7 +30,7 @@ const clear = () => fs.writeFile(env.CHROME_BRIDGE_SETTINGS, '{}');
 function typingHarness(beforeAction = () => {}, temporal = { fail: 'not_temporal' }) {
   const calls = [];
   const c = vm.createContext({
-    S: { setting: key => S.setting(key, env) }, BridgeError, INPUT_MODES, typingSegments,
+    S: { setting: key => S.setting(key, env) }, BridgeError, INPUT_MODES, typingSegments, process: { env },
     persist: async fn => { calls.push('persist'); return fn({}); },
     inputAction: async (_label, _prepare, action, options) => {
       beforeAction(); calls.push('action');

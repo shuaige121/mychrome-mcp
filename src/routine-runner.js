@@ -38,7 +38,23 @@ const publicMessages = {
   routine_busy: '已有流程正在运行，请先等待或停止它。',
   recording_unavailable: '流程记录暂时不可用，本次执行结果未写入记录。',
 };
-export const routineMessage = code => publicMessages[code] || '流程未能继续，请让 AI 检查当前页面；不会自动重试。';
+/** DQ: the dialog's owner tab, named the way a read refusal names it (dialogNote). `who`: mine | agent | user. */
+const DIALOG_WHO = {
+  mine: n => `对话框在标签 ${n}（你自己的标签）：用 answer_dialog（tab=${n}）处理后，再重新开始流程。`,
+  agent: n => `对话框在标签 ${n}（另一个 agent 的标签），不是你的标签：不要替它按按钮，告诉用户去处理。`,
+  user: n => `对话框在标签 ${n}（用户的标签），不是你的标签：不要替它按按钮，告诉用户去处理。`,
+};
+const dialogOwnerMessage = (who, tab) => `${publicMessages.page_dialog}${DIALOG_WHO[who](tab)}`;
+const validTab = n => Number.isSafeInteger(n) && n > 0;
+/** `detail`: the thrown RoutineError. Only the exact owner forms above exist; an unknown owner keeps the plain text. */
+export const routineMessage = (code, detail) => code === 'page_dialog' && Object.hasOwn(DIALOG_WHO, detail?.dialog?.who)
+  && validTab(detail.dialog.tab) ? dialogOwnerMessage(detail.dialog.who, detail.dialog.tab)
+  : publicMessages[code] || '流程未能继续，请让 AI 检查当前页面；不会自动重试。';
+/** The owner forms a carried page_dialog receipt may hold: the tab number is read back, the text is rebuilt. */
+const dialogCarryMessages = message => {
+  const m = /^页面弹出了需要处理的对话框，流程已暂停。对话框在标签 ([1-9]\d{0,15})（/.exec(message);
+  return m && validTab(Number(m[1])) ? Object.keys(DIALOG_WHO).map(who => dialogOwnerMessage(who, Number(m[1]))) : [];
+};
 
 function validateRoutine(routine, params) {
   if (!object(routine) || routine.archived || !Array.isArray(routine.steps) || routine.steps.length < 1 || routine.steps.length > 50) fail('invalid_routine');
@@ -70,6 +86,7 @@ function actionArgs(step, marker, params, tab) {
   if (step.tool === 'click') return { tab, marker, scroll_into_view: saved.scroll_into_view !== false };
   if (step.tool === 'hover') return { tab, marker };
   if (step.tool === 'type_text') return { tab, marker, text: params[saved.textParam], submit: saved.submit === true,
+    ...(typeof saved.replace === 'boolean' ? { replace: saved.replace } : {}),
     ...(saved.input_mode === 'keys' || saved.input_mode === 'paste' ? { input_mode: saved.input_mode } : {}) };
   if (step.tool === 'select_option') return { tab, marker, option: params[saved.valueParam] };
   if (step.tool === 'press_key') return { tab, key: saved.key, times: saved.times ?? 1 };
@@ -149,7 +166,7 @@ export function createRoutineRunner({ store, adapter, onChange = () => {}, maxRu
     } catch (error) {
       run.code = /^[a-z_]{1,80}$/.test(error?.code ?? '') ? error.code : 'action_failed';
       run.status = STOP_CODES.has(run.code) || run.controller.signal.aborted ? 'cancelled' : 'blocked';
-      run.message = routineMessage(run.controller.signal.aborted ? 'cancelled' : run.code);
+      run.message = run.controller.signal.aborted ? routineMessage('cancelled') : routineMessage(run.code, error);
     } finally {
       // Do not expose a terminal status until input ownership has actually been released/restored.
       const terminal = run.status;
@@ -243,7 +260,8 @@ export function createRoutineRunner({ store, adapter, onChange = () => {}, maxRu
       // Cancellation can override a native error while retaining its diagnostic code.
       const messages = r.status === 'completed' ? [`流程已执行并核对，共 ${r.completed} 步。`]
         : r.code === 'cleanup_unconfirmed' ? ['操作已结束，但归还控制的状态未确认，请检查浏览器。']
-        : [routineMessage(r.code), ...(r.status === 'cancelled' ? [routineMessage('cancelled')] : [])];
+        : [routineMessage(r.code), ...(r.code === 'page_dialog' ? dialogCarryMessages(r.message) : []),
+           ...(r.status === 'cancelled' ? [routineMessage('cancelled')] : [])];
       if (!messages.includes(r.message)) invalid();
       seenRuns.add(r.runId);
       validated.push({ nonce: entry.nonce, signature: entry.signature, receipt: { ...r } });

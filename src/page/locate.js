@@ -1,5 +1,4 @@
-/* Injected by click() and scroll(). Read-only: no DOM mutation, and no
-   scrolling unless __SCROLL__ is true (the labelled programmatic fallback).
+/* Injected by click() and scroll(). Read-only: no DOM mutation or scrolling.
 
    MODE 'target' (click): resolve a marker number to a live element and report
      - rect: its full viewport rect; visible: the part visible through every
@@ -19,7 +18,6 @@
 (function () {
   var N = __MARKER__;
   var MODE = __MODE__;
-  var SCROLL = __SCROLL__;
   var DIR = __DIR__;
 
   /* Points closer than this to a box edge do not count as inside it. */
@@ -210,11 +208,8 @@
     return JSON.stringify({ ok: false, error: 'stale',
       message: '编号 [' + N + '] 的元素已经从页面上消失，请重新调用 read_page' });
   }
-
-  if (SCROLL) {
-    try { el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' }); }
-    catch (e) { try { el.scrollIntoView(false); } catch (e2) {} }
-  }
+  // Handoff retains ask.js's label-to-field semantics without changing click geometry.
+  if (MODE === 'field' && el.tagName === 'LABEL' && el.control) el = el.control;
 
   var r = el.getBoundingClientRect();
   if (r.width <= 0 || r.height <= 0) {
@@ -368,8 +363,23 @@
     };
   }
 
+  // upload_file: the file input this control is or labels: its accept list and state, never its files.
+  var file = null;
+  try {
+    var fileEl = el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'file' ? el
+      : el.tagName === 'LABEL' && el.control && String(el.control.type).toLowerCase() === 'file' ? el.control : null;
+    if (fileEl) file = { accept: String(fileEl.getAttribute('accept') || '').slice(0, 120), multiple: !!fileEl.multiple, disabled: !!fileEl.disabled };
+  } catch (e) {}
+
+  var focusToken = null;
+  if (MODE === 'field') {
+    focusToken = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    window.__chromeBridgeFieldTarget = { token: focusToken, el: el, marker: N, url: location.href };
+  }
   return JSON.stringify({
+    focusToken: focusToken,
     field: field,
+    file: file,
     ok: true,
     marker: N,
     tag: el.tagName.toLowerCase(),
@@ -384,7 +394,7 @@
     hitOk: hitOk,
     hitBy: hitBy,
     hadFocus: hadFocus,
-    programmaticScroll: !!SCROLL,
+    programmaticScroll: false,
     view: view(),
     url: location.href
   });

@@ -134,10 +134,10 @@ t('a URL change is proof', () => {
   assert.match(r.reasons.join(''), /地址/);
 });
 
-t('focus moving onto the target is proof', () => {
+t('focus moving onto the target confirms no requested outcome by itself', () => {
   const r = didClickRegister({ hrefChanged: false, activeIsTarget: true, hadFocusBefore: false });
-  assert.equal(r.observed, true);
-  assert.match(r.reasons.join(''), /焦点/);
+  assert.equal(r.observed, false);
+  assert.deepEqual(r.reasons, []);
 });
 
 t('focus that was already on the target before the click is NOT proof (codex #5)', () => {
@@ -203,6 +203,31 @@ t('a fullscreen window (no chrome at all) is allowed through', () => {
   const o = viewportOrigin({ left: 0, top: 0, width: 1496, height: 938 }, view);
   assert.equal(o.toolbarHeight, 0);
   assert.equal(checkViewportGeometry(o, view).ok, true);
+});
+
+t('a tab not shown yet (window 0×0, field 2026-10-27) is refused as not shown, without DevTools advice', () => {
+  const view = { innerWidth: 1220, innerHeight: 921, outerWidth: 0, outerHeight: 0 };
+  const o = viewportOrigin({ left: 0, top: 25, width: 1220, height: 1010 }, view);
+  assert.equal(o.toolbarHeight, 0);
+  const r = checkViewportGeometry(o, view);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'not_shown');
+  assert.match(r.message, /标签尚未显示/);
+  assert.match(r.message, /0×0，可视区 1220×921/);
+  assert.doesNotMatch(r.message, /DevTools|开发者工具|侧边栏|工具栏高度/);
+  // Also used after a field scroll already sent wheel notches: check the page first, no blind retry (QA B1).
+  assert.match(r.message, /先 read_page 核对/);
+  assert.doesNotMatch(r.message, /直接重试/);
+});
+
+t('an all-zero or missing size is not taken for fullscreen', () => {
+  for (const view of [{ innerWidth: 0, innerHeight: 0, outerWidth: 0, outerHeight: 0 },
+    { innerWidth: 1220, innerHeight: 921 }]) {
+    const r = checkViewportGeometry(viewportOrigin({ left: 0, top: 25, width: 1220, height: 1010 }, view), view);
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'not_shown');
+    assert.match(r.message, /标签尚未显示/);
+  }
 });
 
 /* ------------------------------------------------------- guardedClick -- */
@@ -560,14 +585,14 @@ const PREP = { chromePid: 42, cgWindow: 7, windowBounds: { x: 0, y: 0, w: 1200, 
  * exposes it. Requests and close() are written to `log` once attached.
  */
 function fakeSession({ begin = { ok: true, inputMonitor: true }, end = { ok: true, op: 'end', interrupted: null },
-                       status = () => ({ ok: true, interrupted: null }), warp = () => ({ ok: true }) } = {}) {
+                       status = null, warp = () => ({ ok: true }) } = {}) {
   const sent = [];
   return {
     sent, closed: 0, log: null, interrupted: end.interrupted,
     async request(o) {
       sent.push(o.op);
       if (o.op === 'begin') return begin;
-      if (o.op === 'status') { this.log?.push('status'); return status(o); }
+      if (o.op === 'status') { this.log?.push('status'); return status ? status(o) : { ok: true, interrupted: null, ...(begin.takeover ? { takeover: begin.takeover } : {}) }; }
       if (o.op === 'warp') {
         const r = warp(o);
         if (r instanceof Error) throw r;
@@ -632,6 +657,13 @@ await ta('CX#9: the user interrupts (key) → session ended, NO scene restore, N
   const msg = userStopMessage(r);
   assert.match(msg, /你开始操作了，已停止；完成了：点击了 \[3\]；逐键输入了 4 个字符/);
   assert.match(msg, /已把前台切回你原来用的 App（光标和 Chrome 窗口没有动）；你按下的第一个键可能已经进了 agent 的网页/);
+});
+
+await ta('partly expanded tab key reports posted input without a confirmed character count', async () => {
+  const msg = userStopMessage({ steps: [], error: { reply: { typed: 0, postedInput: 2, confirmationPending: true } } });
+  assert.match(msg, /已有按键发出/);
+  assert.match(msg, /尚未读回确认/);
+  assert.doesNotMatch(msg, /还没有发出任何输入|逐键输入了 0/);
 });
 
 await ta('A3/A4: the front is handed back only when our activation left Chrome in front and the user did not click', async () => {
@@ -737,7 +769,7 @@ await ta('releaseKept preserves clipboard/end fields and reports only confirmed 
       request: async ({ op }) => {
         if (op === 'status') return { ok: true, takeover: { active: true } };
         if (failed) throw Error('native menu blocked the restore');
-        return op === 'warp' ? { ok: true, warped: { x: 5, y: 6 } } : { ok: true, frontmost: true };
+        return op === 'warp' ? { ok: true, verified: true, warped: { x: 5, y: 6 } } : { ok: true, frontmost: true };
       },
       close: async () => { closed++; return end; },
     };
@@ -745,7 +777,7 @@ await ta('releaseKept preserves clipboard/end fields and reports only confirmed 
     const r = await releaseKept({ now: () => 100, restoreScene: async () => {
       if (failed) throw Error('Apple Event timed out');
       return restore;
-    } }, { session, scene: { appPid: 1 }, pointer: { x: 5, y: 6 }, chromePid: 42 });
+    } }, { session, scene: { appPid: 1 }, pointer: { x: 5, y: 6 }, chromePid: 42, returnFocus: { mode: 'origin', source: 'legacy_default' } });
     assert.equal(closed, 1);
     for (const [key, value] of Object.entries(end)) assert.deepEqual(r[key], value);
     assert.equal(r.inputReleased, true);
@@ -759,6 +791,30 @@ await ta('releaseKept preserves clipboard/end fields and reports only confirmed 
   assert.equal(r.inputReleased, false);
   assert.equal(r.appRestored, false);
   assert.equal(r.pointerRestored, false);
+});
+
+await ta('releaseKept does not treat an old warp coordinate echo as restoration proof', async () => {
+  const r = await releaseKept({ now: () => 100 }, { returnFocus: { mode: 'origin', source: 'legacy_default' }, pointer: { x: 5, y: 6 },
+    session: { request: async () => ({ ok: true, warped: { x: 5, y: 6 } }),
+      close: async () => ({ ok: true, takeover: { active: false } }) },
+  });
+  assert.equal(r.pointerRestored, false);
+});
+
+await ta('releaseKept with unhealthy or interrupted status closes only: no app, scene, tab or pointer writes', async () => {
+  for (const status of [null, { ok: false }, { ok: false, takeover: { active: true } }, { ok: true, takeover: { active: false } },
+    { ok: true, takeover: { active: true, aborted: true, abortedBy: 'esc' } },
+    { ok: true, interrupted: { kind: 'key' }, takeover: { active: true } }]) {
+    const calls = [];
+    const session = { request: async req => { calls.push(req.op); return status; },
+      close: async () => { calls.push('close'); return { ok: true, takeover: { active: false } }; } };
+    const r = await releaseKept({ now: () => 100, restoreScene: async () => { calls.push('restore'); return { ok: true }; } },
+      { session, scene: { appPid: 9, chromeWindow: 3, chromeTab: 4 }, pointer: { x: 5, y: 6 }, chromePid: 42, returnFocus: { mode: 'origin', source: 'legacy_default' } });
+    assert.deepEqual(calls, ['status', 'close']);
+    assert.equal(r.inputReleased, true);
+    assert.equal(r.appRestored, false);
+    assert.equal(r.pointerRestored, false);
+  }
 });
 
 await ta('codex2-5: a user interruption after delivery still gets the report, but nothing observed is noted', async () => {
@@ -1089,7 +1145,7 @@ await ta('takeover without a pre-check (scroll, type without marker): held first
   f.ops.veil = (pre) => ({ label: { zh: '正在滚动', en: 'Scrolling' }, ...(pre ? { rect: pre.session.windowBounds } : {}) });
   const r = await runInputAction(f.ops, async () => 'scrolled');
   assert.equal(r.outcome, 'ok', r.error && r.error.message);
-  assert.deepEqual(sess.sent.slice(0, 3), ['prime', 'hold', 'begin']);
+  assert.deepEqual(sess.sent.slice(0, 4), ['prime', 'hold', 'status', 'begin']);
   assert.deepEqual(holds[0].veil, { label: { zh: '正在滚动', en: 'Scrolling' } }, 'hold did not carry the veil');
   assert.deepEqual([sess.beginReq.window, sess.beginReq.takeover], [7, undefined], 'begin must not take over again');
 });
@@ -1120,6 +1176,7 @@ console.log('\nguard.js — hand-over between agents (lock.js queue)');
 /** A takeover session that holds (hold → pointer 70,80) and stays held. */
 function heldSession() {
   const sess = fakeSession({ begin: { ok: true, inputMonitor: true, takeover: { active: true } },
+    end: { ok: true, op: 'end', interrupted: null, takeover: { active: false, aborted: false } },
     status: () => ({ ok: true, interrupted: null, takeover: { active: true } }) });
   const orig = sess.request.bind(sess);
   sess.request = async (o, x) => {
@@ -1216,7 +1273,7 @@ await ta('Codex A6: claimed, then the page check fails before anything begins �
   const f = takeoverOps(sess, { prepare: async () => { throw Object.assign(new Error('gone'), { code: 'no_such_tab' }); } });
   f.ops.inherit = { scene: { appPid: 3 }, pointer: { x: 1, y: 2 }, touched: true, claim: async () => true };
   await assert.rejects(runInputAction(f.ops, async () => 'never'), (e) => e.code === 'no_such_tab');
-  const iRestore = f.log.indexOf('restore'), iWarp = f.log.indexOf('cgwarp 1,2'), iClose = f.log.indexOf('close');
+  const iRestore = f.log.indexOf('restore'), iWarp = f.log.indexOf('warp 1,2'), iClose = f.log.indexOf('close');
   assert.ok(iRestore >= 0 && iWarp >= 0 && iClose >= 0, f.log.join(','));
   assert.ok(iRestore < iClose && iWarp < iClose, `let go before putting the handed scene back: ${f.log}`);
   assert.equal(f.calls.restoreScene[0].held, true, 'restored as if not held (would stop on the user\'s input)');
@@ -1230,7 +1287,8 @@ await ta('Codex round 2 A11: claimed, the user gives the hold back (Esc) and mov
   const f = takeoverOps(sess, { prepare: async () => { throw Object.assign(new Error('gone'), { code: 'no_such_tab' }); },
     restoreReply: { ok: true, userInput: true } });
   f.ops.inherit = { scene: { appPid: 3 }, pointer: { x: 1, y: 2 }, touched: true, claim: async () => true };
-  await assert.rejects(runInputAction(f.ops, async () => 'never'), (e) => e.code === 'no_such_tab');
+  await assert.rejects(runInputAction(f.ops, async () => 'never'), (e) => e.code === 'user_cancelled');
+  assert.ok(!f.log.includes('prepare'), 'Stop is checked before preparation');
   assert.ok(f.calls.restoreScene.every(o => !o.held), `restored as if still held: ${JSON.stringify(f.calls.restoreScene)}`);
   assert.ok(!f.log.some(x => x.startsWith('cgwarp') || x.startsWith('warp')), `pulled the pointer back after the user took over: ${f.log}`);
 });
@@ -1254,7 +1312,7 @@ await ta('Codex round 3 A12: a long job\'s step cancelled by the caller → not 
   const ac = new AbortController(); ac.abort();
   f.ops.signal = ac.signal;
   f.ops.keep = true;
-  f.ops.reuse = { session: sess, scene: { appPid: 1 }, pointer: { x: 5, y: 6 }, cgWindow: 7, chromePid: 42 };
+  f.ops.reuse = { returnFocus: { mode: 'origin', source: 'legacy_default' }, session: sess, scene: { appPid: 1 }, pointer: { x: 5, y: 6 }, cgWindow: 7, chromePid: 42 };
   await assert.rejects(runInputAction(f.ops, async () => 'x'), (e) => e.code === 'cancelled' && !e.keptHold);
   assert.equal(sess.closed, 1, 'the hold stayed up after a cancelled call');
 });
@@ -1289,6 +1347,83 @@ await ta('nobody takes the hand-over: things put back as usual', async () => {
   assert.equal(r.handedOver, undefined);
   assert.equal(f.calls.restoreScene.length, 1);
   assert.ok(f.log.includes('warp 70,80'));
+});
+
+await ta('takeover cleanup rejects every unhealthy hold before handBack, scene or pointer writes', async () => {
+  for (const stopped of [
+    { ok: true, takeover: { active: false, aborted: true, abortedBy: 'esc' } },
+    { ok: true, takeover: { active: false, aborted: false } },
+    { ok: false, takeover: { active: true, aborted: false } },
+    { ok: true, interrupted: { kind: 'key' }, takeover: { active: true } },
+    null,
+  ]) {
+    const sess = heldSession(), originalRequest = sess.request.bind(sess);
+    let finished = false;
+    sess.request = async (req, opts) => {
+      if (req.op === 'status' && finished) { sess.sent.push('status'); return stopped; }
+      return originalRequest(req, opts);
+    };
+    const f = takeoverOps(sess);
+    await runInputAction(f.ops, async (_s, _p, ctx) => {
+      ctx.sent('click'); finished = true;
+      throw Object.assign(new Error('stopped'), { code: 'user_cancelled' });
+    }).catch(error => { assert.equal(error.code, 'user_cancelled'); });
+    assert.equal(sess.sent.includes('handBack'), false);
+    assert.equal(sess.sent.includes('warp'), false);
+    assert.deepEqual(f.calls.restoreScene, []);
+    assert.deepEqual(f.calls.restoreApp, []);
+    assert.equal(sess.closed, 1);
+  }
+});
+
+await ta('takeover key/move interruption never restores an App after closing its hold', async () => {
+  for (const kind of ['key', 'move']) {
+    const sess = heldSession(), f = takeoverOps(sess);
+    const result = await runInputAction(f.ops, async (_s, _p, ctx) => {
+      ctx.sent('click'); throw new UserInterrupted({ kind, t: 1 });
+    });
+    assert.equal(result.outcome, 'user');
+    assert.equal(sess.closed, 1);
+    assert.equal(sess.sent.includes('handBack'), false);
+    assert.equal(pulledBack(f.log), false);
+    assert.deepEqual(f.calls.restoreApp, []);
+  }
+});
+
+await ta('new-window settling restores twice within the hold rather than handing an unsettled scene onward', async () => {
+  const sess = heldSession(), f = takeoverOps(sess);
+  let offers = 0;
+  f.ops.prepare = async (_pre, _state, ctx) => { ctx.settleScene(400); ctx.sent('new_window'); return PREP; };
+  f.ops.sleep = async ms => { assert.equal(ms, 400); assert.equal(sess.closed, 0); f.log.push('settle'); };
+  f.ops.handoff = async () => { offers++; return null; };
+  await runInputAction(f.ops, async () => 'created');
+  assert.equal(offers, 0);
+  assert.equal(f.calls.restoreScene.length, 2);
+  assert.ok(f.log.indexOf('restore') < f.log.indexOf('settle'));
+  assert.ok(f.log.lastIndexOf('restore') < f.log.indexOf('close'));
+});
+
+await ta('pause during a reused task hold cannot keep the hold for a retry', async () => {
+  const sess = heldSession(), f = takeoverOps(sess);
+  f.ops.keep = true;
+  f.ops.reuse = { returnFocus: { mode: 'origin', source: 'legacy_default' }, session: sess, scene: { appPid: 1 }, pointer: { x: 5, y: 6 }, cgWindow: 7, chromePid: 42 };
+  f.ops.beforeSend = () => { throw Object.assign(new Error('paused'), { code: 'paused_by_user' }); };
+  await assert.rejects(runInputAction(f.ops, async () => 'never'), e => e.code === 'paused_by_user' && !e.keptHold);
+  assert.equal(sess.closed, 1);
+});
+
+await ta('Pause after an attempted send cannot claim that nothing happened or permit replay', async () => {
+  const sess = heldSession(), f = takeoverOps(sess);
+  await assert.rejects(runInputAction(f.ops, async (_session, _prep, ctx) => {
+    ctx.sent('key');
+    throw Object.assign(new Error('用户已暂停，这次什么也没做。'), { code: 'paused_by_user' });
+  }), e => {
+    assert.equal(e.inputDelivery, 'unknown'); assert.equal(e.noRetry, true);
+    assert.match(e.message, /已停止后续操作；此前可能已有操作送达/);
+    assert.doesNotMatch(e.message, /什么也没做/);
+    return true;
+  });
+  assert.equal(sess.closed, 1);
 });
 
 await ta('no hand-over after a failure, after the user took over, or for a long job\'s step (it keeps its hold)', async () => {

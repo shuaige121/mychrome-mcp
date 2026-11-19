@@ -65,12 +65,15 @@ test('broken npm is detected before build', async () => {
   assert.equal(r.preflight.checks.find(c => c.id === 'npm').ok, false); assert.equal(m.installs.length, 0);
 });
 
-test('incomplete exported source is blocked, but Git is never required', async () => {
-  const m = machine({ exists: p => !p.endsWith('src/helper.swift') });
-  const r = await runSetup({}, m.p);
-  assert.equal(r.status, 'blocked'); assert.match(r.preflight.checks.find(c => c.id === 'source').detail, /helper.swift/);
-  assert.ok(m.calls.every(c => !/git/.test(c.file)));
-});
+for (const missing of ['src/helper.swift', 'src/native-chrome.swift', 'scripts/build-native.sh']) {
+  test(`incomplete exported source (${missing}) is blocked, but Git is never required`, async () => {
+    const m = machine({ exists: p => !p.endsWith(missing) });
+    const r = await runSetup({}, m.p);
+    assert.equal(r.status, 'blocked'); assert.ok(r.preflight.checks.find(c => c.id === 'source').detail.includes(missing));
+    assert.ok(m.calls.every(c => !/git/.test(c.file) && !c.args.includes('ci') && !c.args.includes('build')));
+    assert.equal(m.installs.length, 0); assert.equal(m.diagnostics.length, 0);
+  });
+}
 
 test('unknown App ownership blocks before dependency installation', async () => {
   const m = machine({ inspectApp: async () => { throw new Error('Existing app belongs to another installation'); } });

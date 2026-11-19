@@ -13,7 +13,15 @@ const tmp = await mkdtemp(path.join(os.tmpdir(), 'cb-tabs-test-'));
 process.env.CHROME_BRIDGE_TAB_DIR = path.join(tmp, 'tabs');
 process.env.CHROME_BRIDGE_LOCK = path.join(tmp, 'lock', 'input.lock');
 await mkdir(path.join(tmp, 'lock'));
-const T = await import('../src/tabs.js');
+// Bound the legacy registry constant to this test as well. Restore the exact
+// imported function immediately; no real runtime registry is read by this suite.
+const originalHomedir = os.homedir;
+let T;
+try {
+  os.homedir = () => path.join(tmp, 'home');
+  T = await import('../src/tabs.js');
+} finally { os.homedir = originalHomedir; }
+assert.equal(T.LEGACY_TAB_DIR, path.join(tmp, 'home', 'Library', 'Caches', 'chrome-bridge-mcp', 'agent-tabs'));
 const LOCK = process.env.CHROME_BRIDGE_LOCK;
 
 const now = 1_000_000;
@@ -291,9 +299,13 @@ console.log('close confirmation');
 {
   await T.registerTab(42, 'https://a.test/42', { windowId: 7, now });
   const fc = fakeChrome({ windows: [agentWin([tab(42, 'https://a.test/42')])], closeHangs: true });
+  const close = fc.closeTab;
+  fc.closeTab = (...args) => { assert.equal(args.length, 1, 'generic callback receives no private preparation gate'); return close(...args); };
   const r = await T.closeAndConfirm([42], fc);
   assert.deepEqual(r.blocked, [42]);
   assert.ok(fc.clock() <= T.CLOSE_CONFIRM_MS + 300);
+  assert.ok(fc.clock() < T.CLOSE_PREPARE_MS, 'generic timeout still uses the original 3 second budget');
+  assert.equal((await T.getTab(42)).closeBlocked, true);
   ok('a close request that never returns does not hang the sweep past the deadline');
   await T.forgetTab(42);
 }
@@ -430,6 +442,37 @@ console.log('close_tab and the tab the user is looking at (review codex1-8)');
 
 console.log('B4: an agent tab the agent itself left in front (live 2026-10-06)');
 {
+  await mkdir(LOCK); await writeFile(path.join(LOCK, 'owner.json'), JSON.stringify({ pid: process.pid, since: Date.now() }));
+  for (const mode of ['healthy', 'wrong-tab', 'wrong-pid', 'unknown-cg', 'foreign-owner', 'taken-over', 'uncertain', 'lost', 'late-takeover']) {
+    const id = 80;
+    await T.registerTab(id, `https://a.test/${id}`, { windowId: 7, now,
+      ...(mode === 'foreign-owner' ? { ownerPid: 123456 } : {}),
+      ...(mode === 'uncertain' ? { uncertainty: { token: 'unknown', since: now } } : {}) });
+    if (mode === 'taken-over') await T.markTakenOver(id, 'user_viewing');
+    const fc = fakeChrome({ windows: [agentWin([tab(id, `https://a.test/${id}`, true)], 1)] });
+    const list = fc.listTabs;
+    fc.listTabs = async () => ({ ...(await list()), frontmost: 'Google Chrome' });
+    let checks = 0;
+    const verifiedOwnHold = { ownerPid: process.pid, tabId: mode === 'wrong-tab' ? 81 : id,
+      windowId: 7, chromePid: mode === 'wrong-pid' ? 43 : 42, cgWindow: mode === 'unknown-cg' ? null : 70,
+      check: async () => {
+        checks++;
+        if (mode === 'lost') throw Object.assign(new Error('hold lost'), { code: 'task_hold_lost' });
+        if (mode === 'late-takeover') await T.markTakenOver(id, 'user_viewing');
+      } };
+    if (mode === 'lost') await assert.rejects(T.closeAgentTab(id, { ...fc, lockDir: LOCK, verifiedOwnHold }), e => e.code === 'task_hold_lost');
+    else {
+      const result = await T.closeAgentTab(id, { ...fc, lockDir: LOCK, verifiedOwnHold });
+      assert.equal(result.ok, mode === 'healthy', mode);
+    }
+    assert.equal(fc.state.closeCalls.length, mode === 'healthy' ? 1 : 0, mode);
+    if (mode === 'healthy') assert.equal(checks, 1);
+    await T.forgetTab(id);
+  }
+  await rm(LOCK, { recursive: true });
+  ok('verified own hold permits its exact visible tab only; wrong identity, foreign ownership, unknown, Stop and late sticky takeover remain closed to writes');
+}
+{
   await T.registerTab(72, 'https://a.test/72', { windowId: 7, now });
   await T.noteAgentDone(72, Date.now());
   const fc = fakeChrome({ windows: [agentWin([tab(72, 'https://a.test/72', true)], 1), userWin([tab(1, 'u', true)], 2)] });
@@ -478,6 +521,76 @@ console.log('close confirmation with a stalled listing (review codex1-12)');
   fc3.listTabs = async () => { const l = await list3(); l.windows[0].tabs = []; return l; };
   assert.deepEqual(await T.closeAndConfirm([75], fc3), { closed: [75], blocked: [] });
   ok('a close that used up the deadline still gets one confirming listing');
+}
+
+console.log('native close dispatch authorization');
+{
+  await T.registerTab(81, 'https://a.test/81', { windowId: 7, now });
+  const fc = fakeChrome({ windows: [agentWin([tab(81, 'https://a.test/81')])] });
+  const r = await T.sweepTabs({ ...fc, nativeSessionAvailable: false, exitingPid: process.pid, now, isAlive: alive, lockDir: LOCK });
+  assert.deepEqual(fc.state.closeCalls, []); assert.deepEqual(r.blocked, []); assert.deepEqual(r.closed, []);
+  assert.equal(r.deferred[0].reason, 'native_session_required');
+  assert.equal((await T.getTab(81)).closeBlocked, false);
+  await T.forgetTab(81);
+  ok('passive sweep without an existing native Session defers without dispatch, reacquisition or a false closeBlocked mark');
+}
+{
+  await T.registerTab(82, 'https://a.test/82', { windowId: 7, now });
+  const fc = fakeChrome({ windows: [agentWin([tab(82, 'https://a.test/82')])] });
+  fc.closeTab = async () => { throw Object.assign(new Error('stopped before dispatch'), { code: 'user_cancelled', inputDelivery: 'not_sent' }); };
+  const r = await T.closeAndConfirm([82], fc);
+  assert.deepEqual(r.closed, []); assert.deepEqual(r.blocked, []); assert.equal(r.refused[0].reason, 'user_cancelled');
+  assert.equal(fc.state.lists, 0, 'no attempted close means no close confirmation reads');
+  assert.equal((await T.getTab(82)).closeBlocked, false);
+  await T.forgetTab(82);
+  ok('explicit not_sent refusal leaves ownership intact and never becomes an attempted or blocked close');
+}
+
+
+console.log('generic close callbacks never authorize held-close settlement');
+for (const receipt of [{ ok: true }, { ok: true, closed: true }, {
+  ok: true, closed: true, leavePrompt: false, stage: 'close_postcheck',
+  inputDelivery: 'sent', epoch: 1, operationId: 'arbitrary-callback',
+  stages: [{ sequence: 1, stage: 'close_tab', entered: true, delivery: 'sent', acknowledged: true }],
+}]) {
+  await T.registerTab(83, 'https://a.test/83', { windowId: 7, now });
+  const fc = fakeChrome({ windows: [agentWin([tab(83, 'https://a.test/83')])], closable: () => false });
+  fc.closeTab = async id => { fc.state.closeCalls.push(id); return receipt; };
+  const result = await T.closeAndConfirm([83], fc);
+  assert.deepEqual(result, { closed: [], blocked: [83] });
+  assert.deepEqual(fc.state.closeCalls, [83]);
+  assert.ok(fc.clock() >= T.CLOSE_CONFIRM_MS && fc.clock() <= T.CLOSE_CONFIRM_MS + 250);
+  assert.equal((await T.getTab(83)).closeBlocked, true);
+  await T.forgetTab(83);
+}
+ok('generic ok/closed/strict-looking callback receipts stay bounded and cannot replace the observer');
+{
+  await T.registerTab(84, 'https://a.test/84', { windowId: 7, now });
+  const fc = fakeChrome({ windows: [agentWin([tab(84, 'https://a.test/84')])], closable: () => false });
+  const result = await T.closeAgentTab(84, { ...fc, lockDir: LOCK });
+  assert.deepEqual(result, { ok: false, reason: 'close_blocked' });
+  assert.deepEqual(fc.state.closeCalls, [84]);
+  assert.equal((await T.getTab(84)).closeBlocked, true);
+  await T.forgetTab(84);
+  ok('generic closeAgentTab with fake closed:true has no private settlement authority');
+}
+
+console.log('sweep transport (C9)');
+{
+  await T.registerTab(91, 'https://a.test/91', { windowId: 7, now });
+  const fc = fakeChrome({ windows: [agentWin([tab(91, 'https://a.test/91-elsewhere')])] });
+  const reads = [];
+  T.__setBridgeForTests({ listTabs: o => { reads.push(o ?? null); return fc.listTabs(); }, closeTab: fc.closeTab, cgevent: async () => ({}) });
+  try {
+    const s = await T.sweepTabs({ now, isAlive: alive, lockDir: LOCK });
+    assert.deepEqual(reads, [{ cold: true }], 'a sweep reads Chrome on the cold path (no warm helper pool)');
+    assert.deepEqual(s.marked, [{ tabId: 91, why: 'url_changed' }]);
+    assert.equal((await T.getTab(91)).takenOver, true);
+    reads.length = 0;
+    assert.equal((await T.closeAgentTab(91, { lockDir: LOCK })).reason, 'taken_over');
+    assert.deepEqual(reads, [null], 'close_tab, a tool call, keeps the warm path');
+  } finally { T.__setBridgeForTests(null); await T.forgetTab(91); }
+  ok('the sweep lists cold with the same takeover decision; close_tab is unchanged');
 }
 
 console.log('legacy registry');

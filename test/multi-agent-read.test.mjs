@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, appendFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -18,12 +19,13 @@ const body = reply => (reply.content || []).filter(x => x.type === 'text').map(x
 async function worker() {
   const idx = await import('../src/index.js');
   const tabs = await import('../src/tabs.js');
-  const { BridgeError } = await import('../src/bridge.js');
+  const bridge = await import('../src/bridge.js');
+  const { BridgeError } = bridge;
   const role = process.argv[3];
   const events = path.join(process.env.CHROME_BRIDGE_FIXTURE, `${role}.events`);
   const event = async name => appendFile(events, `${name}\n`);
   const config = async () => JSON.parse(await readFile(path.join(process.env.CHROME_BRIDGE_FIXTURE, `${role}.config`), 'utf8').catch(() => '{}'));
-  let capturedConfig = null;
+  let capturedConfig = null, observerDisposals = 0;
   const bounds = { left: 100, top: 60, width: 1000, height: 800 };
   const target = (tab = 501) => ({ ok: true, tabId: tab, windowId: 51,
     chromePid: 42, cgWindow: 71, url: `https://fixture.test/${tab}`, title: `Fixture ${tab}`,
@@ -36,14 +38,18 @@ async function worker() {
   const fake = Object.fromEntries(idx.__bridgeKeysForTests().map(name => [name,
     () => { throw new Error(`Unexpected native entry point: ${name}`); }]));
   Object.assign(fake, {
-    pageScript: async (name, vars) => ({ name, vars }),
-    evalInPage: async (script, tab) => {
-      if (script.name === 'block') return { blocked: null, target: target(tab) };
-      if (script.name === 'locate' && script.vars.MODE === 'scroll') return { scroller: null };
+    disposePagePromptObserver: () => { observerDisposals++; return Promise.resolve(); },
+    // Page scripts are one expression returning JSON, as in Chrome; read_page joins block.js and read.js
+    // in one eval (src/index.js gatedReadScript), so the fake page runs the script it is given.
+    pageScript: async (name, vars) => `fakePage(${JSON.stringify(JSON.stringify({ name, vars }))})`,
+    evalInPage: async (src, tab) => JSON.parse(vm.runInNewContext(src, { fakePage: spec => {
+      const script = JSON.parse(spec);
+      if (script.name === 'block') return JSON.stringify({ blocked: null, target: target(tab) });
+      if (script.name === 'locate' && script.vars.MODE === 'scroll') return JSON.stringify({ ...target(tab), scroller: null });
       assert.equal(script.name, 'read');
-      return { target: target(tab), text: `Readable fixture ${tab}\n${'DOM content '.repeat(200)}`,
-        hint: '', count: 1, opaque: 0, visibility: tab === 502 ? 'hidden' : 'visible', outline: [] };
-    },
+      return JSON.stringify({ ok: true, target: target(tab), text: `Readable fixture ${tab}\n${'DOM content '.repeat(200)}`,
+        hint: '', count: 1, opaque: 0, visibility: tab === 502 ? 'hidden' : 'visible', outline: [] });
+    } })),
     chromeInfo: async tab => {
       const options = await config(), base = { ...target(tab), ...options.before };
       return capturedConfig === options.id ? { ...base, ...options.after } : base;
@@ -53,15 +59,19 @@ async function worker() {
         id, url: target(id).url, title: target(id).title, active: id === 501 })) }] }),
     pageDialog: async () => ({ ok: true, open: false }),
     ensureScreenAwake: async () => ({ woke: false, displays: 1, locked: false }),
-    activateChrome: async tab => { await event('activate'); return target(tab); },
+    activateChrome: async (tab, hint, options) => {
+      assert.equal(typeof options?.native, 'function');
+      const receipt = await bridge.activateChrome(tab, hint, options);
+      await event('activate'); return receipt;
+    },
     axInput: async () => ({ ok: true, pid: 42, expectedWindow: 71, frontmost: true, windowMatches: true, nodeFound: true,
       documentToken: 'fixture-document', focusedDocumentToken: 'fixture-document', nativeMenuOpen: true, menuOpen: true,
       ...(await config()).native }),
     axMenuState: async () => ({ ok: true, known: true, menuOpen: true }),
     keepAwake: () => () => {},
     openNavigationObserver: async () => ({ startedAt: Date.now(), untouched: async () => true, close: async () => {} }),
-    captureWindow: async () => {
-      await event('captureWindow');
+    capturePageContent: async () => {
+      await event('capturePageContent');
       const options = await config();
       if (options.captureError) throw new BridgeError(options.captureError, `Fixture capture refused: ${options.captureError}`);
       capturedConfig = options.id;
@@ -73,8 +83,11 @@ async function worker() {
       return { ok: true, width: 1000, height: 800,
         lines: [{ text: 'OCR fixture content', x: 10, y: 10, w: 200, h: 20, conf: 1 }] };
     },
-    snapshotScene: async () => ({ app: 'fixture', appPid: 99, chromeWindow: 51, chromeTab: 501 }),
-    restoreScene: async () => ({ ok: true, appFrontmost: true }),
+    snapshotScene: async () => ({ app: 'fixture', appPid: 99, chromePid: 42, chromeWindow: 51, chromeTab: 501 }),
+    restoreScene: async (scene, options) => {
+      assert.equal(typeof options?.native, 'function');
+      return bridge.restoreScene(scene, options);
+    },
     restoreApp: async () => ({ ok: true, appFrontmost: true }),
     cgevent: async args => {
       if (args[0] === 'idle') return { ok: true, idle: 100, clickIdle: 100, keyIdle: 100, held: [] };
@@ -90,16 +103,55 @@ async function worker() {
     },
     openInputSession: async () => {
       await event('openInputSession');
-      let held = false;
-      const status = () => ({ ok: true, held, takeover: { active: held, aborted: false } });
+      let held = false, epoch = 1, nativePaused = false, revoked = false, bound = null, scene = null;
+      let pointer = { x: 5, y: 5 };
+      const restoreToken = 'f'.repeat(64), operations = new Set();
+      const status = () => ({ ok: true, epoch, held, nativePaused,
+        takeover: { active: held, aborted: revoked } });
+      const healthy = () => { assert.equal(held, true); assert.equal(revoked, false); };
       return {
         get interrupted() { return null; },
         async request(req) {
-          if (req.op === 'hold') { held = true; await event('hold'); }
-          if (req.op === 'warp') return { ...status(), warped: req.to };
+          if (req.op === 'hold') { assert.equal(revoked, false); held = true; await event('hold'); }
+          if (req.op === 'revokeNative') {
+            assert.ok(['pause', 'conversation', 'caller', 'task'].includes(req.reason));
+            if (req.reason === 'pause' && held && !revoked) nativePaused = true;
+            else { revoked = true; held = false; epoch++; }
+            return status();
+          }
+          if (['recordNativeScene', 'bindNativeTarget', 'nativeChrome'].includes(req.op)) {
+            healthy(); assert.equal(req.schema, 1); assert.equal(req.epoch, epoch);
+            if (req.op === 'recordNativeScene') {
+              assert.equal(req.scene.appPid, 99); assert.equal(req.scene.chromePid, 42);
+              assert.equal(req.scene.chromeWindow, 51); assert.equal(req.scene.chromeTab, 501);
+              assert.equal(scene, null); scene = { ...req.scene };
+              return { ...status(), restoreToken };
+            }
+            if (req.op === 'bindNativeTarget') {
+              const expected = target(req.target.tabId);
+              for (const key of ['chromePid', 'windowId', 'tabId', 'cgWindow']) assert.equal(req.target[key], expected[key]);
+              bound = { ...req.target }; return { ...status(), target: bound };
+            }
+            assert.ok(bound); assert.ok(scene);
+            assert.match(req.operationId, /^native-\d+$/); assert.equal(operations.has(req.operationId), false);
+            operations.add(req.operationId);
+            assert.ok(['activate', 'restoreScene'].includes(req.intent.kind));
+            if (req.intent.kind === 'restoreScene') {
+              assert.equal(req.policy, 'restore'); assert.equal(req.restoreToken, restoreToken);
+            } else {
+              assert.equal(nativePaused, false); assert.equal(req.policy, 'normal');
+              assert.equal(req.intent.tabId, bound.tabId); assert.equal(req.intent.windowId, bound.windowId);
+            }
+            return { ...status(), ...target(bound.tabId), operationId: req.operationId, inputDelivery: 'sent',
+              ...(req.intent.kind === 'activate' ? { geometry: { mode: 'fit-current', beforeBounds: { ...bounds },
+                displayId: 1, branch: 'usable', changed: false, possiblyChanged: false } } : {}),
+              stages: [{ stage: req.intent.kind, sent: true }], ...(req.intent.kind === 'restoreScene' ? { appFrontmost: true } : {}) };
+          }
+          if (req.op === 'warp') { healthy(); pointer = { ...req.to }; return { ...status(), verified: true, warped: pointer }; }
+          if (req.op === 'handBack' || req.op === 'begin') healthy();
           if (!['prime', 'hold', 'begin', 'status', 'veil', 'panel', 'handBack'].includes(req.op))
             throw new Error(`Unexpected input operation: ${req.op}`);
-          return { ...status(), pointer: { x: 5, y: 5 } };
+          return { ...status(), pointer, ...(req.op === 'begin' ? { inputMonitor: true } : {}) };
         },
         async close() { held = false; await event('release'); return status(); }
       };
@@ -117,6 +169,8 @@ async function worker() {
     ending = true;
     await idx.taskPlanTool({ done: true }).catch(() => {});
     await transport.close().catch(() => {});
+    assert.equal(observerDisposals, 1, 'actual worker transport close must dispose its observer exactly once');
+    await event('observer-disposed');
     process.exit(0);
   };
   process.stdin.on('end', end);
@@ -161,7 +215,7 @@ async function main() {
     assert.notEqual((await a.call('task_plan', { task: 'Fixture long plan' })).isError, true);
     const held = await a.call('scroll', { tab: 501, direction: 'down' });
     assert.notEqual(held.isError, true, body(held));
-    assert.match(body(held), /整项任务持续接管中/);
+    assert.doesNotMatch(body(held), /整项任务持续接管中/);
     const owner = async () => JSON.parse(await readFile(path.join(env.CHROME_BRIDGE_LOCK, 'owner.json'), 'utf8'));
     assert.equal((await owner()).pid, a.transport.pid);
 
@@ -181,11 +235,12 @@ async function main() {
       assert.equal(await events('B'), '');
       assert.equal((await owner()).pid, a.transport.pid);
     });
-    await check('B OCR fallback captures the visible window without the input lease', async () => {
+    await check('B over-budget DOM remains available without capture or the input lease', async () => {
       const out = await b.call('read_page', { tab: 501, budget: 200 });
       assert.notEqual(out.isError, true, body(out));
-      assert.match(body(out), /OCR fixture content/);
-      assert.equal(await events('B'), 'captureWindow\nocr\ndispose\n');
+      assert.match(body(out), /Readable fixture 501/);
+      assert.match(body(out), /More: read_page\(\)/);
+      assert.equal(await events('B'), '');
       assert.equal((await owner()).pid, a.transport.pid);
     });
     await check('B hidden-page fallback stays DOM-only and does not activate', async () => {
@@ -193,32 +248,32 @@ async function main() {
       const out = await b.call('read_page', { tab: 502, budget: 200 });
       assert.notEqual(out.isError, true, body(out));
       assert.match(body(out), /Readable fixture 502/);
-      assert.match(body(out), /读网页不会接管键鼠去截图/);
+      assert.match(body(out), /More: read_page\(\)/);
       assert.equal(await events('B'), before);
     });
-    await check('automatic OCR keeps the original DOM when its target hides or navigates before capture', async () => {
+    await check('DOM continuation needs no screenshot identity when the target hides or navigates', async () => {
       for (const beforeTarget of [{ tabActive: false }, { url: 'https://fixture.test/changed' }]) {
         await configureB({ before: beforeTarget });
         const before = await events('B');
         const out = await b.call('read_page', { tab: 501, budget: 200 });
         assert.notEqual(out.isError, true, body(out));
-        assert.match(body(out), /Readable fixture 501/);
+        assert.match(body(out), /DOM content|unchanged/);
         assert.doesNotMatch(body(out), /OCR fixture content/);
         assert.equal(out.content.some(x => x.type === 'image'), false);
         assert.equal(await events('B'), before);
       }
       await configureB({});
     });
-    await check('automatic OCR discards a capture whose tab/window identity changed and returns only DOM', async () => {
+    await check('DOM continuation ignores screenshot-only window mutations without capture', async () => {
       for (const after of [{ tabActive: false }, { windowId: 52 }]) {
         await configureB({ after });
         const before = await events('B');
         const out = await b.call('read_page', { tab: 501, budget: 200 });
         assert.notEqual(out.isError, true, body(out));
-        assert.match(body(out), /Readable fixture 501/);
+        assert.match(body(out), /DOM content|unchanged/);
         assert.doesNotMatch(body(out), /OCR fixture content/);
         assert.equal(out.content.some(x => x.type === 'image'), false);
-        assert.equal((await events('B')).slice(before.length), 'captureWindow\ndispose\n');
+        assert.equal(await events('B'), before);
         assert.equal((await owner()).pid, a.transport.pid);
       }
       await configureB({});
@@ -228,8 +283,9 @@ async function main() {
       const out = await b.call('screenshot', { tab: 501, image: true });
       assert.notEqual(out.isError, true, body(out));
       assert.ok(Date.now() - t0 < 1000, 'a fake capture must finish before the input-lock deadline');
-      assert.match(body(out), /OCR fixture content/);
-      assert.match(body(out), /只读截图/);
+      assert.doesNotMatch(body(out), /OCR fixture content/);
+      assert.match(body(out), /网页区域/);
+      assert.doesNotMatch(await events('B'), /ocr/);
       assert.ok(out.content.some(x => x.type === 'image'));
       assert.doesNotMatch(await events('B'), /activate|openInputSession|hold|captureRegion/);
       assert.equal(await events('A'), before, 'a read must not touch or close the other agent helper');
@@ -290,7 +346,7 @@ async function main() {
         assert.equal(out.isError, true, body(out));
         assert.match(body(out), /截图期间目标标签或窗口已经变化/);
         assert.equal(out.content.some(x => x.type === 'image'), false);
-        assert.equal((await events('B')).slice(before.length), 'captureWindow\ndispose\n');
+        assert.equal((await events('B')).slice(before.length), 'capturePageContent\ndispose\n');
         // Clear the fixture mutation, leaving production's screenshot cache untouched.
         await configureB({});
         const click = await b.call('click_at', { tab: 501, text_id: 't1' });
@@ -306,7 +362,7 @@ async function main() {
         assert.equal(out.isError, true, body(out));
         assert.match(body(out), new RegExp(code));
         assert.equal(out.content.some(x => x.type === 'image'), false);
-        assert.equal((await events('B')).slice(before.length), 'captureWindow\n');
+        assert.equal((await events('B')).slice(before.length), 'capturePageContent\n');
       }
     });
     await check('locked/asleep/unknown screen refuses without waking or taking input', async () => {
@@ -326,7 +382,7 @@ async function main() {
       assert.equal(out.isError, true, body(out));
       assert.match(body(out), /屏幕锁着/);
       assert.equal(out.content.some(x => x.type === 'image'), false);
-      assert.equal((await events('B')).slice(before.length), 'captureWindow\ndispose\n');
+      assert.equal((await events('B')).slice(before.length), 'capturePageContent\ndispose\n');
     });
     await check('missing, occluded or mismatched native evidence grants no Escape recovery authority', async () => {
       for (const native of [
@@ -360,6 +416,11 @@ async function main() {
       assert.notEqual(out.isError, true, body(out));
       assert.match(await events('B'), /openInputSession/);
       assert.match(await events('B'), /hold/);
+    });
+    await check('both actual MCP transport closes dispose their observers exactly once', async () => {
+      await Promise.all([a.client.close(), b.client.close()]);
+      for (const role of ['A', 'B']) assert.equal((await events(role)).split('\n').filter(x => x === 'observer-disposed').length, 1, role);
+      for (const worker of [a, b]) assert.doesNotMatch(worker.stderr(), /Unexpected native entry point|AssertionError/);
     });
     console.log(`multi-agent-read: ${passed} passed (two MCP processes; no real Chrome/native input)`);
   } finally {

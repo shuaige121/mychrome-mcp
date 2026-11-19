@@ -17,7 +17,9 @@ function declaration(source, kind, name) {
   return source.slice(start, end + 2);
 }
 const declarations = [
-  'struct ConversationEntry: Identifiable { let id: String, text: String }',
+  ui.split('\n').find(line => line.startsWith('struct ConversationEntry: Identifiable')),
+  menu.split('\n').find(line => line.startsWith('func promptExactKeys(')),
+  declaration(menu, 'struct', 'PagePromptDeliveryStatus'),
   declaration(ui, 'struct', 'ConversationState'),
   declaration(ui, 'struct', 'ConversationPresentation'),
   ...['Check', 'SetupChecks', 'ServerInfo', 'AgentTask'].map(name => declaration(menu, 'struct', name)),
@@ -35,6 +37,8 @@ after(() => {
   rmdirSync(tmp);
 });
 writeFileSync(swift, `import Foundation
+func L(_ zh: String, _ en: String) -> String { zh }   // I18N1: the production two-language pair (src/onboarding-ui.swift), Chinese here
+func uiWho(_ who: String?) -> String { who ?? "AI 助手" }   // I18N1: src/menubar.swift uiWho, Chinese here
 ${declarations}
 let SERVER_DIR = CommandLine.arguments[2]
 var syntheticPresence: [String: Any] = [:]
@@ -87,14 +91,16 @@ test('a verified conversation title wins over task, client and working-directory
   assert.equal(result.client, 'Codex');
 });
 
-test('bound but disconnected, connecting and unsupported sessions never claim a live association', () => {
+test('bound but disconnected, connecting and source-less sessions never claim a live association', () => {
   const rows = inspect(
     { instance: 'gui-a', provider: 'Codex', thread: 'a', status: 'disconnected' },
     { instance: 'gui-a', provider: 'Codex', thread: 'a', status: 'connecting' },
     { instance: 'gui-a', provider: 'Claude', status: 'unavailable' },
     { instance: 'gui-a', provider: 'Codex', thread: 'a' },
+    { instance: 'gui-a', provider: 'Cursor', status: 'unavailable' },
   );
-  assert.deepEqual(rows.map(row => row.presentation.kind), ['disconnected', 'connecting', 'unsupported', 'unavailable']);
+  assert.deepEqual(rows.map(row => row.presentation.kind), ['disconnected', 'connecting', 'transcript_unavailable', 'unavailable', 'browser_only']);
+  assert.deepEqual(rows.slice(2).map(row => row.presentation.label), ['对话记录不可用', '实时进展不可用', '仅浏览器操作']);
   for (const row of rows) {
     assert.equal(row.presentation.tone, 'gray');
     assert.doesNotMatch(row.presentation.label, /已关联|已连接|完成|成功/);
@@ -115,14 +121,14 @@ test('only same-thread metadata or an actual busy operation marks a conversation
   assert.deepEqual(rows.map(row => row.presentation.tone), ['blue', 'blue', 'gray', 'gray', 'gray']);
 });
 
-test('managed Codex and Claude use their actual conversation state while external Claude stays unsupported', () => {
+test('managed Codex and Claude, and an external Claude Code mirror, use their actual conversation state', () => {
   const base = { instance: 'managed-a', thread: 'managed-thread', status: 'connected', managed: true,
     model: 'reported-model', effort: 'high', cwd: '/synthetic/project',
     state: { threadId: 'managed-thread', status: 'connected', threadStatus: 'idle', canSend: true } };
   const rows = inspect({ ...base, provider: 'Codex' }, { ...base, provider: 'Claude' },
     { ...base, provider: 'Claude', managed: false },
     { ...base, provider: 'Claude', model: null, effort: null, cwd: null });
-  assert.deepEqual(rows.map(r => r.presentation.kind), ['idle', 'idle', 'unsupported', 'idle']);
+  assert.deepEqual(rows.map(r => r.presentation.kind), ['idle', 'idle', 'idle', 'idle']);
   assert.deepEqual(rows.slice(0, 2).map(r => [r.managed, r.model, r.effort, r.cwd]),
     Array(2).fill([true, 'reported-model', 'high', '/synthetic/project']));
   assert.equal(rows[3].model, null); assert.equal(rows[3].effort, null); assert.equal(rows[3].cwd, null);
@@ -249,7 +255,8 @@ test('instance, thread and binding changes remain separate even when the PID and
 
 test('only a connected live feed claims to be connected; unavailable and unknown states do not', () => {
   const reasons = ['host_unavailable', 'thread_inactive', 'host_rejected', 'invalid_host_message',
-    'conversation_changed', 'unsupported_client', 'unbound_thread', 'upgrade_required', 'future_reason'];
+    'conversation_changed', 'browser_only', 'transcript_unavailable', 'binding_ambiguous', 'session_changed', 'feed_off',
+    'unbound_thread', 'upgrade_required', 'future_reason'];
   const results = inspect(...reasons.map(reason => ({ state: { status: 'unavailable', reason } })),
     {}, { state: { status: 'disconnected' } }, { state: { status: 'connecting' } });
   for (const result of results) assert.doesNotMatch(result.feedPlaceholder, /已连接/);

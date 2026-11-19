@@ -21,7 +21,7 @@
  * CHROME_BRIDGE_HOTSWAP=0: no relay (the server runs in this process, as before).
  */
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
@@ -32,16 +32,20 @@ const PROBE_MS = 20_000, ASK_MS = 5_000, INIT_MS = 20_000, EXIT_MS = 5_000;
 const CRASHES_MAX = 3, CRASH_WINDOW_MS = 60_000;
 
 /** src/*.js as src/settings.js sourceFingerprint hashes them (the panel's 「需要重启」 compares the same). */
+function sourceInputs(srcDir) {
+  return [...readdirSync(srcDir).filter(n => n.endsWith('.js')),
+    ...['page-prompt-templates.json', 'page/prompt-observation.js'].filter(n => { try { return statSync(path.join(srcDir, n)).isFile(); } catch { return false; } })].sort();
+}
 export function srcFingerprint(srcDir) {
   const h = createHash('sha256');
-  for (const n of readdirSync(srcDir).filter(n => n.endsWith('.js')).sort()) {
+  for (const n of sourceInputs(srcDir)) {
     h.update(n); h.update('\0'); h.update(readFileSync(path.join(srcDir, n))); h.update('\0');
   }
   return h.digest('hex').slice(0, 16);
 }
 /** Cheap look first: names, sizes and times. */
 function srcStamp(srcDir) {
-  return readdirSync(srcDir).filter(n => n.endsWith('.js')).sort()
+  return sourceInputs(srcDir)
     .map(n => { const s = statSync(path.join(srcDir, n)); return `${n}:${s.size}:${s.mtimeMs}`; }).join('|');
 }
 
@@ -60,6 +64,10 @@ function lineReader(fn) {
 }
 const parse = (line) => { try { const m = JSON.parse(line); return m && typeof m === 'object' ? m : null; } catch { return null; } };
 const idKey = (id) => JSON.stringify(id);
+export function advertisesPageChannel(capabilities) {
+  const channel = capabilities?.experimental?.['claude/channel'];
+  return channel !== null && typeof channel === 'object' && !Array.isArray(channel) && Object.keys(channel).length === 0;
+}
 
 export async function runLauncher({ script, srcDir }) {
   const log = (s) => { try { process.stderr.write(`mychrome-mcp launcher: ${s}\n`); } catch {} };
@@ -71,6 +79,12 @@ export async function runLauncher({ script, srcDir }) {
   const inflight = new Map();   // client requests the worker has and has not answered: id → since
   let queue = [];               // client messages held while no worker takes them: { line, key }
   let initReq = null, initialized = false;
+  const connectionId = randomUUID();
+  let firstServerInit = null; // Only the response actually forwarded to this client can pin Channel.
+  const clientInit = () => ({ t: 'p44ClientInit', version: 1, connectionId,
+    clientName: String(initReq?.params?.clientInfo?.name || '').slice(0, 128),
+    protocolVersion: firstServerInit?.protocolVersion ?? null,
+    forwarded: firstServerInit !== null, channelAdvertised: firstServerInit?.channelAdvertised === true });
   let lastTraffic = Date.now();
   let pending = null, badHash = null, probedOk = null, looking = false, seq = 0;
   let carryOver = null;         // what the worker before handed over, kept until a new one has started with it
@@ -104,6 +118,7 @@ export async function runLauncher({ script, srcDir }) {
         // to the next worker, which its end starts (Codex r15 r3 A2).
         else if (m.ok && w === worker) carryOver = m.carry || null;
       }
+      else if (m && m.t === 'p44ClientInit?') { try { child.send(clientInit()); } catch {} }
       else if (m && m.t === 'carry?') { try { child.send({ t: 'carry', carry }); } catch {} }   // it asks once it listens
     });
     let ended = false;
@@ -137,6 +152,12 @@ export async function runLauncher({ script, srcDir }) {
     }
     lastTraffic = Date.now();
     toClient(line);
+    // Internal replacement initialize replies returned above; they never reach this pin.
+    if (firstServerInit === null && initReq && m?.id === initReq.id && m.result?.capabilities) {
+      firstServerInit = { protocolVersion: m.result.protocolVersion ?? null,
+        channelAdvertised: advertisesPageChannel(m.result.capabilities) };
+      try { w.child.send(clientInit()); } catch {}
+    }
   }
 
   function toWorker(line, key) {
@@ -297,7 +318,7 @@ export async function runLauncher({ script, srcDir }) {
     const m = parse(line);
     let key = null;
     if (m && typeof m.method === 'string') {
-      if (m.method === 'initialize' && m.id != null) initReq = m;
+      if (m.method === 'initialize' && m.id != null && !initReq) initReq = m;
       if (m.method === 'notifications/initialized') initialized = true;
       if (m.id != null) key = idKey(m.id);
       // A cancelled request gets no answer (the SDK drops it): not under way any more; one still held never goes.

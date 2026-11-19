@@ -19,8 +19,8 @@ try {
   await fs.writeFile(path.join(root, 'README.md'), '# Fixture\n[License](LICENSE)\n');
   await fs.writeFile(path.join(root, 'private.log'), 'private fixture, must not be exported\n');
   const standard = ['LICENSE', 'README.md', manifestName];
-  const manifest = async files => {
-    await fs.writeFile(path.join(root, manifestName), JSON.stringify({ version: 1, files }));
+  const manifest = async (files, metadata = {}) => {
+    await fs.writeFile(path.join(root, manifestName), JSON.stringify({ version: 1, ...metadata, files }));
     execFileSync('git', ['add', '--', manifestName], { cwd: root });
   };
   const stage = () => execFileSync('git', ['add', '--', 'LICENSE', 'README.md', manifestName], { cwd: root });
@@ -262,6 +262,16 @@ try {
       execFileSync('git', ['add', '--', name], { cwd: root });
       await assert.rejects(inspectRelease(root), /Symlink is not allowed/);
     }
+  });
+  await run('exports reviewed site-artifact version separately from the local package candidate', async () => {
+    await fs.writeFile(path.join(root, 'README.md'), '# Fixture\n');
+    await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.15.0' }));
+    execFileSync('git', ['add', '--', 'README.md', 'package.json'], { cwd: root });
+    await manifest([...standard, 'package.json'], { siteArtifactVersion: '0.14.0' });
+    const inspected = await inspectRelease(root);
+    const output = await exportRelease(inspected, path.join(temp, 'versioned-site-release'));
+    assert.equal(JSON.parse(await fs.readFile(path.join(output, manifestName), 'utf8')).siteArtifactVersion, '0.14.0');
+    assert.equal(JSON.parse(await fs.readFile(path.join(output, 'package.json'), 'utf8')).version, '0.15.0');
   });
   console.log(`release-export: ${passed} passed`);
 } finally {

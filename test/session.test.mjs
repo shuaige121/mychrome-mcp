@@ -457,7 +457,7 @@ await check('takeover: input while held is dropped, not an interruption; the cli
   assert.deepEqual([e.takeover.swallowedKeys, e.takeover.active, e.takeover.releasedBy], [1, false, 'end']);
 });
 
-await check('takeover: Esc twice gives control back and aborts the next input op; putting things back stays allowed', async () => {
+await check('takeover: Esc twice gives control back and denies both input and restoration', async () => {
   const s = await open('tk2', { takeover: true });
   await s.send({ op: '_inject', kind: 'esc' });
   const k = await s.send({ op: '_inject', kind: 'esc' });
@@ -470,7 +470,9 @@ await check('takeover: Esc twice gives control back and aborts the next input op
   assert.equal(r.error, 'aborted');
   assert.equal(count(r.posted, 'leftMouseDown'), 0);
   const w = await s.send({ op: 'warp', to: { x: 5, y: 5 } });
-  assert.equal(w.ok, true, JSON.stringify(w));
+  assert.equal(w.ok, false, JSON.stringify(w));
+  assert.equal(w.error, 'aborted');
+  assert.deepEqual(w.posted, []);
   // Released: the user's input is attributed again.
   const m = await s.send({ op: '_inject', kind: 'move' });
   assert.equal(m.interrupted.kind, 'move');
@@ -771,6 +773,72 @@ await check('dry run: prime and a hold with a veil create no window at all', asy
   child.stdin.write('{"op":"end"}\n');
   await timed(new Promise(res => child.on('exit', res)), 'exit');
   await s.end();
+});
+
+async function probeVeil(s, observed, request, held, phase, aborted = null) {
+  const r = await s.send(request);
+  observed.push({ phase, ownHeld: Object.hasOwn(r, 'held'), held: r.held,
+    takeover: r.takeover, posted: r.posted });
+  assert.equal(r.ok, true, `${phase}: ${JSON.stringify(r)}`);
+  assert.equal(r.held, held, `${phase}: veil must explicitly return held === ${held}; reply=${JSON.stringify(r)}`);
+  assert.equal(Object.hasOwn(r, 'held'), true, `${phase}: held must be an own reply field`);
+  assert.equal(typeof r.held, 'boolean', `${phase}: held must be a Bool`);
+  assert.deepEqual(r.posted, [], `${phase}: veil must post no input`);
+  if (aborted === null) assert.equal(r.takeover, undefined, `${phase}: veil must not acquire takeover`);
+  else assert.deepEqual([r.takeover.active, r.takeover.aborted], [held, aborted], phase);
+  if (Object.hasOwn(request, 'hidden')) assert.equal(r.hidden, request.hidden, phase);
+  return r;
+}
+async function endVeilProtocol(s, observed) {
+  // A red assertion still uses ordinary protocol shutdown before check() can
+  // reach its preexisting emergency fallback.
+  const end = await s.end(), exit = await s.exited;
+  assert.equal(end.reason, 'end');
+  assert.deepEqual(end.posted, []);
+  assert.deepEqual(exit, { code: 0, sig: null });
+  console.log(`  bare veil protocol evidence: ${JSON.stringify({ observed, endReason: end.reason, exit })}`);
+}
+await check('bare veil in a healthy held session explicitly returns held true without posting input', async () => {
+  const s = await open('bare-veil-held', {}, { begin: false }), observed = [];
+  try {
+    const held = await s.send({ op: 'hold' });
+    assert.deepEqual([held.ok, held.takeover.active, held.takeover.aborted], [true, true, false]);
+    assert.deepEqual(held.posted, []);
+    const begun = await s.send({ op: 'begin', chromePid: CHROME, window: WIN, windowBounds: BOUNDS, takeover: true });
+    assert.deepEqual([begun.ok, begun.dryRun, begun.takeover.active, begun.takeover.aborted], [true, true, true, false]);
+    await probeVeil(s, observed, { op: 'veil', veil: { label: 'Same held session' } }, true, 'dictionary-held', false);
+    await probeVeil(s, observed, { op: 'veil', hidden: false }, true, 'hidden-held', false);
+    // This standalone healthy-path oracle must run even when the prior binary
+    // would also fail the separate not-held check below.
+    await probeVeil(s, observed, { op: 'veil' }, true, 'bare-held', false);
+    await probeVeil(s, observed, { op: 'veil', veil: 'not-a-dictionary' }, true, 'non-dictionary-held', false);
+    assert.equal(s.replies.filter(r => r.op === 'hold').length, 1);
+  } finally { await endVeilProtocol(s, observed); }
+});
+await check('bare veil reports held false before hold and after Esc release without reacquiring', async () => {
+  const s = await open('bare-veil-unheld', {}, { begin: false }), observed = [];
+  try {
+    await probeVeil(s, observed, { op: 'veil' }, false, 'bare-before-hold');
+    await probeVeil(s, observed, { op: 'veil', veil: null }, false, 'null-before-hold');
+    await probeVeil(s, observed, { op: 'veil', veil: { label: 'Dry protocol fixture' } }, false, 'dictionary-before-hold');
+    await probeVeil(s, observed, { op: 'veil', hidden: true }, false, 'hidden-before-hold');
+    const held = await s.send({ op: 'hold' });
+    assert.deepEqual([held.ok, held.takeover.active, held.takeover.aborted], [true, true, false]);
+    assert.deepEqual(held.posted, []);
+    await s.send({ op: '_inject', kind: 'esc' });
+    const secondEsc = await s.send({ op: '_inject', kind: 'esc' });
+    assert.deepEqual([secondEsc.takeover.active, secondEsc.takeover.aborted], [true, true]);
+    const released = await s.send({ op: '_inject', kind: 'escUp' });
+    assert.deepEqual([released.takeover.active, released.takeover.aborted, released.takeover.releasedBy], [false, true, 'esc']);
+    assert.deepEqual(released.posted, []);
+    for (const [request, phase] of [[{ op: 'veil' }, 'bare-after-esc'],
+      [{ op: 'veil', veil: {} }, 'dictionary-after-esc'], [{ op: 'veil', hidden: true }, 'hidden-after-esc'],
+      [{ op: 'veil' }, 'bare-after-esc-again']]) {
+      const r = await probeVeil(s, observed, request, false, phase, true);
+      assert.equal(r.takeover.releasedBy, 'esc', phase);
+    }
+    assert.equal(s.replies.filter(r => r.op === 'hold').length, 1, 'veil never sends another hold');
+  } finally { await endVeilProtocol(s, observed); }
 });
 
 if (failures.length) { console.log(`session tests FAILED: ${failures.length}`); process.exit(1); }

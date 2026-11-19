@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { redactUrl, redactText, redactToolResult } from '../src/privacy.js';
 
 let passed = 0;
@@ -105,11 +106,11 @@ function productionFunction(name) {
 await check('the actual callTool boundary sanitizes every result branch and outer errors', async () => {
   let next;
   const ctx = vm.createContext({
-    CALL: { run: (_state, fn) => fn() },
+    CALL: new AsyncLocalStorage(),
     callToolRun: async () => { if (next instanceof Error) throw next; return next; },
     redactText, redactToolResult,
   });
-  vm.runInContext(productionFunction('callTool'), ctx);
+  vm.runInContext(['progressFor', 'callTool'].map(productionFunction).join('\n'), ctx);
   for (const name of ['list_tabs', 'open_tab', 'read_page', 'click', 'type_text', 'scroll', 'select_option',
     'task_plan', 'answer_dialog', 'wait_for_user', 'wake_screen', 'click_at', 'press_key', 'hover', 'screenshot']) {
     const image = { type: 'image', data: 'untouched', mimeType: 'image/png' };
@@ -117,11 +118,15 @@ await check('the actual callTool boundary sanitizes every result branch and oute
     const out = await ctx.callTool({ params: { name, arguments: {} } }, {});
     assert.ok(!JSON.stringify(out).includes('onlyForTest'), name);
     assert.strictEqual(out.content[0], image);
+    if (next.isError) assert.deepEqual(JSON.parse(JSON.stringify(out.structuredContent.error)),
+      { code: 'unavailable', stage: 'unobserved', inputDelivery: 'unknown' });
   }
   next = new Error('Failure https://example.test/?access_token=onlyForTest');
   const out = await ctx.callTool({ params: { name: 'read_page' } }, {});
   assert.equal(out.isError, true);
   assert.ok(!JSON.stringify(out).includes('onlyForTest'));
+  assert.deepEqual(JSON.parse(JSON.stringify(out.structuredContent.error)),
+    { code: 'unavailable', stage: 'unobserved', inputDelivery: 'unknown' });
 });
 
 await check('targetLine redacts before clipping and leaves original navigation state intact', () => {

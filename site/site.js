@@ -20,3 +20,20 @@ for (const button of document.querySelectorAll("[data-copy]")) {
     }
   });
 }
+
+// Animated media gets a pause control. With reduced motion the still frame is shown instead.
+const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+for (const figure of document.querySelectorAll("[data-motion]")) {
+  const image = figure.querySelector("img[data-still]");
+  const toggle = figure.querySelector(".motion-toggle");
+  if (!image || !toggle || reducedMotion) continue;
+  const moving = image.getAttribute("src");
+  const chinese = document.documentElement.lang === "zh-CN";
+  const labels = chinese ? ["暂停动画", "播放动画"] : ["Pause animation", "Play animation"];
+  toggle.hidden = false;
+  toggle.addEventListener("click", () => {
+    const paused = image.getAttribute("src") !== moving;
+    image.setAttribute("src", paused ? moving : image.dataset.still);
+    toggle.textContent = labels[paused ? 0 : 1];
+  });
+}

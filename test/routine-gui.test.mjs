@@ -53,13 +53,15 @@ function declaration(kind, name) {
   throw Error(`Incomplete production declaration: ${name}`);
 }
 const declarations = [
-  ...['routineCount', 'routineActionName', 'routineErrorMessage', 'routineRange', 'routineTabLabel', 'routineSuccessor', 'routineRequestFits', 'routineStopHint'].map(n => declaration('func', n)),
+  ...['routineCount', 'routineActionName', 'routineErrorMessage', 'routineRange', 'routineTabLabel', 'routineSuccessor', 'routineRequestFits', 'routineStopHint', 'routineRunMessage'].map(n => declaration('func', n)),
   ...['RoutineEvent', 'SavedRoutine', 'RoutineCandidate', 'RoutineSnapshotState', 'RoutineRunState'].map(n => declaration('struct', n)),
   declaration('final class', 'RoutineModel'),
   declaration('struct', 'RoutinePolling'),
 ].join('\n');
 const swift = path.join(tmp, 'main.swift'), binary = path.join(tmp, 'probe');
 writeFileSync(swift, `import Foundation
+func L(_ zh: String, _ en: String) -> String { zh }   // I18N1: the production two-language pair (src/onboarding-ui.swift), Chinese here
+func uiEnglish() -> Bool { false }   // I18N1: src/onboarding-ui.swift, Chinese here
 import Combine
 import SwiftUI
 import AppKit

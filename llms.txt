@@ -1,43 +1,34 @@
 # MyChrome
 
-> Keep browsing. Bring in AI when you need a hand. MyChrome lets an assistant work in the user's existing Google Chrome, hand a step back when it needs the user, and continue the same task after the user explicitly says to resume. It is a local MCP server and native macOS app with real mouse and keyboard input, adjustable pace and optional personal habit sampling.
+> MyChrome is a local MCP server with a native macOS app. It lets Codex, Claude Code and other local stdio MCP clients work in the Google Chrome you already use, with your existing tabs, signed-in accounts and real mouse and keyboard.
 
-## Product and setup
+## Pages and source
 
-- [Product website](https://shuaige121.github.io/mychrome-mcp/): same-page assistance, user handoff and personal input pace.
-- [Getting started](https://shuaige121.github.io/mychrome-mcp/getting-started.html): source installation, permissions, client connection and continuing an existing task.
-- [FAQ](https://shuaige121.github.io/mychrome-mcp/faq.html): data handling, clients, controls and website limits.
-- [中文网站](https://shuaige121.github.io/mychrome-mcp/zh/): 中文介绍与安装入口。
-- [Source](https://github.com/shuaige121/mychrome-mcp): MIT-licensed source and release notes.
+- [Product website](https://shuaige121.github.io/mychrome-mcp/)
+- [Source installation and permissions](https://shuaige121.github.io/mychrome-mcp/getting-started.html)
+- [MyChrome FAQ](https://shuaige121.github.io/mychrome-mcp/faq.html)
+- [Chinese website](https://shuaige121.github.io/mychrome-mcp/zh/)
+- [Chinese setup guide](https://shuaige121.github.io/mychrome-mcp/zh/getting-started.html)
+- [Chinese FAQ](https://shuaige121.github.io/mychrome-mcp/zh/faq.html)
+- [mychrome-mcp source repository, MIT License](https://github.com/shuaige121/mychrome-mcp)
 
-## Detailed guides
+## When to use MyChrome vs. other browser tools
 
-- [AI agent guide](https://github.com/shuaige121/mychrome-mcp/blob/main/docs/ai-guide.md): exact tools, tab selection, user handoff and result verification.
-- [Website routines](https://github.com/shuaige121/mychrome-mcp/blob/main/docs/routines.md): recording, saved sequences, fresh parameters and replay limits.
-- [Conversation center](https://github.com/shuaige121/mychrome-mcp/blob/main/docs/conversation-center.md): App-created Codex and Claude Code conversations, plus supported external Codex association.
-- [Support](https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md): sanitized bug reports.
-- [Security](https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md): private vulnerability reporting.
+Use an API or web fetch first for public pages; use headless Playwright first for JavaScript pages without a login. Use MyChrome when your own Google Chrome, login or shared page matters.
 
-## Working together on the same page
+## Setup and boundaries
 
-- The user keeps browsing normally and calls in the assistant when help is needed. Use the page title or URL supplied in the existing conversation; read the actual page and identify the target and relevant website account before acting.
-- Carry out the authorized steps and verify the visible result. Ask when the target is ambiguous, information is missing or a new decision is required; do not ask again at every click.
-- For a password, verification code or challenge the user can handle, hand the page back. Wait for an explicit instruction to continue, then reread the page and resume the original task.
-- Task examples include organizing the user's LinkedIn page, checking their Facebook notifications or messages, and distributing their finished article to the Facebook, 小红书, Reddit and LinkedIn accounts they specify. These are suggested requests, not verified platform case studies.
+- **Setup:** Apple Silicon, macOS 13+, Google Chrome in /Applications, native arm64 Node.js (24+ recommended; 20.19+ and 22.13+ supported), Git and Xcode Command Line Tools. Install from source with `bash scripts/setup.sh`; use `--instructions` for client connection commands. Setup does not change client configuration or grant permissions. Not published to npm.
+- **Page access:** No extension, remote debugging port or separate browser profile. Page reading uses Chrome’s “Allow JavaScript from Apple Events” setting.
+- **Handoff:** Name the page and authorized outcome in the original conversation. The assistant reads first and checks the result. Passwords and verification codes come back to you; explicitly say “continue”, then the assistant should reread. Continuation follows assistant instructions; MyChrome does not enforce a cross-client continuation gate.
+- **Limits:** At a CAPTCHA or bot check, stop and hand over; do not solve it. On access denial or rate limits, stop and report, without switching tools to get around it. Compatibility depends on the site, account permissions and current page.
+- **Control:** Ordinary physical input is intercepted during takeover. The card shows task, steps, time left and speed. Press Esc twice within 0.8 seconds to stop; another takeover needs a new instruction. Stopping does not undo sent actions. The pause control blocks input from all connections. Physical actions queue; reads can run together.
+- **Pace:** Choose follow-task, key-by-key or paste input and speed from 0.5× to 3×. Optional personal input habit sampling is experimental: a 3-minute sample keeps only local timing statistics. It is not a behavioural clone and does not guarantee site acceptance.
+- **Data:** Screenshots and text recognition run on the Mac. Page content returned through MCP goes to your AI client under its settings; client model charges may apply. Routine metadata recording is on by default and can be disabled; typed and selected values are not replay defaults. Local records may reveal site usage; keep them private.
+- **Language:** In 0.15.0, MyChrome's windows and notifications follow your Mac's language (English or Chinese), with a Language setting under Settings in the menu bar panel.
 
-## Personal input pace
+## New in 0.15.0
 
-- Choose task-selected input, key-by-key typing or paste. Set the pace of typing, mouse movement and scrolling from 0.5× to 3×. Explicit user settings apply to subsequent actions.
-- Optional experimental habit sampling records three minutes of keyboard and mouse rhythm and fits timing statistics for subsequent typing and movement. Users can enable or disable its use, resample or delete it. Insufficient samples retain default parameters.
-- Habit sampling stores rhythm statistics rather than typed text or a screen video. It does not clone the user's complete behavior or guarantee that websites will accept automation.
-
-## Setup, controls and data
-
-- Apple Silicon, macOS 13+, Google Chrome in /Applications, supported Node.js and Xcode Command Line Tools. Node 24+ is recommended; 20.19+ and 22.13+ are also supported.
-- Install with `bash scripts/setup.sh` from a source checkout. This release is not published to npm.
-- Codex and Claude Code support browser tools. Conversations created through the native app support live assistant text and direct replies for both clients. Existing external Codex conversations need a supported integration and associated thread; existing external Claude Code conversations cannot be associated and must continue in their original client.
-- Use **新对话 (New conversation)** to select an installed, logged-in Codex or Claude Code CLI, an available model, supported reasoning effort and a working directory. The model choices come from that CLI. An initial task is optional; the new conversation is separate from existing client conversations.
-- Physical input is serialized. During takeover, ordinary user input is intercepted; double Esc cancels the active agent. Global pause prevents subsequent input. Stop does not undo actions already sent.
-- Website routine recording is on by default. Local metadata may reveal usage context; typed and selected values are not saved as replay defaults. Runs need fresh parameters and an explicit tab, stop on mismatches, and do not prove the broader task succeeded.
-- Page content returned through MCP goes to the AI client and is handled under its settings. Local operation is not a promise that all task data remains on-device.
-- Website compatibility depends on the actual workflow. On a 403, denied access or rate limit, stop and report the restriction; do not retry or switch tools to bypass it. User handoff is not a promise that blocked access can be restored.
+- In 0.15.0, connected terminal Claude Code sessions have a read-only mirror of prompts and reply text from connection time. Thinking and tool activity are excluded. Reply in the terminal; mirror text stays in memory only. Default on; set `CHROME_BRIDGE_CLAUDE_FEED=0` in the MCP server environment and reconnect the MCP client to turn it off.
+- In 0.15.0, MyChrome brings Chrome forward before acting, reports blocked input, returns the image with a text-not-ready note about 8 seconds after slow text recognition starts, and instructs assistants to use the exact open tab you requested. Reconnect to receive new instructions.
+- In 0.15.0, MyChrome’s windows and notifications follow the Mac’s language (English or Chinese), with a Language setting under Settings in the menu bar panel.

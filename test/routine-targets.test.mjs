@@ -53,11 +53,25 @@ test('capture uses static accessible labels and returns descriptor, never the br
     assert.doesNotMatch(JSON.stringify(result), /typed private words|value|coordinates/);
   }));
 
-test('resolve finds a fresh marker after document order changes', () => fixture('<button id="continue">Continue</button>', p => {
-  const captured = p.run({ mode: 'capture', marker: 1 });
+test('resolve retains the same node marker after document order changes', () => fixture('<button id="continue">Continue</button>', p => {
+  const originalMarker = p.marker('#continue');
+  const captured = p.run({ mode: 'capture', marker: originalMarker });
   p.w.document.body.insertAdjacentHTML('afterbegin', '<button>New unrelated action</button>'); p.refresh();
   const result = p.run({ mode: 'resolve', target: captured.descriptor });
-  assert.equal(result.ok, true); assert.equal(result.marker, 2);
+  assert.equal(result.ok, true); assert.equal(result.marker, p.marker('#continue'));
+  assert.equal(result.marker, originalMarker);
+  assert.deepEqual(result.descriptor, captured.descriptor);
+}));
+
+test('resolve gives a replacement node a new marker without reusing the removed node marker', () => fixture('<button id="continue">Continue</button>', p => {
+  const originalMarker = p.marker('#continue');
+  const captured = p.run({ mode: 'capture', marker: originalMarker });
+  const original = p.w.document.getElementById('continue');
+  original.replaceWith(original.cloneNode(true)); p.refresh();
+  assert.equal(p.w.__chromeBridge.markers[originalMarker], undefined);
+  const result = p.run({ mode: 'resolve', target: captured.descriptor });
+  assert.equal(result.ok, true); assert.equal(result.marker, p.marker('#continue'));
+  assert.notEqual(result.marker, originalMarker);
   assert.deepEqual(result.descriptor, captured.descriptor);
 }));
 

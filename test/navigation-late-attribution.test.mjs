@@ -1,10 +1,11 @@
+import { pageEventStubs } from './page-event-test-stubs.mjs';
 // A click's async handler navigates after its initial URL observation ended.
 // Exercise the real report, attribution, and takeover functions with a virtual
 // clock. No Chrome, network, runtime registry, or physical input is touched.
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { runInputAction } from '../src/guard.js';
+import { runInputAction, didClickRegister, normalizeReturnFocus } from '../src/guard.js';
 import { BridgeError } from '../src/bridge.js';
 
 const [indexSource, guardSource, tabsSource] = await Promise.all([
@@ -25,7 +26,7 @@ const observeSource = guardSource.slice(observeStart,
 const initial = 'https://fixture.test/exam';
 const final = 'https://fixture.test/result';
 
-async function scenario({ commitAt = 1800, untouched = true, readAt = 3000,
+async function scenario({ commitAt = 3500, untouched = true, readAt = 4000,
   explicit = true, inputCount = 1, productionAction = false,
   diagnostics = false, beforeAction = () => {}, mutate = () => {} } = {}) {
   let now = 0;
@@ -36,7 +37,7 @@ async function scenario({ commitAt = 1800, untouched = true, readAt = 3000,
   const debug = [];
   const state = {
     paused: false, statusCalls: 0,
-    status: { ok: true, interrupted: null, takeover: {
+    status: { ok: true, epoch: 1, interrupted: null, takeover: {
       active: true, aborted: false, releasedBy: null, abortedBy: null,
       swallowedKeys: 0, swallowedPointer: 0,
     } },
@@ -57,26 +58,30 @@ async function scenario({ commitAt = 1800, untouched = true, readAt = 3000,
     if (state.onStatus) state.onStatus(state.statusCalls);
     return state.status;
   } };
-  const hold = { task: 'Complete reading paper', kept: { session, chromePid: 42, cgWindow: 70 } };
+  const hold = { task: 'Complete reading paper', kept: { returnFocus: { mode: 'origin', source: 'legacy_default' }, session, chromePid: 42, cgWindow: 70 } };
   const prep = { target: live(), chromePid: 42, cgWindow: 70, ownNote: '' };
   const st = { tab: 1, marker: 2, prep, hrefBefore: initial, listBefore: null,
     loc: { hadFocus: false }, origin: { scale: 1 }, what: '[2] Submit',
+    before: { href: initial, texts: ['Submit'], dialogs: [] },
     ack: { seen: true, ms: 0 } };
-  const context = vm.createContext({
-    CALL: { getStore: () => null }, ROUTINES: { beforeInput: async () => {} },
-    Date: { now: () => now }, Math, BridgeError,
+  const context = vm.createContext({ ...pageEventStubs,
+    normalizeReturnFocus, CALL: { getStore: () => null }, ROUTINES: { beforeInput: async () => {}, afterInput: async () => {} },
+    Date: { now: () => now }, Math, BridgeError, Set,
+    clip: (s, n) => String(s || '').slice(0, n), redactUrl: s => s, redactText: s => s,
     process: { env: diagnostics ? { CHROME_BRIDGE_DEBUG_LOG: 'isolated-test-only' } : {} },
     debugLog: value => { debug.push(value); },
     sleep: async ms => { now += ms; },
     S: { get: key => key === 'paused' && state.paused },
+    pausedCheck: () => { if (state.paused) throw new BridgeError('paused_by_user', 'paused'); },
     B: { chromeInfo: async () => live(), pageDialog: async () => null,
+      pageScript: async () => '', evalInPage: async () => ({ href: live().url, texts: ['Submit'], dialogs: [] }),
       axInput: async () => state.focus,
       openNavigationObserver: async () => ({ startedAt: now,
         untouched: async () => untouched, close: async () => {} }) },
     readAfter: async () => ({ href: live().url, activeIsTarget: true,
       activeElement: { tag: 'button', text: 'Submit' } }),
     targetLine: () => '', clickLines: () => [],
-    didClickRegister: () => ({ observed: true, reasons: ['focus'] }),
+    didClickRegister,
     ledgerNavigated() {},
     TASK_HOLD: hold, PLAN: plan, TASK_CANCELLED: null, YIELDING: null, HOLD_ENDING: 0,
     GUI_SERVICE: null,
@@ -94,7 +99,7 @@ async function scenario({ commitAt = 1800, untouched = true, readAt = 3000,
     // checkTakeover normalizes URLs via sameUrl. These URLs are canonical and
     // deliberately differ by path; normalization is not under test here.
     sameUrl: (a, b) => a === b,
-    err: null, out: '', prep,
+    err: null, out: '', prep, focus: { terminal: { terminalInterrupted: false } },
     observer: async obs => {
       report = await context.clickReport(st, obs);
       return report;
@@ -110,6 +115,8 @@ async function scenario({ commitAt = 1800, untouched = true, readAt = 3000,
   vm.runInContext([
     functionSource(indexSource, 'settledUrl'),
     functionSource(indexSource, 'waitForNavigation'),
+    functionSource(indexSource, 'clickObservation'),
+    functionSource(indexSource, 'clickChanges'),
     functionSource(indexSource, 'clickReport'),
     functionSource(indexSource, 'heldNavigationDebug'),
     functionSource(indexSource, 'heldNavigationStatusFacts'),
@@ -117,8 +124,12 @@ async function scenario({ commitAt = 1800, untouched = true, readAt = 3000,
     functionSource(indexSource, 'rememberHeldNavigation'),
     functionSource(indexSource, 'reconcileHeldNavigation'),
     functionSource(indexSource, 'conversationInputCheck'),
+    functionSource(indexSource, 'inputBoundaryCheck'),
     functionSource(indexSource, 'post'),
     functionSource(indexSource, 'postedNothing'),
+    functionSource(indexSource, 'actionReturnFocus'),
+    functionSource(indexSource, 'focusReturnNote'),
+    functionSource(indexSource, 'latchTerminalTaskInterruption'),
     functionSource(indexSource, 'taskRun'),
     functionSource(indexSource, 'inputActionRun'),
     functionSource(tabsSource, 'checkTakeover'),
@@ -180,7 +191,7 @@ assert.equal(user.takenOver, true);
 assert.equal(user.why, 'url_changed');
 
 const late = await scenario();
-assert.equal(late.reportAt, 1500, 'ordinary click wait is not increased');
+assert.equal(late.reportAt, 3000, 'navigation and same-page observation stay bounded');
 assert.equal(late.reportedUrl, null, 'the delayed response still outlives the click report');
 assert.equal(late.ownershipProofCalls, 0, 'guard cannot attribute a URL it has not observed');
 assert.equal(late.expectedUrl, final);
@@ -189,7 +200,7 @@ assert.equal(late.state.statusCalls, 2, 'native hold is checked around fresh tar
 assert.equal(late.pending, false, 'attribution is consumed once');
 
 const production = await scenario({ productionAction: true });
-assert.equal(production.reportAt, 1500);
+assert.equal(production.reportAt, 3000);
 assert.equal(production.reportedUrl, null);
 assert.equal(production.pendingBeforeRead, true, 'deferAck must retain the verified pre-input registry anchor');
 assert.equal(production.expectedUrl, final);

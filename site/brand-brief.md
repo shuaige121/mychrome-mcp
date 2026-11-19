@@ -6,23 +6,23 @@ For people who browse in Chrome as usual and want to bring their AI assistant in
 
 **English:** Keep browsing. Bring in AI when you need a hand.
 
-**中文：** 你的 Chrome，随时多一双手。
+**Chinese:** the Chinese tagline is on the [Chinese homepage](https://shuaige121.github.io/mychrome-mcp/zh/).
 
 The central story is shared work on the same page: the user asks for help, AI carries out the authorized task, a password or verification code goes back to the user, and AI rereads the page and resumes the original task after an explicit instruction to continue. Reading the page is how the assistant finds its place in the task, not the whole product promise.
 
 Personal input habits are a main benefit. Users can choose typing or paste, tune the pace of keyboard, pointer and scrolling actions, and optionally sample their own keyboard and mouse rhythm. Describe habit sampling as an experimental statistical fit used for subsequent input, with use, resample and delete controls. Do not describe a complete behavioral clone or promise freedom from detection, 403 responses or account restrictions.
 
-Use the user's actual kinds of requests: organize their LinkedIn page, check whether anyone is trying to reach them on Facebook, or distribute an already-written article to their specified Facebook, 小红书, Reddit and LinkedIn accounts. Label these as example requests. Name platforms neutrally; do not present the examples as completed cases or verified compatibility.
+Use the user's actual kinds of requests: organize their LinkedIn page, check whether anyone is trying to reach them on Facebook, or distribute an already-written article to their specified Facebook, Xiaohongshu, Reddit and LinkedIn accounts. Label these as example requests. Name platforms neutrally; do not present the examples as completed cases or verified compatibility.
 
 ## Product facts
 
 - Local MCP server and native macOS app; Apple Silicon, macOS 13+, Google Chrome, supported Node.js, Xcode Command Line Tools.
 - Source installation. No npm installation command or hosted service promise.
-- Codex and Claude Code can use browser tools. Conversations created in the App support live assistant text and direct replies for both clients. Existing external Codex conversations require a supported integration and associated thread; existing external Claude Code conversations cannot be associated and continue in their original client.
-- **新对话 (New conversation)** creates a separate conversation using an installed, logged-in local CLI. Users choose an available model, supported reasoning effort and a working directory, with an optional first task. Model choices come from that CLI.
+- Codex and Claude Code can use browser tools. Conversations created in the App support live assistant text and direct replies for both clients. Existing external Codex conversations require a supported integration and associated thread. In 0.15.0, a Claude Code session running in a terminal appears as a read-only live mirror (the user's prompts and Claude's reply text; replies stay in the terminal).
+- **New conversation** creates a separate conversation using an installed, logged-in local CLI. Users choose an available model, supported reasoning effort and a working directory, with an optional first task. Model choices come from that CLI.
 - During takeover there is one shared pointer and keyboard. Double Esc cancels the active agent; global pause prevents new input actions.
 - Input modes include task-selected input, key-by-key typing and paste. Speed settings run from 0.5× to 3× and affect typing, pointer movement and scrolling.
-- Optional experimental **My habits** sampling lasts three minutes and fits rhythm statistics. Insufficient samples retain default parameters. It stores statistics rather than typed text or screen video.
+- Optional experimental **My operation habits** sampling lasts three minutes and fits rhythm statistics. Insufficient samples retain default parameters. It stores statistics rather than typed text or screen video.
 - Passwords, verification codes and normal steps requiring the user are handed back. Resume the original task only after the user explicitly says to continue. Access denial and rate limits require stopping and reporting the actual restriction.
 - Website routine recording is on by default. It stores local action metadata; fresh typed and selected values are supplied for each run. Page or target changes stop replay. Routine completion is not independent proof of a business outcome.
 - No guaranteed website compatibility, task success, time/token savings, search ranking, reviews or usage counts.

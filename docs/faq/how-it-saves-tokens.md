@@ -1,9 +1,9 @@
 # How does MyChrome read pages?
 
-MyChrome can return a page outline and visible text, search for a term, or focus on a section. This gives an assistant a way to inspect the relevant part of a page without always requesting a screenshot or the entire document.
+The first read returns top-level headings. Opening a section returns its own text and the next level of headings; nested content stays folded until requested. Controls appear once, with their click markers.
 
-For larger visible content, the reading path can use on-device Apple Vision text recognition or a screenshot. Those fallbacks require the page to be visible and the appropriate macOS permission. A background or covered page may instead return page content with a note about visibility.
+Repeated reads return changes in opened sections, or `unchanged`. The default 2500-token budget splits DOM feedback across reads instead of switching to a screenshot. A focused query can search folded content, and `full: true` explicitly requests the document. A new caller without the earlier context can use `refresh: true` to start at the top.
 
-There is no fixed token saving: usage depends on the page, request, image handling and AI client. The configured text threshold selects a reading form; it is not a hard cap on every response. Prefer a focused query when you know what information you need, and use screenshots when visual layout matters.
+Only a page without readable DOM content, such as a canvas, needs the screen fallback. Capture requires a visible target and proven webpage bounds; tab and bookmark bars are excluded. Explicit `screenshot(image: true)` skips OCR, while the default screenshot call returns locally recognized text.
 
-See the [AI agent guide](../ai-guide.md) for tool examples.
+Token use still depends on the page, request and AI client. See the [AI agent guide](../ai-guide.md) for tool examples.

@@ -211,7 +211,7 @@ await check('an unlisted later selection does not cancel the last valid associat
   assert.deepEqual(sent, []);
 });
 
-await check('switching clients clears the manual selection and refuses discovery in an unsupported client', async ({
+await check('switching clients clears the manual selection and refuses discovery for a read-only Claude mirror', async ({
   service, call, connected, sent, discoverCount,
 }) => {
   service.bind('thread-a', 'Codex');
@@ -219,7 +219,7 @@ await check('switching clients clears the manual selection and refuses discovery
   await call('bind', { threadId: 'thread-b' });
   service.bind('thread-a', 'Claude');
   const before = discoverCount();
-  assert.equal((await call('discover')).code, 'unsupported_client');
+  assert.equal((await call('discover')).code, 'read_only_mirror');
   assert.equal(discoverCount(), before);
   service.bind('thread-c', 'Codex');
   assert.equal(service.snapshot().threadId, 'thread-c');
@@ -243,7 +243,9 @@ for (const change of ['binding', 'provider', 'provider round trip']) {
     next.resolve(rows);
     const found = await inflight;
     const rebound = await call('bind', { threadId: 'thread-b' });
-    assert.equal(rebound.code, 'conversation_not_listed', 'a stale listing cannot authorize a new association');
+    // CC-LIVE: a Claude connection is a read-only mirror, so its refusal names that; Codex keeps the listing rule.
+    assert.equal(rebound.code, change === 'provider' ? 'read_only_mirror' : 'conversation_not_listed',
+      'a stale listing cannot authorize a new association');
     assert.equal(found.ok, false, 'a listing belongs to the provider and binding that requested it');
     assert.equal(found.code, 'conversation_changed');
     assert.equal(connected.includes('thread-b'), false);

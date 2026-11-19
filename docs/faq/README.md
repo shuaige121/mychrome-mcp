@@ -8,9 +8,13 @@ MyChrome lets you bring your AI assistant into the Chrome page you're already us
 
 ## Which computers and clients work?
 
-Apple Silicon Macs running macOS 13+ with Google Chrome, supported Node.js and Xcode Command Line Tools. Codex and Claude Code support the browser tools; other local stdio MCP clients can use the generated connection paths. Codex and Claude Code conversations created in MyChrome support live text and direct replies in the native window. Existing external Codex conversations require a supported integration and associated thread. Existing external Claude Code conversations cannot be associated; continue them in Claude Code.
+Apple Silicon Macs running macOS 13+ with Google Chrome, supported Node.js and Xcode Command Line Tools. Codex and Claude Code support the browser tools; other local stdio MCP clients can use the generated connection paths. Codex and Claude Code conversations created in MyChrome support live text and direct replies in the native window. Existing external Codex conversations require a supported integration and associated thread. In 0.15.0, a Claude Code session running in your terminal also appears in MyChrome as a read-only live view of your prompts and Claude's replies; you reply in the terminal.
 
-To start a separate conversation in the App, click **新对话 (New conversation)** and choose an installed, logged-in Codex or Claude Code CLI, an available model, supported reasoning effort and a working directory. Model choices come from the selected CLI; the first task is optional. [Conversation center](../conversation-center.md).
+To start a separate conversation in the App, click **New conversation** (top left of the MyChrome window, or ⌘N) and choose an installed, logged-in Codex or Claude Code CLI, an available model, supported reasoning effort and a working directory. Model choices come from the selected CLI; the first task is optional. [Conversation center](../conversation-center.md) (in Chinese).
+
+## Is the app in English?
+
+In 0.15.0, yes: MyChrome's windows, the takeover card and the notifications MyChrome sends you follow your Mac's language (English or Chinese). To choose one yourself, open the menu bar panel, then **Settings** → **Language**, or set `CHROME_BRIDGE_UI_LANG` to `en` or `zh`. The [getting-started guide](../getting-started.md#your-controls) names each control in English and says where it is.
 
 ## Can it use my existing login?
 
@@ -24,15 +28,15 @@ For a password, verification code or challenge you can complete, take over that 
 
 ## Can it use my typing and mouse habits?
 
-You can choose key-by-key input or paste and set the speed of typing, pointer movement and scrolling from 0.5× to 3×. The optional experimental **My habits** feature samples three minutes of your keyboard and mouse rhythm and fits timing statistics for later input. You can enable or disable their use, sample again or delete them. When there are too few samples for a parameter, the default remains in use. [Input settings](../getting-started.md#your-input-pace).
+You can choose key-by-key input or paste and set the speed of typing, pointer movement and scrolling from 0.5× to 3×. The optional experimental **My operation habits** feature samples three minutes of your keyboard and mouse rhythm and fits timing statistics for later input. You can enable or disable their use, sample again or delete them. When there are too few samples for a parameter, the default remains in use. [Input settings](../getting-started.md#your-input-pace).
 
 ## Does it work on every website?
 
-Compatibility depends on the site's controls, permissions and current page state. Task examples involving LinkedIn, Facebook, 小红书 or Reddit describe requests you can make; they are not verified coverage of those platforms. Input timing and habit sampling do not guarantee that a site will accept an action or avoid access checks. [Site access and restrictions](what-happens-at-a-captcha.md).
+Compatibility depends on the site's controls, permissions and current page state. Task examples involving LinkedIn, Facebook, Xiaohongshu or Reddit describe requests you can make; they are not verified coverage of those platforms. Input timing and habit sampling do not guarantee that a site will accept an action or avoid access checks. [Site access and restrictions](what-happens-at-a-captcha.md).
 
 ## How do I stop it?
 
-Press Esc twice quickly, within 0.8 seconds, to cancel the current agent and return keyboard and mouse control. The agent must wait for a new instruction before taking over again. To prevent new input across agents, use Pause AI actions after control is returned. Stopping does not undo actions already sent.
+Press Esc twice quickly, within 0.8 seconds, to cancel the current agent and return keyboard and mouse control. The agent must wait for a new instruction before taking over again. To prevent new input across agents, use Pause AI operations after control is returned. Stopping does not undo actions already sent.
 
 ## Can I use the mouse while it works?
 

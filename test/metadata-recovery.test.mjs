@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import vm from 'node:vm';
-import { BridgeError, humanMessage } from '../src/bridge.js';
+import { BridgeError, humanMessage, sessionError } from '../src/bridge.js';
 
 const source = await fs.readFile(new URL('../src/bridge.js', import.meta.url), 'utf8');
 function productionFunction(name) {
@@ -27,7 +27,7 @@ function harness(replies, { warm = true } = {}) {
     return reply?.raw ?? { stdout: JSON.stringify(reply), stderr: '' };
   };
   const context = vm.createContext({
-    BridgeError, humanMessage, JSON, WARM_ON: warm, CHROMECTL: '/fake/chromectl',
+    BridgeError, humanMessage, sessionError, JSON, WARM_ON: warm, CHROMECTL: '/fake/chromectl',
     path, os: { tmpdir: () => '/fake/tmp' }, crypto: { randomBytes: () => Buffer.from('abcdef') },
     writeFile: async (...args) => { writes.push(args); },
     unlink: async file => { unlinks.push(file); },
@@ -41,7 +41,14 @@ function harness(replies, { warm = true } = {}) {
       return receive('cold', argv);
     },
   });
-  vm.runInContext(['runDriver', 'chromeInfo', 'evalInPage'].map(productionFunction).join('\n'), context);
+  // HI2: the production read-retry gate, with no gate registered (as outside an input call).
+  context.readRetryGate = null;
+  vm.runInContext(['beforeReadRetry', 'nativeWrite', 'driverFailureFacts', 'runDriver', 'chromeInfo', 'evalInPage', 'newWindow'].map(productionFunction).join('\n'), context);
+  context.native = async intent => {
+    calls.push({kind:'native',intent}); const value=replies.shift();
+    if(value instanceof Error) throw value;
+    return value?.raw ? (value.raw.stdout || undefined) : value;
+  };
   return { context, calls, delays, events, writes, unlinks,
     poolCalls: () => poolCalls, remaining: () => replies.length };
 }
@@ -50,6 +57,118 @@ async function check(name, fn) { await fn(); passed++; console.log(`  ok  ${name
 const status = (code, osStatus, stage) => error =>
   error instanceof BridgeError && error.code === code &&
   error.osStatus === osStatus && error.stage === stage;
+
+await check('cold child rejection retains only observed child facts without timeout inference or retry', async () => {
+  for (const facts of [{ code: 7, signal: null, killed: false }, { code: null, signal: 'SIGTERM', killed: true },
+    { code: 'ETIMEDOUT', signal: 'SIGKILL', killed: true }]) {
+    const failure = Object.assign(Error('synthetic-private-message'), facts,
+      { stdout: '', stderr: 'synthetic-private-stderr', path: '/synthetic-private-path', timedOut: true });
+    const h = harness([failure], { warm: false });
+    await assert.rejects(h.context.chromeInfo(7), error => {
+      assert.equal(error.code, 'chromectl_failed');
+      assert.equal(error.driverCommand, 'info');
+      assert.equal(error.exitCode, Number.isSafeInteger(facts.code) ? facts.code : null);
+      assert.equal(error.signal, facts.signal); assert.equal(error.killed, facts.killed); assert.equal(error.timedOut, null);
+      assert.equal(Object.hasOwn(error, 'stderr'), false); assert.equal(Object.hasOwn(error, 'path'), false);
+      return true;
+    });
+    assert.deepEqual(h.calls, [{ kind: 'cold', argv: ['info', '--tab', '7'] }]);
+  }
+});
+await check('warm or empty-output failures stay unattributed while existing cold fallback uses its own facts', async () => {
+  const failure = () => Object.assign(Error('synthetic failure'), { code: 9, signal: 'SIGTERM', killed: true, stdout: '' });
+  for (const [replies, warm, expected] of [[[failure()], true, null], [[{ raw: { stdout: '', stderr: '' } }], false, null],
+    [[{ raw: { stdout: '', stderr: '' } }, failure()], true, 9]]) {
+    const h = harness(replies, { warm });
+    await assert.rejects(h.context.chromeInfo(7), error => {
+      assert.equal(error.exitCode, expected); assert.equal(error.signal, expected === 9 ? 'SIGTERM' : null);
+      assert.equal(error.killed, expected === 9 ? true : null); assert.equal(error.timedOut, null); return true;
+    });
+    assert.equal(h.calls.length, expected === 9 ? 2 : 1);
+  }
+});
+await check('child projection ignores getters, inherited data, coercion and unknown commands or signals', () => {
+  const h = harness([]); let hits = 0;
+  const getters = Object.fromEntries(['code', 'signal', 'killed'].map(key => [key, { get() { hits++; throw Error('unexpected getter'); } }]));
+  const unknown = { toString() { hits++; throw Error('unexpected coercion'); } };
+  for (const value of [Object.create({ code: 8, signal: 'SIGKILL', killed: true }), Object.defineProperties({}, getters),
+    { code: unknown, signal: 'synthetic-private-signal', killed: 1 }, new Proxy({}, { getOwnPropertyDescriptor() { throw Error('trap'); } })]) {
+    const result = JSON.parse(JSON.stringify(h.context.driverFailureFacts(unknown, value, true)));
+    assert.deepEqual(result, { driverCommand: 'unavailable', exitCode: null, signal: null, killed: null, timedOut: null });
+  }
+  assert.equal(hits, 0);
+});
+
+const nativeReadGetters = ['windows', 'window_ids', 'window', 'bounds', 'minimized', 'index',
+  'tabs', 'tab_ids', 'tab_urls', 'tab_url_ids', 'active_tab', 'active_tab_id', 'title'];
+const nativeReadShapes = ['window_ids_shape', 'tab_url_ids_shape', 'row_shape'];
+const nativeReadPairs = [
+  ...nativeReadGetters.flatMap(nativeReadPoint => [
+    { error: 'native_read_timeout', nativeReadPoint, nativeReadReason: 'before_deadline' },
+    { error: 'native_read_unknown', nativeReadPoint, nativeReadReason: 'nil_or_type' },
+    { error: 'native_read_unknown', nativeReadPoint, nativeReadReason: 'after_deadline' }]),
+  ...nativeReadShapes.map(nativeReadPoint => ({ error: 'native_read_unknown', nativeReadPoint, nativeReadReason: 'shape' })),
+  { error: 'native_read_unknown', nativeReadPoint: 'runner', nativeReadReason: 'runner_other' }
+];
+const nativeReadReply = extra => ({ ok: false, error: 'native_read_unknown', stage: 'native_read', inputDelivery: 'not_sent',
+  message: 'Safe native read fixture failure', ...extra });
+
+await check('all 43 native read pairs survive actual JSON-error parsing and chromeInfo without replay or raw fields', async () => {
+  assert.equal(nativeReadPairs.length, 43);
+  for (const pair of nativeReadPairs) for (const warm of [false, true]) {
+    const h = harness([nativeReadReply({ ...pair, rawValue: 'synthetic_private_value', url: 'https://synthetic_private.invalid/',
+      title: 'synthetic_private_title', count: 9, time: 17 })], { warm });
+    await assert.rejects(h.context.chromeInfo(), error => {
+      assert.deepEqual(Object.keys(error).sort(), ['code', 'inputDelivery', 'nativeReadPoint', 'nativeReadReason', 'stage']);
+      assert.equal(error.code, pair.error); assert.equal(error.stage, 'native_read'); assert.equal(error.inputDelivery, 'not_sent');
+      assert.equal(error.nativeReadPoint, pair.nativeReadPoint); assert.equal(error.nativeReadReason, pair.nativeReadReason);
+      assert.equal(Object.hasOwn(error, 'reply'), false);
+      assert.equal(JSON.stringify(error).includes('synthetic_private'), false);
+      return true;
+    });
+    assert.deepEqual(h.calls, [{ kind: warm ? 'warm' : 'cold', argv: ['info'] }]);
+    assert.deepEqual(h.delays, []);
+  }
+});
+
+await check('native read parser rejects impossible pairs without combining nested fields or changing core metadata', async () => {
+  const valid = new Set(nativeReadPairs.map(({ error, nativeReadPoint, nativeReadReason }) => JSON.stringify([error, nativeReadPoint, nativeReadReason])));
+  const invalid = [];
+  for (const error of ['native_read_unknown', 'native_read_timeout'])
+    for (const nativeReadPoint of [...nativeReadGetters, ...nativeReadShapes, 'runner'])
+      for (const nativeReadReason of ['before_deadline', 'nil_or_type', 'after_deadline', 'shape', 'runner_other'])
+        if (!valid.has(JSON.stringify([error, nativeReadPoint, nativeReadReason]))) invalid.push({ error, nativeReadPoint, nativeReadReason });
+  assert.equal(invalid.length, 127);
+  invalid.push({ nativeReadPoint: 'windows' }, { nativeReadReason: 'nil_or_type' },
+    { nativeReadPoint: 'windows', reply: { nativeReadReason: 'nil_or_type' } },
+    { nativeReadReason: 'nil_or_type', reply: { nativeReadPoint: 'windows' } },
+    { reply: { nativeReadPoint: 'windows', nativeReadReason: 'nil_or_type' } },
+    { error: 'chrome_error', nativeReadPoint: 'windows', nativeReadReason: 'nil_or_type' },
+    { error: 'native_permission_required', nativeReadPoint: 'windows', nativeReadReason: 'nil_or_type' },
+    { stage: 'native_read_deadline', nativeReadPoint: 'windows', nativeReadReason: 'nil_or_type' });
+  for (const key of ['nativeReadPoint', 'nativeReadReason']) for (const value of [null, '', 'windows\n', 'nil_or_type\n',
+    'synthetic_private_value', 7, true, [], {}]) invalid.push({ nativeReadPoint: 'windows', nativeReadReason: 'nil_or_type', [key]: value });
+  for (const extra of invalid) {
+    const reply = nativeReadReply(extra), h = harness([reply], { warm: false });
+    await assert.rejects(h.context.chromeInfo(), error => {
+      assert.deepEqual(Object.keys(error).sort(), ['code', 'inputDelivery', 'stage']);
+      assert.equal(error.code, reply.error); assert.equal(error.stage, reply.stage); assert.equal(error.inputDelivery, 'not_sent');
+      assert.equal(Object.hasOwn(error, 'reply'), false);
+      return true;
+    });
+    assert.deepEqual(h.calls, [{ kind: 'cold', argv: ['info'] }]);
+  }
+});
+
+await check('native read facts after the existing descriptor recovery belong only to its final JSON error', async () => {
+  const pair = nativeReadPairs[1], h = harness([{ ...descriptorError }, nativeReadReply(pair)]);
+  await assert.rejects(h.context.chromeInfo(7), error => {
+    assert.equal(error.code, pair.error); assert.equal(error.nativeReadPoint, pair.nativeReadPoint);
+    assert.equal(error.nativeReadReason, pair.nativeReadReason); return true;
+  });
+  assert.deepEqual(h.calls, [{ kind: 'warm', argv: ['info', '--tab', '7'] }, { kind: 'cold', argv: ['info', '--tab', '7'] }]);
+  assert.equal(h.remaining(), 0);
+});
 
 await check('info retries the exact structured warm failure once in a new cold process', async () => {
   const h = harness([{ ...descriptorError }, success]);
@@ -299,6 +418,50 @@ await check('cold eval still receives exactly one fresh-process recovery', async
   assert.deepEqual(h.calls.map(x => x.kind), ['cold', 'cold']);
   assert.deepEqual(h.delays, [250]);
   assert.equal(h.poolCalls(), 0);
+});
+
+await check('new window never replays empty or invalid output and preserves uncertain creation', async () => {
+  for (const raw of [{ stdout: '', stderr: '' }, { stdout: 'invalid', stderr: '' }]) {
+    const h = harness([{ raw }]);
+    await assert.rejects(h.context.newWindow('https://example.test', { left: 0, top: 0, right: 800, bottom: 600 }, null, {native:h.context.native,displayId:1}),
+      error => error.partial === true && error.creationAttempted === true && error.stage === 'new_window_response');
+    assert.equal(h.calls.length, 1);
+  }
+});
+
+await check('new window preserves verified partial ID without retrying creation', async () => {
+  const failure = { ...descriptorError, stage: 'new_window_metadata', partial: true, creationAttempted: true, createdWindowId: 9 };
+  const h = harness([failure]);
+  await assert.rejects(h.context.newWindow('https://example.test', { left: 0, top: 0, right: 800, bottom: 600 }, null, {native:h.context.native,displayId:1}),
+    error => error.osStatus === -1701 && error.partial === true && error.creationAttempted === true && error.createdWindowId === 9);
+  assert.equal(h.calls.length, 1);
+});
+
+await check('HI2 (new fix): a refused read retry starts no second or third exec: warm empty → cold, −1701 → cold, eval −1701 → cold', async () => {
+  const refuse = () => { throw new BridgeError('call_deadline', 'cut-off reached (fixture)'); };
+  const refused = error => error.code === 'call_deadline' && error.readRetryRefused === true;
+  let h = harness([{ raw: { stdout: '', stderr: '' } }]);
+  h.context.readRetryGate = refuse;
+  await assert.rejects(h.context.chromeInfo(7), refused);
+  assert.deepEqual(h.calls.map(x => x.kind), ['warm']);
+  h = harness([{ raw: { stdout: '', stderr: '', stale: true } }]);   // a stale warm binding (refused before running)
+  h.context.readRetryGate = refuse;
+  await assert.rejects(h.context.chromeInfo(7), refused);
+  assert.deepEqual(h.calls.map(x => x.kind), ['warm']);
+  h = harness([{ ...descriptorError }]);
+  h.context.readRetryGate = refuse;
+  await assert.rejects(h.context.chromeInfo(7), refused);
+  assert.deepEqual(h.calls.map(x => x.kind), ['warm']);
+  h = harness([{ ...descriptorError }]);
+  h.context.readRetryGate = refuse;
+  await assert.rejects(h.context.evalInPage('1', 7), refused);
+  assert.deepEqual(h.calls.map(x => x.kind), ['warm']);
+  assert.deepEqual(h.delays, [], 'waited before a refused retry');
+  // Without a refusal the same chains run as before (kept).
+  h = harness([{ ...descriptorError }, success]);
+  h.context.readRetryGate = () => {};
+  assert.deepEqual(await h.context.chromeInfo(7), success);
+  assert.deepEqual(h.calls.map(x => x.kind), ['warm', 'cold']);
 });
 
 console.log(`\nMetadata recovery: ${passed} checks passed.`);

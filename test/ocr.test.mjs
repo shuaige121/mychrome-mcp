@@ -151,13 +151,18 @@ try {
       // The popup (the English sheet at half size) covers the top-right quarter: its first title is at
       // (PW + x/2, y/2) (its top-left panel's title); the Chinese titles that were under it are gone.
       const o = await bridge.ocrImage(shot.fullPath);
+      assert.ok(Math.max(o.width, o.height) <= 2048, 'OCR image size is bounded');
+      assert.ok(o.elapsedMs >= 0);
+      const inOriginalPixels = l => ({ ...l, x: l.x * SW / o.width, y: l.y * SH / o.height,
+        w: l.w * SW / o.width, h: l.h * SH / o.height });
+      const lines = o.lines.map(inOriginalPixels);
       const en = helper(['ocr', EN]).lines.filter(l => /is using your computer/i.test(l.text) && centre(l).y < PH - 14).sort((a, b) => a.x - b.x)[0];
       const want = { x: PW + centre(en).x / 2, y: centre(en).y / 2 };
-      const got = o.lines.filter(l => /is using your computer/i.test(l.text)).map(centre);
+      const got = lines.filter(l => /is using your computer/i.test(l.text)).map(centre);
       assert.ok(got.some(p => Math.abs(p.x - want.x) < 25 && Math.abs(p.y - want.y) < 25),
         `popup title not at ${Math.round(want.x)},${Math.round(want.y)}: ${got.map(p => `${Math.round(p.x)},${Math.round(p.y)}`).join(' ')}`);
       assert.ok(got.every(p => p.x > PW && p.y < PH), 'popup text outside its rect');
-      assert.ok(!o.lines.some(l => /正在操作电脑/.test(l.text) && centre(l).x > PW + 40 && centre(l).y < PH - 64), 'base text left under the popup');
+      assert.ok(!lines.some(l => /正在操作电脑/.test(l.text) && centre(l).x > PW + 40 && centre(l).y < PH - 64), 'base text left under the popup');
     } finally {
       await shot.dispose();
     }

@@ -41,6 +41,7 @@ const afterSrc = await readFile(path.join(ROOT, 'src/page/after.js'), 'utf8');
 const ackSrc = await readFile(path.join(ROOT, 'src/page/ack.js'), 'utf8');
 
 let passed = 0;
+let skippedFlows = 0;
 function t(name, fn) { fn(); passed++; console.log(`  ok  ${name}`); }
 
 /** Build a jsdom window with a fake layout engine driven by data-rect. */
@@ -92,10 +93,10 @@ function installLayout(w) {
   return w;
 }
 
-/** Run read.js the way src/index.js does (bridge.pageScript fills __READ__): {} = this screen + outline. */
+/** Run read.js with the server request: {} = folded highest headings. */
 function readScript(req = {}) { return readSrc.replaceAll('__READ__', () => JSON.stringify(req)); }
 function runRead(w, req = {}) { return JSON.parse(w.eval(readScript(req))); }
-/** The whole page, as read_page was before the outline (the round 1–6 tests below assert it unchanged). */
+/** The explicit full page, with complete control entries inline and no duplicate index. */
 const FULL = { full: true };
 
 console.log('src/page/read.js (jsdom, layout stubbed)');
@@ -185,7 +186,7 @@ t('markers are inlined in the text next to their own label', () => {
   const w = makeDom(FIXTURE);
   const r = runRead(w, FULL);
   const n = w.__chromeBridge.markers.indexOf(w.document.getElementById('cart'));
-  assert.match(r.text, new RegExp(`\\[${n}\\]\\s*加入购物车`));
+  assert.match(r.text, new RegExp(`\\[${n}\\] button \\| 加入购物车`));
   assert.match(r.text, /商品详情/);
   assert.match(r.text, /这是一段普通正文/);
 });
@@ -193,15 +194,15 @@ t('markers are inlined in the text next to their own label', () => {
 t('form controls are described inline rather than left blank', () => {
   const w = makeDom(FIXTURE);
   const r = runRead(w, FULL);
-  assert.match(r.text, /输入框: 请输入数量/);
-  assert.match(r.text, /输入框: 备注/);
-  assert.match(r.text, /下拉框: 蓝色/);
+  assert.match(r.text, /input\[text\] \| 请输入数量 \| 文本输入框/);
+  assert.match(r.text, /textarea \| 备注 \| 文本输入框/);
+  assert.match(r.text, /select \| 蓝色/);
 });
 
-t('the index lists tag, 60-char text, and flags text fields', () => {
+t('inline entries list tag, 60-char text, and flags text fields', () => {
   const w = makeDom(FIXTURE);
   const r = runRead(w, FULL);
-  assert.match(r.text, /=== 可点击元素索引（共 12 个）===/);
+  assert.doesNotMatch(r.text, /可点击元素索引/);
   assert.match(r.text, /^\[1\] a \| 返回首页$/m);
   assert.match(r.text, /^\[2\] button \| 加入购物车$/m);
   assert.match(r.text, /^\[4\] input\[text\] \| 请输入数量 \| 文本输入框$/m);
@@ -222,6 +223,70 @@ t('index text is trimmed to 60 characters with an ellipsis', () => {
   const label = line.split('| ')[1];
   assert.equal(label.length, 61, `expected 60 chars + ellipsis, got ${label.length}`);
   assert.ok(label.endsWith('…'));
+});
+
+t('C7: an option label over 60 characters is cut at a word boundary; full continues it after （续）, query gives it whole', () => {
+  // Character 60 falls inside "day," (the field report's "again on…" / "e day.").
+  const answer = 'D. Tom thought the storms at sea would calm down again one day, and they did.';
+  const w = makeDom(`<h1>Q73</h1><div role="button">${answer}</div>`);
+  const head = 'D. Tom thought the storms at sea would calm down again one …';
+  for (const req of [{ sections: ['S1'] }, FULL]) {
+    const line = runRead(w, req).text.split('\n').find(l => /^\[\d+\] div\(role=button\) \| /.test(l));
+    assert.equal(line.split(' | ')[1], head, JSON.stringify(req));
+  }
+  const full = runRead(w, FULL).text.split('\n');
+  const at = full.findIndex(l => /^\[\d+\] div\(role=button\) \| /.test(l));
+  assert.equal(full[at + 1], '（续）day, and they did.', 'full mode: the rest follows on the next line, marked as a continuation');
+  assert.equal(head.slice(0, -1) + full[at + 1].slice('（续）'.length), answer, 'the line part without … and the rest are the label');
+  for (const query of ['storms', 'they did']) {
+    const text = runRead(w, { query }).text;
+    assert.ok(text.split('\n').some(l => l.trim() === answer), `query «${query}» gives the complete option text:\n${text}`);
+  }
+  // Unspaced scripts may break anywhere.
+  const cjk = runRead(makeDom(`<button>${'答'.repeat(70)}</button>`), FULL).text;
+  assert.match(cjk, new RegExp(`\\| ${'答'.repeat(60)}…$`, 'm'));
+  // Only an unbroken token longer than half the room (here a 72-character URL segment) is cut inside, always with …; full gives the rest.
+  const url = 'https://x.test/' + 'Ab3'.repeat(24) + '.pdf';
+  const linked = makeDom(`<h1>Docs</h1><a href="/r">See ${url}</a>`);
+  const cut = runRead(linked, { sections: ['S1'] }).text.split('\n').find(l => /^\[\d+\] a \| /.test(l)).split(' | ')[1];
+  assert.ok(cut.endsWith('…') && cut.length === 61 && `See ${url}`.startsWith(cut.slice(0, -1)), cut);
+  const fullLines = runRead(linked, FULL).text.split('\n'), li = fullLines.findIndex(l => /^\[\d+\] a \| /.test(l));
+  assert.equal(fullLines[li].split(' | ')[1].slice(0, -1) + fullLines[li + 1].slice('（续）'.length), `See ${url}`);
+});
+
+t('C7: select options are cut at word boundaries in compact reads; full and query list every option whole', () => {
+  const long = 'Choose the answer that best completes this sentence';   // character 40 is inside "this"
+  const huge = Array.from({ length: 30 }, (_, i) => `clause${i} of an unusually long unselected answer`).join(' ');   // > 200
+  const w = makeDom(`<h1>Form</h1><select><option>Short</option><option>${long}</option><option>${huge}</option></select>`);
+  assert.ok(huge.length > 1000);
+  assert.match(runRead(w, { sections: ['S1'] }).text, /「Choose the answer that best completes …」/);
+  assert.doesNotMatch(runRead(w, { sections: ['S1'] }).text, /completes th…/);
+  for (const req of [FULL, { query: 'short' }]) {
+    const text = runRead(w, req).text;
+    assert.ok(text.includes(`「${long}」`) && text.includes(`「${huge}」`), JSON.stringify(req));
+  }
+});
+
+t('C7: query prints a matching label whole up to 1000 characters; a longer one is marked where it is cut', () => {
+  const words = n => Array.from({ length: n }, (_, i) => `word${i}`).join(' ');
+  const mid = words(120), long = `${words(150)} NEEDLE ${words(150)}`;
+  assert.ok(`${mid} MIDDLE`.length <= 1000 && long.length > 2000);
+  const w = makeDom(`<h1>Q</h1><div role="button">${mid} MIDDLE</div><div role="button">${long}</div>`);
+  assert.ok(runRead(w, { query: 'MIDDLE' }).text.split('\n').some(l => l.trim() === `${mid} MIDDLE`));
+  const line = runRead(w, { query: 'NEEDLE' }).text.split('\n').find(l => l.includes('NEEDLE') && l.startsWith('  '));
+  assert.match(line, /^ {2}（前略）word\d+ .* NEEDLE .* word\d+…（后略，共 \d+ 字）$/, line);
+  assert.ok(line.length < 1100);
+});
+
+t('C7: a full read that runs out of room stops at a word boundary and says the text was cut', () => {
+  // 25-character tokens: a cut by character count alone lands inside one almost always.
+  const words = Array.from({ length: 1200 }, (_, i) => `w${String(i).padStart(4, '0')}abcdefghijklmnopqrst`).join(' ');
+  const text = runRead(makeDom(`<h1>Long</h1><p>${words}</p>`), FULL).text;
+  const at = text.indexOf('\n\n…（正文过长已截断');
+  assert.ok(at > 0, text.slice(-200));
+  const para = text.slice(text.indexOf('w0000'), at).trimEnd();
+  assert.ok(para.length > 1000 && words.startsWith(para), 'the kept text is the paragraph from its start');
+  assert.equal(words[para.length], ' ', `the cut is inside a token: «${para.slice(-30)}»`);
 });
 
 t('text hidden by a zero-sized box does not leak into the body text', () => {
@@ -257,18 +322,19 @@ t('output is capped at ~12k characters and says so', () => {
   const r = runRead(w, FULL);
   assert.ok(r.text.length <= 12000, `output ${r.text.length} chars exceeds the cap`);
   assert.match(r.text, /正文过长已截断/);
-  // Truncating the body must not cost us the index.
-  assert.match(r.text, /=== 可点击元素索引/);
+  // Truncating plain body text must not cost us complete inline controls.
+  assert.match(r.text, /\[2\] button \| 加入购物车/);
+  assert.equal((r.text.match(/\[2\]/g) || []).length, 1);
 });
 
-t('a page with thousands of controls truncates the index, not the numbering', () => {
+t('a page with thousands of controls omits complete entries without changing numbering', () => {
   const many = Array.from({ length: 900 }, (_, i) => `<button>按钮编号 ${i}</button>`).join('');
   const w = makeDom(many);
   const r = runRead(w, FULL);
   assert.equal(r.count, 900, 'every control must still get a number');
   assert.equal(w.__chromeBridge.markers.length, 901);
   assert.ok(r.text.length <= 12000);
-  assert.match(r.text, /索引已截断/);
+  assert.match(r.text, /另有 \d+ 个控件未列出/);
 });
 
 t('running twice is idempotent: same numbering, no DOM change', () => {
@@ -290,15 +356,14 @@ t('empty page does not throw', () => {
 
 console.log('\nsrc/page/read.js — semantics: more targets, states, <select> options, modals, popups (round 6)');
 
-const INDEX_HEAD = '=== 可点击元素索引';
-const indexPart = (r) => r.text.slice(r.text.indexOf(INDEX_HEAD));
-const bodyPart = (r) => r.text.slice(0, r.text.indexOf(INDEX_HEAD));
-const regOf = (w) => [...w.__chromeBridge.markers].slice(1);
+const indexPart = (r) => r.text; // Complete control entries now live in the body.
+const bodyPart = (r) => r.text;
+const regOf = (w) => [...w.__chromeBridge.markers].slice(1).filter(Boolean);
 const idsOf = (w) => regOf(w).map(e => e.id || e.tagName.toLowerCase());
 const mk = (w, sel) => w.__chromeBridge.markers.indexOf(w.document.querySelector(sel));
-/** The index line of marker n (the index part only: body lines can start with [n] too). */
+/** The single inline entry of marker n. */
 const lineOf = (r, n) => indexPart(r).split('\n').find(l => l.startsWith(`[${n}] `));
-/** Marker numbers in the order the index lists them. */
+/** Marker numbers in inline document/modal order. */
 const indexOrder = (r) => indexPart(r).split('\n').filter(l => /^\[\d+\] /.test(l)).map(l => Number(l.match(/^\[(\d+)\]/)[1]));
 /** How many times each marker number appears in the body text. */
 function bodyCounts(r) {
@@ -326,7 +391,7 @@ t('goal1: role=combobox / treeitem / gridcell / menuitemradio and tabindex>=0 ge
   assert.equal(lineOf(r, 3), '[3] div(role=gridcell) | 单元格');
   assert.equal(lineOf(r, 4), '[4] div(role=menuitemradio) | 按名称排序');
   assert.equal(lineOf(r, 5), '[5] div | 可聚焦的卡片');
-  assert.match(bodyPart(r), /\[6\] 正数 tabindex/);
+  assert.match(bodyPart(r), /\[6\] span \| 正数 tabindex/);
 });
 
 t('goal1: a focusable wrapper around real controls is not a target; a combobox keeps its own options, a tree its child items', () => {
@@ -370,11 +435,11 @@ t('goal1: listener-only elements with cursor:pointer: only the outermost, with t
   assert.equal(lineOf(r, 4), '[4] a | 链接里的字');
   assert.equal(lineOf(r, 5), '[5] button | 卡片按钮');
   // (whitespace-only text nodes are dropped by the walk, as before)
-  assert.match(bodyPart(r), /\[1\] \(推测可点\) 苹果\s*Apple/);
-  assert.match(bodyPart(r), /\[2\] \(推测可点\) 香蕉/);
+  assert.match(bodyPart(r), /\[1\] div \| 苹果\s*Apple \| \(推测可点\)/);
+  assert.match(bodyPart(r), /\[2\] div \| 香蕉 \| \(推测可点\)/);
 });
 
-t('goal2: [展开]/[收起] from aria-expanded and <details>, inline and in the index', () => {
+t('goal2: [展开]/[收起] from aria-expanded and <details>, in each inline entry', () => {
   const w = makeDom(`
     <button id="b1" aria-expanded="true">菜单</button>
     <button id="b2" aria-expanded="false">更多</button>
@@ -390,11 +455,11 @@ t('goal2: [展开]/[收起] from aria-expanded and <details>, inline and in the 
   assert.equal(lineOf(r, 5), '[5] input[text](role=combobox) | 搜索城市 | 文本输入框 [收起]');
   assert.equal(lineOf(r, 6), '[6] button | 普通按钮');
   const body = bodyPart(r);
-  assert.match(body, /\[1\] \[展开\] 菜单/);
-  assert.match(body, /\[2\] \[收起\] 更多/);
-  assert.match(body, /\[3\] \[收起\] 说明/);
-  assert.match(body, /\[5\] \[收起\] 输入框: 搜索城市/);
-  assert.match(body, /\[6\] 普通按钮/);
+  assert.match(body, /\[1\] button \| 菜单 \| \[展开\]/);
+  assert.match(body, /\[2\] button \| 更多 \| \[收起\]/);
+  assert.match(body, /\[3\] summary \| 说明 \| \[收起\]/);
+  assert.match(body, /\[5\] input\[text\]\(role=combobox\) \| 搜索城市 \| 文本输入框 \[收起\]/);
+  assert.match(body, /\[6\] button \| 普通按钮/);
 });
 
 t('goal2: [已选] from aria-selected, aria-checked, checked boxes and radios, and a label around a checked box', () => {
@@ -418,9 +483,9 @@ t('goal2: [已选] from aria-selected, aria-checked, checked boxes and radios, a
   assert.equal(lineOf(r, 8), '[8] li(role=option) | 香港 | [已选]');
   assert.equal(lineOf(r, 9), '[9] li(role=option) | 澳门');
   const body = bodyPart(r);
-  assert.match(body, /\[1\] \[已选\] 概览/);
-  assert.match(body, /\[4\] \[已选\] 控件: 记住我/);
-  assert.match(body, /\[8\] \[已选\] 香港/);
+  assert.match(body, /\[1\] div\(role=tab\) \| 概览 \| \[已选\]/);
+  assert.match(body, /\[4\] input\[checkbox\] \| 记住我 \| \[已选\]/);
+  assert.match(body, /\[8\] li\(role=option\) \| 香港 \| \[已选\]/);
   // The state follows the page: uncheck and read again.
   w.document.querySelector('#lb input').checked = false;
   assert.equal(lineOf(runRead(w, FULL), 6), '[6] label | 同意条款');
@@ -443,10 +508,10 @@ t('goal2: [禁用] from disabled, aria-disabled=true, a disabled fieldset (not i
   assert.equal(lineOf(r, 4), '[4] input[text] | 禁用区里的输入框 | 文本输入框 [禁用]');
   assert.equal(lineOf(r, 3), '[3] button | 图例里的按钮');
   const body = bodyPart(r);
-  assert.match(body, /\[1\] \[禁用\] 提交/);
-  assert.match(body, /\[4\] \[禁用\] 输入框: 禁用区里的输入框/);
-  assert.match(body, /\[6\] \[禁用\] 惰性区域的链接/);
-  assert.match(body, /\[9\] 可用按钮/);
+  assert.match(body, /\[1\] button \| 提交 \| \[禁用\]/);
+  assert.match(body, /\[4\] input\[text\] \| 禁用区里的输入框 \| 文本输入框 \[禁用\]/);
+  assert.match(body, /\[6\] a \| 惰性区域的链接 \| \[禁用\]/);
+  assert.match(body, /\[9\] button \| 可用按钮/);
 });
 
 t('goal3: a native <select> lists all its options in the index: the selected one, disabled ones, a disabled optgroup', () => {
@@ -463,9 +528,9 @@ t('goal3: a native <select> lists all its options in the index: the selected one
   assert.match(idx, /^\[1\] select \| 香蕉\n    选项（共 5 个）：「请选择」 〔水果〕 「苹果」 「香蕉」\[已选\] 「榴莲」\[禁用\] 〔停售·禁用〕 「旧款」\[禁用\]$/m);
   assert.match(idx, /^\[2\] select \| 只读的 \| \[禁用\]\n    选项（共 1 个）：「只读的」\[已选\]$/m);
   // The text keeps the current value inline; the option list lives in the index only.
-  assert.match(bodyPart(r), /\[1\] 下拉框: 香蕉/);
-  assert.match(bodyPart(r), /\[2\] \[禁用\] 下拉框: 只读的/);
-  assert.doesNotMatch(bodyPart(r), /榴莲/);
+  assert.match(bodyPart(r), /\[1\] select \| 香蕉/);
+  assert.match(bodyPart(r), /\[2\] select \| 只读的 \| \[禁用\]/);
+  assert.match(bodyPart(r), /榴莲」\[禁用\]/);
   // Changing the selection changes the marks.
   w.document.getElementById('s').selectedIndex = 1;
   assert.match(indexPart(runRead(w, FULL)), /「苹果」\[已选\] 「香蕉」 「榴莲」\[禁用\]/);
@@ -501,16 +566,16 @@ t('goal4: an open modal: a warning line first, its elements first in the text an
   assert.equal(lineOf(r, 5), '[5] button | 订阅');
   assert.equal(lineOf(r, 1), '[1] a | 首页 | [被弹窗挡住]');
   assert.equal(lineOf(r, 3), '[3] button | 接受 | [被弹窗挡住]');
-  assert.match(indexPart(r), /共 6 个；弹窗里的排在最前/);
+  assert.equal(indexOrder(r).length, 6);
   const body = bodyPart(r);
   assert.ok(body.indexOf('订阅通讯') < body.indexOf('背景正文'), 'the modal text comes first');
   assert.ok(body.indexOf('[4]') < body.indexOf('[1]'), 'the modal markers come first');
   assert.match(body, /--- 弹窗「订阅通讯」里的内容 ---/);
   assert.match(body, /--- 弹窗外的页面：下面的元素都\[被弹窗挡住\]，先处理弹窗 ---/);
-  assert.match(body, /\[5\] 订阅 \[6\] 关闭/);
+  assert.match(body, /\[5\] button \| 订阅[\s\S]*\[6\] button \| 关闭/);
 });
 
-t('goal4: numbers do not move when a modal opens; each number once in the text and once in the index, matching the click registry', () => {
+t('goal4: numbers do not move when a modal opens; each number once in the text, matching the click registry', () => {
   const page = MODAL_PAGE.replace('<dialog id="dlg" open aria-labelledby="dt">', '<div id="dlg" role="dialog" aria-modal="true" aria-labelledby="dt">')
                          .replace('</dialog>', '</div>');
   const w = makeDom(page);
@@ -579,13 +644,13 @@ t('goal5: a long page with a modal at the end: the cut falls on the page text, t
   const r = runRead(w, FULL);
   assert.ok(r.text.length <= 12000, `output ${r.text.length} chars exceeds the cap`);
   assert.match(r.text, /正文过长已截断/);
-  assert.match(r.text, /索引已截断/);
+  assert.match(r.text, /另有 \d+ 个控件未列出/);
   const nUser = mk(w, '#user'), nLogin = mk(w, '#login');
   assert.equal(nLogin, 302);
   const body = bodyPart(r);
   assert.match(body, /请先登录再继续/);
-  assert.match(body, new RegExp(`\\[${nUser}\\] 输入框: 用户名`));
-  assert.match(body, new RegExp(`\\[${nLogin}\\] 登录`));
+  assert.match(body, new RegExp(`\\[${nUser}\\] input\\[text\\] \\| 用户名`));
+  assert.match(body, new RegExp(`\\[${nLogin}\\] button \\| 登录`));
   assert.match(body, /第 0 段/);
   assert.doesNotMatch(body, /第 399 段/);
   assert.deepEqual(indexOrder(r).slice(0, 2), [nUser, nLogin]);
@@ -602,25 +667,25 @@ t('goal5: an expanded list (aria-controls) mid-page and a portal list at the end
     <div id="portal" style="position:absolute"><div class="opt" style="cursor:pointer">弹层选项 甲</div><div class="opt" style="cursor:pointer">弹层选项 乙</div></div>`);
   const r = runRead(w, FULL);
   assert.ok(r.text.length <= 12000, `output ${r.text.length} chars exceeds the cap`);
-  assert.match(r.text, /正文过长已截断：弹窗和展开的列表完整保留/);
-  assert.match(r.text, /索引已截断.*弹窗和展开的列表里的元素已优先列出/);
+  assert.match(r.text, /正文过长已截断/);
+  assert.match(r.text, /另有 \d+ 个控件未列出/);
   const body = bodyPart(r), idx = indexPart(r);
   for (let i = 1; i <= 20; i++) {
     const n = mk(w, `#lb1 li:nth-child(${i})`);
-    assert.match(body, new RegExp(`\\[${n}\\] 城市 ${i}(?!\\d)`), `option ${i} lost from the text`);
+    assert.match(body, new RegExp(`\\[${n}\\] li\\(role=option\\) \\| 城市 ${i}(?!\\d)`), `option ${i} lost from the text`);
     assert.equal(lineOf(r, n), `[${n}] li(role=option) | 城市 ${i}`, `option ${i} lost from the index`);
   }
   for (const label of ['弹层选项 甲', '弹层选项 乙']) {
-    const n = regOf(w).findIndex(e => e.textContent === label) + 1;
+    const n = w.__chromeBridge.markers.findIndex(e => e && e.textContent === label);
     assert.ok(n > 0, `${label} has no marker`);
-    assert.match(body, new RegExp(`\\[${n}\\] \\(推测可点\\) ${label}`));
+    assert.match(body, new RegExp(`\\[${n}\\] div \\| ${label} \\| \\(推测可点\\)`));
     assert.equal(lineOf(r, n), `[${n}] div | ${label} | (推测可点)`);
   }
   assert.equal(lineOf(r, mk(w, '#cb')), `[${mk(w, '#cb')}] div(role=combobox) | 城市 | [展开]`);
   // What went: the tail of the ordinary text, and the middle of the toolbar index.
   assert.match(body, /第 0 段/);
   assert.doesNotMatch(body, /尾部第 399 段/);
-  assert.match(body, /此处正文已省略/);
+  assert.match(body, /\n…\n/);
   assert.match(idx, /^\[1\] button \| 工具栏按钮 0$/m);
   assert.ok(!lineOf(r, 300), 'the index cut fell on the toolbar, not on the list');
 });
@@ -631,22 +696,22 @@ t('goal5: portal layers: a flat portal root at the end of <body> is kept; a <mai
   let w = makeDom(`<div id="app"><h1>页首标题</h1><a href="/">首页</a>${filler('')}</div>
     <div id="pr" data-rect="0,0,800,0"><div style="position:absolute"><div style="cursor:pointer">弹层里的选项</div></div></div>`);
   let r = runRead(w, FULL);
-  assert.match(bodyPart(r), /\(推测可点\) 弹层里的选项/);
-  assert.match(r.text, /弹窗和展开的列表完整保留/);
+  assert.match(bodyPart(r), /弹层里的选项 \| \(推测可点\)/);
+  assert.match(r.text, /正文过长已截断/);
   w = makeDom(`<header><a href="/">页首导航</a></header>
     <main><ul role="menu"><li role="menuitem">主体菜单项</li></ul>${filler('主体')}</main>
     <footer><div role="menu"><a href="/x" role="menuitem">页脚菜单</a></div>${filler('页脚')}</footer>`);
   r = runRead(w, FULL);
   assert.ok(r.text.length <= 12000);
-  assert.match(bodyPart(r), /\[1\] 页首导航/);
+  assert.match(bodyPart(r), /\[1\] a \| 页首导航/);
   assert.match(bodyPart(r), /主体第 0 段/);
   assert.doesNotMatch(r.text, /弹窗和展开的列表完整保留/);
-  assert.match(r.text, /正文过长已截断，只显示前 \d+ 个字符/);
+  assert.match(r.text, /正文过长已截断/);
 });
 
 const DROPDOWN_HTML = await readFile(path.join(ROOT, 'test/fixtures/dropdown-semantics.html'), 'utf8');
 const MODAL_HTML = await readFile(path.join(ROOT, 'test/fixtures/modal-overlay.html'), 'utf8');
-const markerByText = (w, re) => regOf(w).findIndex(e => re.test(e.textContent.trim())) + 1;
+const markerByText = (w, re) => w.__chromeBridge.markers.findIndex(e => e && re.test(e.textContent.trim()));
 
 t('goal6: test/fixtures/dropdown-semantics.html: states follow the page as it is opened and picked, popups survive the 12k cap', () => {
   const w = fixtureDom(DROPDOWN_HTML, 'http://127.0.0.1:4560/dropdown-semantics.html');
@@ -721,7 +786,7 @@ t('goal6: test/fixtures/modal-overlay.html: native and ARIA modals, the cookie b
   let d = w.document;
   let r = runRead(w, FULL);
   assert.equal(r.text.split('\n')[0], '⚠️ 页面开着弹窗「订阅我们的通讯」：先列弹窗里的元素；弹窗外的元素被它挡住');
-  const inModal = regOf(w).map((e, i) => (e.closest('#native') ? i + 1 : 0)).filter(Boolean);
+  const inModal = [...w.__chromeBridge.markers].map((e, i) => (e?.closest('#native') ? i : 0)).filter(Boolean);
   assert.equal(inModal.length, 5, 'email label, email, agree label, subscribe, close');
   assert.deepEqual(indexOrder(r).slice(0, inModal.length), inModal);
   assert.match(lineOf(r, mk(w, '#subscribe')), /订阅 \| \[禁用\]$/);
@@ -731,9 +796,9 @@ t('goal6: test/fixtures/modal-overlay.html: native and ARIA modals, the cookie b
   const before = new Map(['#bg-btn', '#cookie-accept', '#bg-search'].map(s => [s, mk(w, s)]));
   // Tick the box (its label carries the state), the subscribe button comes alive.
   const agreeLabel = d.getElementById('agree').closest('label');
-  w.__chromeBridge.markers[regOf(w).indexOf(agreeLabel) + 1].click();
+  w.__chromeBridge.markers[w.__chromeBridge.markers.indexOf(agreeLabel)].click();
   r = runRead(w, FULL);
-  assert.match(lineOf(r, regOf(w).indexOf(agreeLabel) + 1), /同意条款 \| \[已选\]$/);
+  assert.match(lineOf(r, w.__chromeBridge.markers.indexOf(agreeLabel)), /同意条款 \| \[已选\]$/);
   assert.doesNotMatch(lineOf(r, mk(w, '#subscribe')), /禁用/);
   // Close it: no warning, same numbers for the page behind.
   d.getElementById('native-close').click();
@@ -761,7 +826,7 @@ t('goal6: test/fixtures/modal-overlay.html: native and ARIA modals, the cookie b
   assert.doesNotMatch(runRead(w, FULL).text, /页面开着弹窗|被弹窗挡住/);
 });
 
-console.log('\nsrc/page/read.js — default = this screen + page outline; sections / query / full (round 7)');
+console.log('\nsrc/page/read.js — folded hierarchy; sections / query / full');
 
 /**
  * A flow layout for whole-page fixtures: block elements stack in 24 px rows down the page (a container
@@ -838,15 +903,6 @@ const between = (text, from, to) => {
   const b = to ? text.indexOf(to, a + from.length) : -1;
   return text.slice(a, b === -1 ? undefined : b);
 };
-/** Outline rows as printed: indent level, S id, title, tokens, clickables, flags. */
-function outlineRows(text) {
-  return between(text, '=== 页面目录', '=== 这一屏').split('\n').slice(1).filter(l => /^\s*S\d+ /.test(l)).map(l => {
-    const m = l.match(/^( *)S(\d+) (.*?)（约 (\d+) token，(\d+) 个可点(?:，含 (\d+) 个子节)?）(.*)$/);
-    assert.ok(m, `outline line not in the expected form: ${l}`);
-    return { depth: m[1].length / 2, id: +m[2], title: m[3], tok: +m[4], clk: +m[5], folded: m[6] ? +m[6] : 0,
-             big: /⚠️ 异常大/.test(m[7]), screen: /\[在屏上\]/.test(m[7]), line: l };
-  });
-}
 /** Index lines ("[n] tag | label | flags") anywhere in the output. */
 const indexLines = (text) => text.split('\n').filter(l => /^\[\d+\] \S+ \| /.test(l));
 const numOf = (l) => Number(l.match(/^\[(\d+)\]/)[1]);
@@ -867,87 +923,45 @@ t('round7: estimateTokens — a CJK character is 1 token, other text 3.5 charact
   }
 });
 
-t('round7: long-article outline — heading levels (a single h1 is the page title), parents include their sub-sections, on-screen sections marked', () => {
-  const w = longArticle();
-  const r = runRead(w);
+t('hierarchy: a long article starts at its highest content heading; full hierarchy metadata keeps sizes and stable ids', () => {
+  const w = longArticle(), r = runRead(w);
   assert.equal(r.mode, 'screen');
-  const rows = outlineRows(r.text);
-  assert.deepEqual(rows.map(x => `${'  '.repeat(x.depth)}S${x.id} ${x.title}${x.screen ? ' *' : ''}`), [
-    'S0 （第一个标题之前） *', 'S1 狮城简史（测试长文） *', 'S2 地理 *', '  S3 气候 *', '  S4 地形 *',
-    'S5 历史 *', '  S6 早期 *', '  S7 殖民时期', '    S8 海峡殖民地', '  S9 独立',
-    'S10 经济', 'S11 社会', 'S12 尾声', 'S13 参考文献']);
-  const row = (id) => rows.find(x => x.id === id);
-  // Clickables: own + sub-sections (S5 owns the timeline link, S8 the "more" link).
-  assert.equal(row(0).clk, 4);
+  assert.deepEqual(r.blocks.map(b => b.id), ['S1']);
+  assert.match(r.text, /S1 狮城简史（测试长文） \[collapsed\]/);
+  assert.doesNotMatch(r.text, /S2 地理|S3 气候|导言|Reference 1:|提示：|这一屏/);
+  const row = id => r.outline[id];
+  assert.equal(row(2).parent, 1);
+  assert.equal(row(3).parent, 2);
+  assert.equal(row(8).parent, 7);
+  assert.equal(row(1).last, 13);
+  assert.equal(row(0).clk, 6, 'header and footer controls stay outside main heading scopes');
   assert.equal(row(8).clk, 1);
-  assert.equal(row(7).clk, 1);
   assert.equal(row(5).clk, 1 + row(6).clk + row(7).clk + row(9).clk);
-  assert.equal(row(2).clk, row(3).clk + row(4).clk);
-  assert.equal(row(13).clk, 302, '300 references + the footer (the last heading runs to the end)');
-  // Tokens: exactly the estimate of the section's own text plus its sub-sections' text.
-  const d = w.document;
-  const textOf = (sel) => [...d.querySelectorAll(sel)].map(e => norm(e.textContent)).join('');
-  const s8 = textOf('#h-straits') + textOf('[data-topic="海峡殖民地"] p') + textOf('#straits-more');
-  assert.equal(row(8).tok, estimateTokens(s8, 1));
-  assert.equal(row(7).tok, estimateTokens(textOf('#h-colonial') + textOf('[data-topic="殖民时期"] p') + s8, 1));
-  assert.ok(row(5).tok >= row(6).tok + row(7).tok + row(9).tok, 'a parent is at least the sum of its sub-sections');
-  // The JSON outline says the same.
-  for (const x of rows) {
-    const o = r.outline[x.id];
-    assert.equal(o.tok, x.tok, `S${x.id}`);
-    assert.equal(o.clk, x.clk, `S${x.id}`);
-  }
-  assert.match(r.text, /=== 页面目录（14 节；整页约 \d+ token、310 个可点）===/);
-  assert.equal(r.text.split('\n').at(-1), r.hint);
-  assert.match(r.hint, /^提示：展开几节用 read_page\(sections=\["S2","S5"\]\).*query.*full=true/);
+  assert.equal(row(13).clk, 300, 'footer links are not references');
+  assert.ok(row(5).tok >= row(6).tok + row(7).tok + row(9).tok);
+  assert.equal(r.hint, '');
 });
 
-t('round7: an abnormally large section (> 8000 tokens) is flagged and the others are not; a page over 50000 tokens says so at the top of the outline', () => {
+t('hierarchy: large section sizes remain metadata, without dumping warnings or the descendants by default', () => {
   const r = runRead(longArticle());
-  const rows = outlineRows(r.text);
-  assert.deepEqual(rows.filter(x => x.big).map(x => x.id), [13]);
-  assert.ok(rows.find(x => x.id === 13).tok > 8000);
-  assert.match(rows.find(x => x.id === 13).line, new RegExp(`⚠️ 异常大（约 ${rows.find(x => x.id === 13).tok} token），多半是参考文献/导航/评论区，别整节展开，用 query`));
-  assert.doesNotMatch(r.text, /整页约 \d+ token，异常大/);
-  // The threshold itself: 7999 tokens is fine, 8001 is not; a parent over it says "or its sub-sections".
-  let w = makeDom(`<h2>甲</h2><p>${'字'.repeat(7998)}</p><h2>乙</h2><p>${'字'.repeat(8000)}</p>` +
-                  `<h2>丙</h2><h3>丙一</h3><p>${'字'.repeat(4500)}</p><h3>丙二</h3><p>${'字'.repeat(4500)}</p>`);
-  let rr = outlineRows(runRead(w).text);
-  assert.deepEqual(rr.map(x => [x.title, x.tok, x.big]), [
-    ['甲', 7999, false], ['乙', 8001, true], ['丙', 9005, true], ['丙一', 4502, false], ['丙二', 4502, false]]);
-  assert.match(rr[2].line, /别整节展开，用 query 或展开它的子节( \[在屏上\])?$/);
-  // A whole page over 50000 tokens.
-  w = makeDom(Array.from({ length: 6 }, (_, i) => `<h2>第 ${i} 部分</h2><p>${'字'.repeat(9000)}</p>`).join(''));
-  const big = runRead(w).text;
-  const head = between(big, '=== 页面目录', '=== 这一屏').match(/^=== 页面目录（6 节；整页约 (\d+) token、0 个可点）===\n⚠️ 整页约 (\d+) token，异常大：别用 full 整页读/);
-  assert.ok(head && +head[1] > 50000 && head[1] === head[2], big.slice(0, 300));
-  assert.doesNotMatch(runRead(makeDom('<h2>小</h2><p>一点点</p>')).text, /异常大/);
+  assert.ok(r.outline[13].tok > 8000);
+  assert.doesNotMatch(r.text, /异常大|参考文献|Reference 1:/);
+  const w = makeDom(`<h2>甲</h2><p>${'字'.repeat(7998)}</p><h2>乙</h2><p>${'字'.repeat(8000)}</p>` +
+    `<h2>丙</h2><h3>丙一</h3><p>${'字'.repeat(4500)}</p><h3>丙二</h3><p>${'字'.repeat(4500)}</p>`);
+  const rr = runRead(w);
+  assert.deepEqual(rr.outline.slice(1).map(x => [x.title,x.tok]), [['甲',7999],['乙',8001],['丙',9005],['丙一',4502],['丙二',4502]]);
+  assert.deepEqual(rr.blocks.map(b => b.id), ['S1','S2','S3']);
+  assert.doesNotMatch(rr.text, /丙一|丙二/);
 });
 
-t('round7: default mode prints only what meets the viewport (stubbed layout); scrolled down, the late section is the one on screen', () => {
-  let w = longArticle();
-  let r = runRead(w);
-  const screen = between(r.text, '=== 这一屏（', '\n提示：');
-  assert.match(screen, /^=== 这一屏（整页约 14 屏，这是第 1 屏）===/);
-  const shown = indexLines(screen).map(numOf);
-  assert.deepEqual(shown, ['#site-home', '#site-login', '#site-search', '#print', '#climate-table', '#timeline-link'].map(s => mk(w, s)));
-  assert.match(screen, /导言：这是给 read_page/);
-  assert.match(screen, /【早期·第 7 段】/, 'the last row that meets the viewport');
-  assert.doesNotMatch(screen, /【早期·第 8 段】/, 'the first row below the viewport');
-  for (const gone of ['暗号', '尾声里的按钮', 'Reference 1:', '关于本站', '【经济']) assert.ok(!screen.includes(gone), `${gone} is not on screen`);
-  assert.match(screen, /=== 这一屏的可点击元素（6 个；整页共 310 个，编号全页通用）===/);
-
-  w = longArticle({ scrollY: 3600 });
-  r = runRead(w);
-  const s2 = between(r.text, '=== 这一屏（', '\n提示：');
-  assert.match(s2, /^=== 这一屏（整页约 14 屏，这是第 5 屏）===/);
-  assert.match(s2, /暗号 PINEAPPLE-42/);
-  assert.match(s2, new RegExp(`\\[${mk(w, '#late-btn')}\\] 尾声里的按钮`));
-  assert.ok(indexLines(s2).map(numOf).includes(mk(w, '#late-btn')));
-  assert.ok(!indexLines(s2).map(numOf).includes(mk(w, '#site-home')), 'the header has scrolled away');
-  assert.doesNotMatch(s2, /导言/);
-  const rows = outlineRows(r.text);
-  assert.deepEqual(rows.filter(x => x.screen).map(x => x.id), [11, 12, 13]);
+t('hierarchy: default folds the body independently of viewport position; explicit late sections remain readable', () => {
+  const top = runRead(longArticle()), bottom = runRead(longArticle({ scrollY: 3600 }));
+  assert.deepEqual(top.blocks, bottom.blocks);
+  for (const r of [top,bottom]) assert.doesNotMatch(r.text, /导言|暗号|尾声里的按钮|Reference 1:|【经济/);
+  const w = longArticle({ scrollY: 3600 });
+  const r = runRead(w, { sections:['S12'] });
+  assert.match(r.text, /PINEAPPLE-42/);
+  assert.deepEqual(indexLines(r.text).map(numOf), [mk(w,'#late-btn')]);
 });
 
 t('round7: numbering — default (top and scrolled), sections, query and full mode give each element the same number, the one the click registry holds', () => {
@@ -963,14 +977,20 @@ t('round7: numbering — default (top and scrolled), sections, query and full mo
     if (!reg0) reg0 = reg.map(e => e.id || e.textContent);
     assert.deepEqual(reg.map(e => e.id || e.textContent), reg0, `registry changed in ${JSON.stringify(req)}`);
     const lines = indexLines(r.text);
-    assert.ok(lines.length > 0, JSON.stringify(req));
+    if (req.sections || req.query || req.full) assert.ok(lines.length > 0, JSON.stringify(req));
+    else assert.equal(lines.length, 0, 'folded article does not expose descendants');
     for (const l of lines) {
       const n = numOf(l), el = w.__chromeBridge.markers[n];
       assert.ok(el, `[${n}] is not in the registry`);
       const [, tag, label] = l.match(/^\[\d+\] (\S+) \| (.*?)(?: \| |$)/);
       assert.equal(tag.replace(/[[(].*$/, ''), el.tagName.toLowerCase(), l);
       let want = el.tagName === 'INPUT' ? norm(el.placeholder) : (norm(el.textContent) || norm(el.getAttribute('aria-label')));
-      if (want.length > 60) want = want.slice(0, 60) + '…';
+      // C7: cut at 60, or at the start of the word that character 60 falls inside (English fixture).
+      if (want.length > 60) {
+        let k = 60;
+        if (/\w/.test(want[59]) && /\w/.test(want[60])) { let j = 60; while (j > 0 && /\w/.test(want[j - 1])) j--; if (j >= 30) k = j; }
+        want = want.slice(0, k) + '…';
+      }
       assert.equal(label, want, l);
       if (lineOfN.has(n)) assert.equal(l, lineOfN.get(n), `[${n}] is printed differently in ${JSON.stringify(req)}`);
       else lineOfN.set(n, l);
@@ -987,42 +1007,33 @@ t('round7: numbering — default (top and scrolled), sections, query and full mo
   assert.ok(lineOfN.size > 40, `only ${lineOfN.size} numbers were compared`);
 });
 
-t('round7: sections — the section after 12000 characters (cut in full mode) expands whole; a parent comes with its sub-sections; unknown and nested picks are said; an oversized section is cut and says so', () => {
+t('hierarchy: sections open one layer; explicit descendants, unknown ids and long leaves retain reachable content', () => {
   const w = longArticle();
-  const full = runRead(w, FULL);
-  assert.match(full.text, /正文过长已截断/);
-  assert.doesNotMatch(full.text, /PINEAPPLE-42/, 'the fixture is meant to put the late section past the full-mode cut');
-  let r = runRead(w, { sections: ['S12'] });
-  assert.equal(r.mode, 'sections');
-  assert.match(r.text, /=== S12 尾声（约 \d+ token，1 个可点）===/);
-  assert.match(r.text, /藏在一万两千字之后的段落：暗号 PINEAPPLE-42。/);
-  assert.match(r.text, new RegExp(`\\[${mk(w, '#late-btn')}\\] 尾声里的按钮`));
-  assert.deepEqual(indexLines(r.text), [`[${mk(w, '#late-btn')}] button | 尾声里的按钮`]);
-  assert.doesNotMatch(r.text, /【社会|Reference 1:/, 'nothing from the neighbouring sections');
-  assert.equal(r.text.split('\n').at(-1), r.hint);
-
-  r = runRead(w, { sections: ['s5'] });
-  const s5 = between(r.text, '=== S5 历史');
-  assert.match(s5, /^=== S5 历史（约 \d+ token，2 个可点，含子节 S6–S9）===\n子节：\nS6 早期（[^\n]*\nS7 殖民时期（[^\n]*\n  S8 海峡殖民地（[^\n]*\nS9 独立（/);
-  for (const p of ['历史部分按时期分成三小节', '【早期·第 12 段】', '【殖民时期·第 1 段】', '【海峡殖民地·第 10 段】', '【独立·第 12 段】']) {
-    assert.ok(s5.includes(p), `S5 lacks ${p}`);
-  }
-  assert.deepEqual(indexLines(s5).map(numOf), [mk(w, '#timeline-link'), mk(w, '#straits-more')]);
-  assert.doesNotMatch(s5, /【经济/);
-
-  r = runRead(w, { sections: ['S7'] });
-  assert.match(r.text, /【海峡殖民地·第 3 段】/);
-  assert.doesNotMatch(r.text, /【独立/, 'a sibling section is not part of it');
-
-  r = runRead(w, { sections: ['S5', 'S8', 'S99', 'S12'] });
-  assert.match(r.text, /（目录里没有 S99：目录是 S0–S13，不带参数的 read_page 可以看目录）/);
-  assert.match(r.text, /（S8 在一起展开的大节里，不再单列）/);
-  assert.deepEqual([...r.text.matchAll(/^=== (S\d+) /gm)].map(m => m[1]), ['S5', 'S12']);
-
-  r = runRead(w, { sections: ['S13'] });
-  assert.ok(r.text.length <= 12000, `${r.text.length} characters`);
-  assert.match(r.text, /…（S13 超过这次的预算，只显示了前 \d+ 字，或用 query 找需要的内容）/);
-  assert.match(r.text, /--- S13 里的可点击元素（302 个）---/);
+  const full = runRead(w,FULL);
+  assert.match(full.text,/正文过长已截断/);
+  assert.doesNotMatch(full.text,/PINEAPPLE-42/);
+  let r = runRead(w,{sections:['S12']});
+  assert.match(r.text,/藏在一万两千字之后的段落：暗号 PINEAPPLE-42。/);
+  assert.deepEqual(indexLines(r.text), [`[${mk(w,'#late-btn')}] button | 尾声里的按钮`]);
+  assert.equal((r.text.match(new RegExp(`\\[${mk(w,'#late-btn')}\\]`,'g'))||[]).length,1);
+  r=runRead(w,{sections:['s5']});
+  const history=r.blocks.find(b=>b.id==='S5').lines.join('\n');
+  assert.match(history,/历史部分按时期分成三小节/);
+  assert.ok(r.blocks.some(b=>b.id==='S6') && r.blocks.some(b=>b.id==='S7') && r.blocks.some(b=>b.id==='S9'));
+  assert.ok(!r.blocks.some(b=>b.id==='S8'));
+  assert.doesNotMatch(r.text,/【早期|【殖民时期|【海峡殖民地|【独立/);
+  r=runRead(w,{sections:['S7']});
+  assert.match(r.text,/【殖民时期·第 3 段】/);
+  assert.ok(r.blocks.some(b=>b.id==='S8'));
+  assert.doesNotMatch(r.text,/【海峡殖民地/);
+  r=runRead(w,{sections:['S5','S8','S99','S12']});
+  assert.match(r.text,/Unknown sections: S99/);
+  assert.match(r.text,/【海峡殖民地·第 3 段】/);
+  assert.equal(r.blocks.filter(b=>b.id==='S8').length,1);
+  r=runRead(w,{sections:['S13']});
+  assert.match(r.text,/Reference 300:/,'long leaves stay available for server-side budget continuation');
+  assert.equal(indexLines(r.blocks.find(b=>b.id==='S13').lines.join('\n')).length,300);
+  assert.doesNotMatch(r.blocks.find(b=>b.id==='S13').lines.join('\n'), /关于本站|隐私政策/);
 });
 
 t('round7: query — case-insensitive, with its section; element names count (aria-label); at most 20 listed; sections narrow it', () => {
@@ -1031,12 +1042,12 @@ t('round7: query — case-insensitive, with its section; element names count (ar
   assert.equal(r.mode, 'query');
   assert.match(r.text, /=== 查找「pineapple-42」（不区分大小写）：找到 1 处 ===\nS12 尾声：\n  藏在一万两千字之后的段落：暗号 PINEAPPLE-42。/);
   r = runRead(w, { query: '打印' });
-  assert.match(r.text, new RegExp(`找到 1 处 ===\\nS0 （第一个标题之前）：\\n  \\[${mk(w, '#print')}\\] button \\| 打印本页`));
+  assert.match(r.text, new RegExp(`找到 1 处 ===\\nS0 （标题之外的内容）：\\n\\[${mk(w, '#print')}\\] button \\| 打印本页`));
   r = runRead(w, { query: 'REFERENCE' });
   assert.match(r.text, /找到 300 处/);
-  assert.equal((between(r.text, 'S13 参考文献：', '…（另有').match(/^  \[\d+\] Reference /gm) || []).length, 20);
-  assert.match(r.text, /…（另有 280 处没列出：换个更具体的词，或加 sections 限定在某几节里）/);
-  assert.match(r.text, /--- 上面这些段落里的可点击元素 ---\n\[\d+\] a \| Reference 1:/);
+  assert.equal((between(r.text, 'S13 参考文献：', '…（另有').match(/^\[\d+\] a \| Reference /gm) || []).length, 20);
+  assert.match(r.text, /…（另有 280 处没列出）/);
+  assert.doesNotMatch(r.text, /上面这些段落里的可点击元素|提示：/);
   r = runRead(w, { query: '第 3 段', sections: ['S3'] });
   assert.match(r.text, /（不区分大小写，只在指定的节里）：找到 1 处 ===\nS3 气候：\n  【气候·第 3 段】/);
   r = runRead(w, { query: '第 3 段', sections: ['S5'] });
@@ -1044,7 +1055,8 @@ t('round7: query — case-insensitive, with its section; element names count (ar
   r = runRead(w, { query: '没有这个词' });
   assert.match(r.text, /：没有找到 ===\n（查了整页的正文和元素的文字，都没有「没有这个词」）/);
   r = runRead(w, { query: 'pineapple', sections: ['S99'] });
-  assert.match(r.text, /（sections 里的节号目录里都没有，查的是整页）\n=== 查找「pineapple」（不区分大小写）：找到 1 处/);
+  assert.match(r.text, /Unknown sections: S99.*No search was performed/);
+  assert.doesNotMatch(r.text, /找到 1 处|pineapple/);
 });
 
 t('round7: this screen keeps an expanded list whole past the viewport edge; a portal layer that is off screen (a closed drawer) is left out', () => {
@@ -1055,7 +1067,7 @@ t('round7: this screen keeps an expanded list whole past the viewport edge; a po
     <ul id="lb" role="listbox" data-rect="10,740,200,600">${opts}</ul>
     <div id="drawer" style="position:fixed" data-rect="-400,0,300,800"><a href="/x" data-rect="-400,10,200,24">抽屉里的链接</a></div>`);
   const r = runRead(w);
-  const screen = between(r.text, '=== 这一屏（', '\n提示：');
+  const screen = r.text;
   const shown = indexLines(screen).map(numOf);
   for (let i = 0; i < 10; i++) assert.ok(shown.includes(markerByText(w, new RegExp(`^城市 ${i}$`))), `option ${i}`);
   assert.match(screen, /城市 9/);
@@ -1063,94 +1075,65 @@ t('round7: this screen keeps an expanded list whole past the viewport edge; a po
   assert.match(runRead(w, FULL).text, /抽屉里的链接/);
 });
 
-t('round7: no headings — the outline falls back to landmarks (nested, S0 for the rest); with neither, it says the page has no heading structure', () => {
-  let w = makeDom(`
-    <header><a href="/">首页</a> <a href="/login">登录</a></header>
-    <nav aria-label="主菜单"><a href="/a">产品</a> <a href="/b">价格</a></nav>
-    <main><p>主体正文</p><form aria-label="搜索表单"><input placeholder="搜索"> <button>搜</button></form>
-      <article><header><p>文章自己的页首</p></header><p>文章正文</p></article></main>
-    <aside><a href="/ad">侧栏链接</a></aside>
-    <div><p>不在任何区域里的一段</p></div>
-    <footer><a href="/about">关于</a></footer>`);
-  let r = runRead(w);
-  assert.match(r.text, /=== 页面目录（页面没有标题，按页面区域分节；7 节；/);
-  // A region without a name is titled by its first 30 characters (jsdom has no innerText, so blocks run together here).
-  assert.deepEqual(outlineRows(r.text).map(x => `${'  '.repeat(x.depth)}S${x.id} ${x.title}`), [
-    'S0 （不在任何区域里的内容）', 'S1 页首「首页 登录」', 'S2 导航「主菜单」', 'S3 主体「主体正文 搜 文章自己的页首文章正文」',
-    '  S4 表单「搜索表单」', 'S5 侧栏「侧栏链接」', 'S6 页脚「关于」']);
-  r = runRead(w, { sections: ['S3'] });
-  assert.match(r.text, /主体正文[\s\S]*输入框: 搜索[\s\S]*文章正文/);
-  assert.doesNotMatch(r.text, /侧栏链接|不在任何区域里的一段/);
-  r = runRead(w, { sections: ['S0'] });
-  assert.match(r.text, /不在任何区域里的一段/);
-  assert.doesNotMatch(r.text, /主体正文/);
-
-  w = makeDom('<div><p>第一行</p><a href="/x">一个链接</a></div>');
-  r = runRead(w);
-  assert.match(r.text, /（这个页面没有标题结构，也没有页首、导航、主体这类区域标记，所以没有目录：找内容用 query，整页用 full=true）/);
-  assert.doesNotMatch(r.text, /=== 页面目录|S0 /);
-  assert.match(r.text, /=== 这一屏[\s\S]*\[1\] 一个链接/);
-  assert.match(r.hint, /这个页面没有目录可展开/);
-  assert.match(runRead(w, { sections: ['S1'] }).text, /没有标题结构，没有可展开的节/);
+t('hierarchy: landmark roots fold child forms; headingless pages have an explicit S0 expansion', () => {
+  const html=`<header><a href="/">首页</a></header><nav aria-label="主菜单"><a href="/a">产品</a></nav>
+    <main><p>主体正文</p><form aria-label="搜索表单"><input placeholder="搜索"><button>搜</button></form></main>
+    <div>未分区正文</div><footer><a href="/about">关于</a></footer>`;
+  let w=makeDom(html), r=runRead(w);
+  assert.deepEqual(r.blocks.map(b=>b.id),['S1','S2','S3','S5']);
+  assert.ok(!r.blocks.some(b=>b.id==='S4'));
+  r=runRead(w,{sections:['S3']});
+  assert.match(r.text,/主体正文/);
+  assert.ok(r.blocks.some(b=>b.id==='S4'));
+  assert.equal(indexLines(r.text).length,0,'nested form controls stay folded');
+  r=runRead(w,{sections:['S4']});
+  assert.deepEqual(indexLines(r.text).map(numOf),[mk(w,'input'),mk(w,'button')]);
+  assert.match(runRead(w,{sections:['S0']}).text,/未分区正文/);
+  w=makeDom('<div><p>第一行</p><a href="/x">一个链接</a></div>');
+  assert.match(runRead(w).text,/S0 .*\[collapsed\]/);
+  assert.doesNotMatch(runRead(w).text,/第一行|一个链接/);
+  assert.match(runRead(w,{sections:['S0']}).text,/第一行[\s\S]*\[1\] a \| 一个链接/);
+  assert.match(runRead(w,{sections:['S1']}).text,/Unknown sections: S1/);
 });
 
-t('round7: an open modal comes first and whole in default mode, before the outline; its headings stay out of the outline; the page behind is flagged', () => {
-  const plain = runRead(longArticle()).text;
-  const w = longArticle({ modal: true });
-  const r = runRead(w);
-  const lines = r.text.split('\n');
-  assert.equal(lines[0], '⚠️ 页面开着弹窗「订阅长文周报」：先列弹窗里的元素；弹窗外的元素被它挡住');
-  const iModal = r.text.indexOf('--- 弹窗「订阅长文周报」里的内容 ---'), iOutline = r.text.indexOf('=== 页面目录'), iScreen = r.text.indexOf('=== 这一屏');
-  assert.ok(iModal > 0 && iModal < iOutline && iOutline < iScreen, 'modal → outline → this screen');
-  const modalPart = r.text.slice(iModal, iOutline);
-  assert.match(modalPart, /每周一封，随时退订。/);
-  assert.match(modalPart, /--- 弹窗里的可点击元素（3 个）---/);
-  for (const sel of ['#promo-email', '#promo-sub', '#promo-close']) assert.ok(indexLines(modalPart).map(numOf).includes(mk(w, sel)), sel);
-  assert.doesNotMatch(between(r.text, '=== 页面目录', '=== 这一屏'), /订阅长文周报/);
-  assert.deepEqual(outlineRows(r.text).map(x => x.line), outlineRows(plain).map(x => x.line), 'same outline behind the modal');
-  const screenLines = indexLines(between(r.text, '=== 这一屏的可点击元素'));
-  assert.equal(screenLines.length, 6);
-  for (const l of screenLines) assert.match(l, /\[被弹窗挡住\]$/);
-  assert.match(r.text, /=== 这一屏：弹窗外的页面，元素都\[被弹窗挡住\]，先处理弹窗/);
-  assert.match(runRead(w, { sections: ['S12'] }).text, /^⚠️ 页面开着弹窗「订阅长文周报」：下面的元素都被它挡住，先处理弹窗/);
-  // Closed: no warning, the page keeps its numbers.
-  const before = mk(w, '#late-btn');
-  w.document.getElementById('promo-close').click();
-  flowLayout(w);
-  const after = runRead(w);
-  assert.doesNotMatch(after.text, /页面开着弹窗|被弹窗挡住|订阅长文周报/);
-  assert.equal(mk(w, '#late-btn'), before);
+t('hierarchy: open modal content is first and actionable once; background remains folded and blocked when expanded', () => {
+  const w=longArticle({modal:true}),r=runRead(w);
+  assert.equal(r.blocks[0].id,'modal');
+  const text=r.blocks[0].lines.join('\n');
+  assert.match(text,/每周一封，随时退订/);
+  for(const sel of ['#promo-email','#promo-sub','#promo-close']) {
+    const n=mk(w,sel);
+    assert.ok(indexLines(text).map(numOf).includes(n));
+    assert.equal((text.match(new RegExp(`\\[${n}\\]`,'g'))||[]).length,1);
+  }
+  assert.deepEqual(r.blocks.slice(1).map(b=>b.id),['S1']);
+  assert.doesNotMatch(r.text,/导言|PINEAPPLE-42/);
+  const expanded=runRead(w,{sections:['S12']});
+  assert.match(indexLines(expanded.text).find(l=>numOf(l)===mk(w,'#late-btn')),/\[被弹窗挡住\]/);
+  const before=mk(w,'#late-btn');
+  w.document.getElementById('promo-close').click();flowLayout(w);
+  const after=runRead(w);
+  assert.ok(!after.blocks.some(b=>b.id==='modal'));
+  assert.doesNotMatch(after.text,/被弹窗挡住|订阅长文周报/);
+  assert.equal(mk(w,'#late-btn'),before);
 });
 
-t('round7: budgets — this screen stays within 6000 characters, the outline within 2500 (two levels, then cut); full mode keeps its 12000', () => {
-  const filler = Array.from({ length: 400 }, (_, i) => `<p>第 ${i} 段很长的正文内容，用来把这一屏撑到超过六千个字符的上限。</p>`).join('');
-  const buttons = Array.from({ length: 200 }, (_, i) => `<button>按钮 ${i}</button>`).join('');
-  let r = runRead(makeDom(`<h1>标题</h1>${filler}${buttons}`));
-  const screen = between(r.text, '=== 这一屏（', '\n提示：');
-  assert.ok(screen.length <= 6000, `this screen is ${screen.length} characters`);
-  assert.match(screen, /这一屏的文字超过预算/);
-  assert.match(screen, /索引已截断/);
-
-  const deep = Array.from({ length: 10 }, (_, i) => `<h2>第 ${i} 章</h2>` + Array.from({ length: 3 }, (_, j) =>
-    `<h3>第 ${i}.${j} 节</h3>` + Array.from({ length: 4 }, (_, k) => `<h4>第 ${i}.${j}.${k} 小节</h4><p>正文</p>`).join('')).join('')).join('');
-  r = runRead(makeDom(deep));
-  let outline = between(r.text, '=== 页面目录', '=== 这一屏');
-  assert.ok(outline.length <= 2500, `outline ${outline.length}`);
-  assert.match(outline, /（目录太长，只列了前两层；展开一节时会列出它的子节）/);
-  const rows = outlineRows(r.text);
-  assert.equal(rows.length, 10 + 30, 'all h2 and h3, no h4');
-  assert.doesNotMatch(outline, /还有 \d+ 行目录没列出/);
-  assert.ok(rows.every(x => x.depth <= 1));
-  assert.ok(rows.filter(x => x.depth === 1).every(x => x.folded === 4), 'each h3 says it holds 4 sub-sections');
-
-  const wide = Array.from({ length: 300 }, (_, i) => `<h2>第 ${i} 章</h2><h3>第 ${i}.1 节</h3><p>正文</p>`).join('');
-  r = runRead(makeDom(wide));
-  outline = between(r.text, '=== 页面目录', '=== 这一屏');
-  assert.ok(outline.length <= 2500, `outline ${outline.length}`);
-  assert.match(outline, /…（还有 \d+ 行目录没列出：用 query 找，或展开前面的节）/);
-
-  r = runRead(makeDom(`<h1>标题</h1>${filler}${buttons}`), FULL);
-  assert.ok(r.text.length <= 12000 && r.text.length > 9000, `full mode ${r.text.length}`);
+t('hierarchy: deep and wide outlines stay folded, retain every addressable root, and explicit full keeps its cap', () => {
+  const filler=Array.from({length:400},(_,i)=>`<p>第 ${i} 段很长的正文内容，用来把这一屏撑到超过六千个字符的上限。</p>`).join('');
+  const buttons=Array.from({length:200},(_,i)=>`<button>按钮 ${i}</button>`).join('');
+  let r=runRead(makeDom(`<h1>标题</h1>${filler}${buttons}`));
+  assert.ok(r.text.length<200);
+  assert.doesNotMatch(r.text,/按钮|第 1 段/);
+  const deep=Array.from({length:10},(_,i)=>`<h2>第 ${i} 章</h2>`+Array.from({length:3},(_,j)=>`<h3>第 ${i}.${j} 节</h3><h4>细节</h4><p>正文</p>`).join('')).join('');
+  r=runRead(makeDom(deep));
+  assert.equal(r.blocks.length,10);
+  assert.doesNotMatch(r.text,/细节|正文|第 1.1 节/);
+  const wide=Array.from({length:300},(_,i)=>`<h2>第 ${i} 章</h2><h3>第 ${i}.1 节</h3><p>正文</p>`).join('');
+  const w=makeDom(wide);r=runRead(w);
+  assert.equal(r.blocks.length,300,'server pagination must not silently lose roots');
+  assert.match(runRead(w,{sections:['S599']}).text,/S600 第 299.1 节/);
+  r=runRead(makeDom(`<h1>标题</h1>${filler}${buttons}`),FULL);
+  assert.ok(r.text.length<=12000&&r.text.length>9000,`full mode ${r.text.length}`);
 });
 
 console.log('\nsrc/page/locate.js (jsdom, layout stubbed)');
@@ -1217,6 +1200,37 @@ const markerOf = (w, sel) => w.__chromeBridge.markers.indexOf(w.document.querySe
 function runAck(w, ack) {
   return JSON.parse(w.eval(ackSrc.replaceAll('__ACK__', () => JSON.stringify(ack))));
 }
+
+t('a zero-height clipped child keeps its marker but cannot be targeted; expanded and visible portal states remain targetable', () => {
+  // Characterize reader/locator separately; this synthetic layout is not
+  // evidence of the historical site DOM or an executed native input.
+  const w = makeDom('<div id="parent" style="overflow-x:hidden;overflow-y:hidden" data-rect="100,100,300,0">' +
+    '<button id="child" style="position:absolute" data-rect="120,120,100,30">Boundary option</button></div>');
+  const calls = withLayout(w);
+  const parent = w.document.getElementById('parent'), child = w.document.getElementById('child');
+  for (const [name, height, overflow, targetable] of [
+    ['collapsed-hidden', 0, 'hidden', false],
+    ['expanded-hidden', 100, 'hidden', true],
+    ['zero-height-visible-portal', 0, 'visible', true],
+  ]) {
+    parent.setAttribute('data-rect', `100,100,300,${height}`);
+    parent.style.overflowX = overflow; parent.style.overflowY = overflow;
+    const read = runRead(w, FULL);
+    const marker = w.__chromeBridge.markers.indexOf(child);
+    assert.ok(marker > 0, `${name}: same child remains addressable`);
+    assert.equal(w.__chromeBridge.markers[marker], child, name);
+    assert.match(read.text, /Boundary option/, name);
+    const locate = runLocate(w, marker);
+    assert.equal(locate.ok, true, name);
+    assert.equal(locate.hitOk, targetable, name);
+    assert.equal(locate.visible !== null, targetable, name);
+    assert.equal(locate.land !== null, targetable, name);
+    if (targetable) assert.deepEqual(locate.visible, { x: 120, y: 120, width: 100, height: 30 }, name);
+  }
+  assert.equal(calls.scrollIntoView.length, 0);
+  assert.equal(calls.scrollTo, 0); assert.equal(calls.scrollBy, 0);
+  w.close();
+});
 
 t('resolves a marker to its full rect, visible rect, aim and window metrics — without scrolling', () => {
   const w = makeDom(FIXTURE);
@@ -1291,15 +1305,14 @@ t('an element entirely outside the viewport is reported, not refused and not scr
   assert.equal(calls.scrollIntoView.length, 0);
 });
 
-t('SCROLL=true (the labelled fallback) uses scrollIntoView block:nearest, never centre', () => {
+t('legacy SCROLL=true cannot mutate the page; an offscreen target stays offscreen', () => {
   const w = makeDom('<button data-rect="300,3000,100,30">很远</button>');
   const calls = withLayout(w, { docScrollH: 4000 });
   runRead(w);
   const loc = runLocate(w, 1, { scroll: true });
-  assert.equal(loc.programmaticScroll, true);
-  assert.equal(calls.scrollIntoView.length, 1);
-  assert.equal(calls.scrollIntoView[0].block, 'nearest');
-  assert.equal(calls.scrollIntoView[0].inline, 'nearest');
+  assert.equal(loc.programmaticScroll, false);
+  assert.equal(calls.scrollIntoView.length, 0);
+  assert.equal(loc.visible, null);
 });
 
 // Longhands: jsdom's computed style does not expand the `overflow` shorthand (Chrome does).
@@ -1517,6 +1530,190 @@ t('codex1-6: with a bound field, another field holding the same text does not co
   assert.equal(runAfter(w, null, 'hello', { check: 'tok1' }).fieldHasText, true, 'a URL change while typing does not unbind the field');
 });
 
+/** type_text's bind → page change → last confirmation with the record flag (src/page/after.js), on one field. */
+function recordTyped(w, el, apply, sent, token = 'c7' + Math.random()) {
+  el.focus();
+  if (typeof el.setSelectionRange === 'function') el.setSelectionRange(el.value.length, el.value.length);
+  else caretAtEnd(w, el);
+  runAfter(w, null, null, { set: token, strict: true });
+  apply(el);
+  return runAfter(w, null, sent, { check: token, record: true });
+}
+const typedValue = (el, v) => () => { el.value = v; };
+/** Where real typing leaves the caret in a contenteditable field: after the last character. */
+function caretAtEnd(w, el) {
+  const range = w.document.createRange(), sel = w.getSelection();
+  range.selectNodeContents(el); range.collapse(false);
+  sel.removeAllRanges(); sel.addRange(range);
+}
+
+t('C7: after.js records a typed field (random id, exact content) only for confirmed typing', () => {
+  const w = makeDom('<input id="a" data-rect="0,0,300,30">');
+  withLayout(w);
+  w.document.hasFocus = () => true;
+  const a = w.document.getElementById('a');
+  const first = recordTyped(w, a, typedValue(a, 'hello'), 'hello');
+  assert.equal(first.fieldHasText, true);
+  assert.match(first.typedField.id, /^f[a-z0-9]+$/);
+  assert.deepEqual({ ...first.typedField, id: 0 }, { id: 0, value: 'hello', replace: false, at: 0, cut: 0 });
+  assert.equal(w.__chromeBridgeTyped.fields.get(a).id, first.typedField.id);
+  // The same element keeps its id; an append records the whole content and where it went in.
+  const more = recordTyped(w, a, typedValue(a, 'hello world'), ' world');
+  assert.deepEqual([more.typedField.id, more.typedField.value, more.typedField.at], [first.typedField.id, 'hello world', 5]);
+  // Without a confirmed typing (the page swallowed it) nothing is recorded as the field's content.
+  const none = recordTyped(w, a, () => {}, 'xyz');
+  assert.deepEqual([none.fieldHasText, none.typedField.value], [false, null]);
+});
+
+t('C7 A3: the record step decides password / user-filled before reading, and never reads those fields', () => {
+  const w = makeDom('<input id="a"><input id="pw" type="password"><input id="p" name="code"><input id="later">');
+  withLayout(w);
+  w.document.hasFocus = () => true;
+  // Count every read of each field's value (the property getter, as a page or Chrome would serve it).
+  const native = Object.getOwnPropertyDescriptor(w.HTMLInputElement.prototype, 'value'), reads = {};
+  for (const el of w.document.querySelectorAll('input')) {
+    reads[el.id] = 0;
+    Object.defineProperty(el, 'value', { configurable: true,
+      get() { reads[el.id]++; return native.get.call(this); }, set(v) { native.set.call(this, v); } });
+  }
+  const $ = id => w.document.getElementById(id);
+  w.__chromeBridgePrivate = { set: new w.WeakSet([$('p')]), like: [], forms: new w.WeakSet() };
+  // The reads {record: true} adds over the very same {check}: the record step's own reads.
+  const recordReads = (id, text, token) => {
+    const el = $(id);
+    el.focus();
+    runAfter(w, null, null, { set: token, strict: true });
+    el.value = text;
+    let n = reads[id]; runAfter(w, null, text, { check: token }); const plain = reads[id] - n;
+    n = reads[id]; const r = runAfter(w, null, text, { check: token, record: true });
+    return { extra: reads[id] - n - plain, r };
+  };
+  const open = recordReads('a', 'hello', 'g1');
+  assert.equal(open.extra, 1, 'control: the record reads an ordinary field once');
+  assert.equal(open.r.typedField.value, 'hello');
+  for (const id of ['pw', 'p']) {
+    const { extra, r } = recordReads(id, 'secret-123', 'g-' + id);
+    assert.equal(extra, 0, `${id}: the record step read the field`);
+    assert.equal(r.typedField, null, id);
+    assert.doesNotMatch(JSON.stringify(r), /secret-123/, id);
+  }
+  // Recorded first, then handed to the user: the record is dropped (value null) without reading the field.
+  const later = recordReads('later', 'draft', 'g2');
+  assert.equal(later.r.typedField.value, 'draft');
+  w.__chromeBridgePrivate.set.add($('later'));
+  const { extra, r } = recordReads('later', 'draft2', 'g3');
+  assert.equal(extra, 0, 'a recorded field that became private was read by the record step');
+  assert.deepEqual(r.typedField, { id: later.r.typedField.id, value: null });
+  // read.js, asked for that id and the password's, does not read either field.
+  const before = { ...reads };
+  const out = runRead(w, { full: true, typed: [later.r.typedField.id, open.r.typedField.id] });
+  assert.equal(reads.later - before.later + reads.pw - before.pw + reads.p - before.p, 0, 'read.js read a private field');
+  assert.deepEqual(out.typed, { [open.r.typedField.id]: 'hello' });
+});
+
+t('C7 A4: a record ends when its node is used for another field or leaves the document', () => {
+  const w = makeDom('<form id="f1"><input id="a" name="first" data-rect="0,0,300,30"></form><form id="f2"></form>' +
+    '<div id="box"><input id="other" data-rect="0,40,300,30"></div>');
+  withLayout(w);
+  w.document.hasFocus = () => true;
+  const a = w.document.getElementById('a');
+  const slotted = id => runRead(w, { full: true, typed: [id] }).text.includes(`\u0003${id}\u0003`);
+  const record = text => recordTyped(w, a, typedValue(a, text), text.slice(a.value.length)).typedField.id;
+  const cases = [
+    ['renamed', () => a.setAttribute('name', 'second')],
+    ['new id', () => { a.id = 'b'; }],
+    ['type changed', () => a.setAttribute('type', 'search')],
+    ['moved to another form', () => w.document.getElementById('f2').append(a)],
+    ['removed and put back at once', () => { const box = a.parentElement; a.remove(); box.append(a); }],
+    ['page URL changed', () => w.history.pushState({}, '', '/elsewhere')],
+  ];
+  let text = '';
+  for (const [name, change] of cases) {
+    text += 'x';
+    const id = record(text);
+    assert.ok(slotted(id), `${name}: control, the record holds before the change`);
+    // An unrelated change elsewhere keeps it.
+    w.document.getElementById('other').remove(); w.document.body.append(Object.assign(w.document.createElement('input'), { id: 'other' }));
+    assert.ok(slotted(id), `${name}: an unrelated DOM change dropped the record`);
+    change();
+    assert.equal(slotted(id), false, `${name}: the old record still applies`);
+    assert.equal(w.__chromeBridgeTyped.fields.get(a), undefined, `${name}: the record was not dropped`);
+    if (a.id === 'b') a.id = 'a';
+  }
+});
+
+t('C7 A2: a field the agent typed into never shows its content in any read mode, however it is labelled', () => {
+  const w = makeDom('<h1>Form</h1><label for="t">Essay</label><textarea id="t" data-rect="0,0,300,60"></textarea>' +
+    '<input id="i" data-rect="0,70,300,30"><label>Wrapped <textarea id="wr" data-rect="0,110,300,60"></textarea></label>' +
+    '<div id="ce" contenteditable="true" role="textbox" tabindex="0" data-rect="0,180,300,80"></div>' +
+    '<textarea id="u" data-rect="0,270,300,60"></textarea>');
+  withLayout(w);
+  w.document.hasFocus = () => true;
+  const $ = id => w.document.getElementById(id);
+  const ids = [
+    recordTyped(w, $('t'), typedValue($('t'), 'SECRET_ESSAY words'), 'SECRET_ESSAY words'),
+    recordTyped(w, $('i'), typedValue($('i'), 'SECRET_INPUT'), 'SECRET_INPUT'),
+    recordTyped(w, $('wr'), el => { el.value = 'SECRET_WRAPPED'; el.defaultValue = 'SECRET_WRAPPED'; }, 'SECRET_WRAPPED'),
+    recordTyped(w, $('ce'), el => { el.innerHTML = '<p>SECRET_RICH one</p><p><a href="/x">SECRET_LINK</a></p>'; caretAtEnd(w, el); }, 'SECRET_RICH oneSECRET_LINK'),
+  ].map(r => r.typedField.id);
+  assert.equal(new Set(ids).size, 4);
+  $('u').value = 'PUBLIC_UNTYPED';
+  for (const req of [{}, { sections: ['S1'] }, FULL, { query: 'Essay' }, { query: 'SECRET' }, { query: 'Wrapped' }]) {
+    const r = runRead(w, { ...req, typed: ids }), text = r.text;
+    assert.doesNotMatch(text, /SECRET_/, JSON.stringify(req));
+    if (req.sections || req.full || req.query) {
+      for (const id of ids) assert.ok(text.includes(`\u0003${id}\u0003`), `${JSON.stringify(req)}: no check slot for ${id}`);
+    }
+    if (req.full) {
+      assert.match(text, /^\[\d+\] textarea \| Essay \| 文本输入框\u0003/m);
+      assert.match(text, /^\[\d+\] input\[text\] \| text \| 文本输入框\u0003/m);
+      assert.match(text, /^\[\d+\] textarea \| Wrapped \| 文本输入框\u0003/m);
+      // Untyped fields keep their current behaviour (their value as the label when nothing else names them).
+      assert.match(text, /\| PUBLIC_UNTYPED \|/);
+    }
+  }
+  // The server still gets the content to compare (and only for the listed fields).
+  assert.equal(runRead(w, { full: true, typed: ids }).typed[ids[3]], 'SECRET_RICH oneSECRET_LINK');
+});
+
+t('C7 QA3 T1: a heading inside a typed contenteditable is neither a section nor printed; the field keeps its check', () => {
+  const w = makeDom('<h1>Page</h1><div id="ce" contenteditable="true" role="textbox" tabindex="0" data-rect="0,40,600,200"></div>' +
+    '<h2>After</h2><p>tail</p>');
+  withLayout(w);
+  w.document.hasFocus = () => true;
+  const ce = w.document.getElementById('ce');
+  const typed = 'SECRET_TYPED_HEADINGSECRET_BODYSECRET_ROLE_HEADING';
+  const id = recordTyped(w, ce, el => {
+    el.innerHTML = '<h2>SECRET_TYPED_HEADING</h2><p>SECRET_BODY</p><div role="heading" aria-level="3">SECRET_ROLE_HEADING</div>';
+    caretAtEnd(w, el);
+  }, typed).typedField.id;
+  for (const req of [{}, { sections: ['S1'] }, FULL, { query: 'SECRET' }]) {
+    const r = runRead(w, { ...req, typed: [id] }), tag = JSON.stringify(req);
+    assert.doesNotMatch(r.text, /SECRET_/, tag);
+    assert.doesNotMatch(JSON.stringify(r.outline), /SECRET_/, `${tag}: a section title holds typed text`);
+    // The typed field's headings are its content: no section starts inside it.
+    if (!req.full) assert.deepEqual(r.outline.filter(x => x.id > 0).map(x => x.title), ['Page', 'After'], tag);
+    assert.equal(r.typed[id], typed, `${tag}: the server no longer gets the field to compare`);
+    if (req.sections || req.full || req.query) assert.ok(r.text.includes(`\u0003${id}\u0003`), `${tag}: the field lost its check slot`);
+  }
+});
+
+t('C7 QA3 T2: a query that hits only a control\'s type or state still completes its cut label', () => {
+  const answer = 'D. Tom thought the storms at sea would calm down again one day, and they did.';
+  const w = makeDom(`<h1>Q</h1><div role="button">${answer}</div><button disabled>${answer}</button>`);
+  for (const [query, count] of [['button', 2], ['禁用', 1]]) {
+    const lines = runRead(w, { query }).text.split('\n');
+    const hits = lines.map((line, i) => [line, i]).filter(([line]) => /^\[\d+\] (div\(role=button\)|button) \| /.test(line));
+    assert.equal(hits.length, count, `${query}:\n${lines.join('\n')}`);
+    for (const [line, i] of hits) {
+      const head = line.split(' | ')[1], more = (lines[i + 1] || '').trim();
+      assert.ok(head.endsWith('…') && answer.startsWith(head.slice(0, -1)), line);
+      assert.ok(more === answer || /（续）|（后略/.test(more), `${query}: «${line}» is not completed:\n${lines.join('\n')}`);
+      assert.equal(head.slice(0, -1) + more.slice(head.length - 1), answer, 'the part before … plus the completion is the label');
+    }
+  }
+});
+
 t('codex2-8: text already in the field, or whitespace, never confirms input that did not arrive', () => {
   const w = makeDom('<input id="a" data-rect="0,0,300,30"><div id="ce" contenteditable="true" data-rect="0,40,300,60"></div>');
   withLayout(w);
@@ -1598,10 +1795,10 @@ t('a password field value never appears in the report; contenteditable counts as
 console.log('\nsrc/page/*.js — no DOM writes, no page-visible scrolling (plan E7, A1, D1)');
 
 const pageSources = {};
-for (const name of ['read', 'locate', 'after', 'probe', 'ack']) {
+for (const name of ['read', 'locate', 'after', 'probe', 'ack', 'click-observation']) {
   pageSources[name] = await readFile(path.join(ROOT, `src/page/${name}.js`), 'utf8');
 }
-t('the injected scripts never write to the DOM, and only locate.js may scroll (behind SCROLL)', () => {
+t('the injected observation scripts never write to the DOM or scroll', () => {
   for (const [name, src] of Object.entries(pageSources)) {
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
     for (const re of [/setAttribute\s*\(/, /removeAttribute\s*\(/, /\.dataset\b/, /appendChild\s*\(/,
@@ -1609,11 +1806,8 @@ t('the injected scripts never write to the DOM, and only locate.js may scroll (b
                       /scrollBy\s*\(/, /scrollTo\s*\(/, /\.scrollTop\s*=[^=]/]) {
       assert.doesNotMatch(code, re, `${name}.js: ${re}`);
     }
-    if (name !== 'locate') assert.doesNotMatch(code, /scrollIntoView/, `${name}.js scrolls`);
+    assert.doesNotMatch(code, /scrollIntoView/, `${name}.js scrolls`);
   }
-  const loc = pageSources.locate.replace(/\/\*[\s\S]*?\*\//g, '');
-  assert.equal((loc.match(/scrollIntoView\(/g) || []).length, 2, 'scrollIntoView appears only in the SCROLL fallback (+ its catch)');
-  assert.match(loc, /if \(SCROLL\) \{\s*try \{ el\.scrollIntoView\(\{ block: 'nearest'/);
 });
 
 console.log('\nlocate.js -> coords.js (the whole click pipeline, minus Chrome)');
@@ -1633,6 +1827,11 @@ console.log('\nlocate.js -> coords.js (the whole click pipeline, minus Chrome)')
   });
 }
 
+
+if (process.env.CHROME_BRIDGE_PAGE_DOM_ONLY === '1') {
+  console.log(`DOM-only page tests passed (${passed}); native tool flows were not run.`);
+  process.exit(0);
+}
 
 console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrome, nothing posted)');
 
@@ -1708,9 +1907,56 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     return { w, state, clicks, calls };
   }
 
-  const origin = viewportOrigin(BOUNDS, { innerWidth: 1400, innerHeight: 812, outerWidth: 1400, outerHeight: 900 });
-  const toView = (p) => ({ x: p.x - origin.originX, y: p.y - origin.originY });
-  let pg, log, opts, pbN = 0;
+  const TOOLBAR_POINTS = 88;
+  const DEFAULT_DISPLAYS = [{ id: 1, isMain: true, boundsPoints: { x: 0, y: 0, w: 1920, h: 1080 } }];
+  let pg, log, opts, pbN = 0, currentBounds = { ...BOUNDS }, currentZoom = 1, currentDpr = 2;
+  // The fake bridge fresh() installed last (P2 call counting wraps it).
+  let lastFake = null;
+  let currentIdentity = { chromePid: 42, cgWindow: 7, windowId: 1, tabId: 5 };
+  // Independent fixture physical model: no product coordinate function supplies AX truth.
+  const contentPoints = () => ({ x: currentBounds.left, y: currentBounds.top + TOOLBAR_POINTS,
+    w: currentBounds.width, h: currentBounds.height - TOOLBAR_POINTS });
+  const toView = p => ({ x: (p.x - currentBounds.left) / currentZoom,
+    y: (p.y - currentBounds.top - TOOLBAR_POINTS) / currentZoom });
+  const physicalDisplays = () => opts.displays || DEFAULT_DISPLAYS;
+  function syncPageView() {
+    const rect = contentPoints();
+    assert.ok(rect.w > 0 && rect.h > 0, 'fixture physical viewport must be positive');
+    for (const [key, value] of Object.entries({ outerWidth: currentBounds.width / currentZoom,
+      outerHeight: currentBounds.height / currentZoom, innerWidth: rect.w / currentZoom,
+      innerHeight: rect.h / currentZoom, screenX: currentBounds.left, screenY: currentBounds.top,
+      devicePixelRatio: currentDpr })) Object.defineProperty(pg.w, key, { value, configurable: true });
+  }
+  function consumeNativeWindow(result, geometry = true) {
+    assert.equal(result?.ok, true, 'fixture must consume a successful actual DRY result');
+    assert.ok(['chromePid', 'cgWindow', 'windowId', 'tabId'].every(k => Number.isSafeInteger(result[k]) && result[k] > 0));
+    assert.ok(result.bounds && ['left', 'top', 'width', 'height'].every(k => Number.isFinite(result.bounds[k])) &&
+      result.bounds.width > 0 && result.bounds.height > TOOLBAR_POINTS, 'actual native bounds are required');
+    if (geometry) assert.ok(result.geometry && ['fit-current', 'placement'].includes(result.geometry.mode) &&
+      typeof result.geometry.changed === 'boolean' && typeof result.geometry.possiblyChanged === 'boolean',
+      'fixture must not manufacture a missing geometry receipt');
+    currentBounds = { left: result.bounds.left, top: result.bounds.top, width: result.bounds.width, height: result.bounds.height };
+    currentIdentity = Object.fromEntries(['chromePid', 'cgWindow', 'windowId', 'tabId'].map(k => [k, result[k]]));
+    syncPageView();
+    return result;
+  }
+  function dryDisplays() {
+    const displays = physicalDisplays();
+    assert.ok(displays.length > 0, 'fixture initialization needs an explicit awake physical model');
+    assert.equal(new Set(displays.map(d => d.id)).size, displays.length, 'fixture display IDs are unique');
+    return displays.map(d => {
+      const b = d.boundsPoints;
+      assert.ok(Number.isSafeInteger(d.id) && d.id > 0 && d.id <= 0xffffffff && b &&
+        ['x', 'y', 'w', 'h'].every(k => Number.isFinite(b[k])) && b.w > 0 && b.h > 0);
+      const row = { id: d.id, left: b.x, top: b.y, width: b.w, height: b.h, main: d.isMain === true };
+      for (const key of ['insetTop', 'insetBottom', 'insetLeft', 'insetRight']) if (d[key] !== undefined) {
+        assert.ok(Number.isFinite(d[key]) && d[key] >= 0, `invalid fixture ${key}`); row[key] = d[key];
+      }
+      if (d.asleep !== undefined) { assert.equal(typeof d.asleep, 'boolean'); row.asleep = d.asleep; }
+      if (d.mirrored !== undefined) { assert.equal(typeof d.mirrored, 'boolean'); row.mirrored = d.mirrored; }
+      return row;
+    });
+  }
 
   function applyWheel(pt, dir, sent) {
     const { w, state } = pg;
@@ -1723,7 +1969,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
       a.setAttribute('data-scroll-top', String(Math.max(0, Math.min(max, top + (down ? 40 : -40) * sent))));
       return;
     }
-    const max = 3000 - 812;
+    const max = Math.max(0, 3000 - w.innerHeight);
     state.sy = Math.max(0, Math.min(max, state.sy + (down ? 40 : -40) * sent));
   }
   function applyClick(pt) {
@@ -1751,7 +1997,12 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     if (opts.swallowText) return;
     const ae = pg.w.document.activeElement;
     if (ae && ae.tagName === 'SELECT') { if (!opts.noTypeahead) typeahead(ae, text); return; }
-    if (ae && 'value' in ae) ae.value += text.replace(/\t/g, '    ');
+    if (!ae || !('value' in ae)) return;
+    // Like a keyboard: typed text replaces a selection (after Cmd+A), else it goes in at the end.
+    const t = text.replace(/\t/g, '    ');
+    if (typeof ae.setRangeText === 'function' && ae.selectionStart != null && ae.selectionStart !== ae.selectionEnd) {
+      ae.setRangeText(t, ae.selectionStart, ae.selectionEnd, 'end');
+    } else ae.value += t;
   }
   /** The key-ups the page sees for a `type` op (tab = 4 spaces, newline = Return). */
   function applyKeyups(text) {
@@ -1771,7 +2022,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     { text: 'Footer', conf: 0.3, x: 300, y: 1500, w: 200, h: 40 }
   ];
   function fakeShot(rect, how) {
-    const fw = Math.round(rect.w * 2), fh = Math.round(rect.h * 2), k = Math.min(1, 1568 / Math.max(fw, fh));
+    const fw = Math.round(rect.w * currentDpr), fh = Math.round(rect.h * currentDpr), k = Math.min(1, 1568 / Math.max(fw, fh));
     const shot = { data: 'iVBORw0KGgo=', width: Math.round(fw * k), height: Math.round(fh * k), fullPath: `/fake/${how}.png`,
       fullWidth: fw, fullHeight: fh, rect, popups: 0, how, dispose: async () => { log.push(`dispose ${how}`); } };
     opts.lastShot = shot;
@@ -1780,31 +2031,43 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
 
   function fakeBridge() {
     const target = (extra = {}) => ({
-      ok: true, tabId: 5, windowId: 1, url: pg.w.location.href, title: '测试页面', tabActive: true,
-      windowIndex: 1, minimized: false, tabCount: 1, bounds: BOUNDS, chromePid: 42, cgWindow: 7,
+      ok: true, ...currentIdentity, url: pg.w.location.href, title: '测试页面', tabActive: true,
+      windowIndex: 1, minimized: false, tabCount: 1, bounds: { ...currentBounds },
       frontmost: 'Google Chrome', ...extra
     });
     return {
-      activateChrome: async (tab, hint) => { log.push('activate'); opts.lastHint = hint; return target({ targetOnTop: true, keyWindowIsTarget: opts.keyWindow !== false, waitedMs: 40 }); },
+      activateChrome: async (tab, hint, route) => {
+        const actual = consumeNativeWindow(await route.native({ kind: 'activate', tabId: tab,
+          windowId: hint.windowId, ...(route.fitCurrent !== undefined ? { fitCurrent: route.fitCurrent } : {}) }));
+        log.push('activate'); opts.lastHint = hint;
+        return target({ ...actual, url: pg.w.location.href, title: '测试页面',
+          targetOnTop: true, keyWindowIsTarget: opts.keyWindow !== false, waitedMs: 40 });
+      },
       chromeInfo: async (tab) => {
         log.push('info');
         if (opts.onChromeInfo) opts.onChromeInfo(tab);
-        return opts.chromeInfo ? opts.chromeInfo(tab, target) : target(opts.info || {});
+        const extra = (opts.extraTabs || []).find(t => Number(t.id) === Number(tab));
+        return opts.chromeInfo ? opts.chromeInfo(tab, target) : target({ ...(opts.info || {}), ...(extra ? { tabId: extra.id, url: extra.url, tabActive: !!extra.active } : {}) });
       },
       openTab: async (url, windowId, o) => {
+        opts.nativeOpened = await o.native({ kind: 'openTab', url, windowId, select: o.select });
         log.push(`openTab ${url} ${windowId} select=${!!(o && o.select)} lock=${fsSync.existsSync(process.env.CHROME_BRIDGE_LOCK)}`);
-        opts.extraTabs = [{ id: 88, url, title: 'new', active: !!(o && o.select) }];
-        return { ok: true, tabId: 88, windowId, selected: !!(o && o.select) };
+        opts.extraTabs = [{ id: opts.nativeOpened.tabId, url, title: 'new', active: !!(o && o.select) }];
+        return opts.nativeOpened;
       },
-      closeTab: async (id) => { log.push(`closeTab ${id}`); if (!opts.closeSticks) opts.extraTabs = []; return { ok: true, closed: true }; },
+      closeTab: async (id, o) => { await o.native({ kind: 'closeTab', tabId: id }); log.push(`closeTab ${id}`); if (!opts.closeSticks) opts.extraTabs = []; return { ok: true, closed: true }; },
       selectTab: async (tab, o) => {
+        const actual = consumeNativeWindow(await o.native({ kind: 'selectTab', tabId: tab, windowId: o.windowId }), false);
         log.push(`select window=${o && o.windowId}`);
         opts.selected = true;
-        return target({ changed: true, frontmostChanged: false });
+        return target({ ...actual, url: pg.w.location.href, title: '测试页面', changed: true, frontmostChanged: false });
       },
       listTabs: async () => ({ ok: true, frontmost: 'Google Chrome', chromePid: 42,
-        windows: [{ id: 1, index: 1, minimized: false, tabs: [{ id: 5, url: pg.w.location.href, title: 't', active: true }, ...(opts.extraTabs || [])] }] }),
-      pageDialog: async () => opts.dialog ? { ok: true, open: true, ...opts.dialog } : { ok: true, open: false },
+        windows: [{ id: currentIdentity.windowId, index: 1, minimized: false, tabs: [{ id: currentIdentity.tabId, url: pg.w.location.href, title: 't', active: true }, ...(opts.extraTabs || [])] }] }),
+      pageDialog: async requested => {
+        if (requested) assert.deepEqual([requested.tabId, requested.windowId, requested.chromePid, requested.cgWindow], [5, 1, 42, 7]);
+        return opts.dialog ? { ok: true, open: true, known: true, identity: { version: 1, tabId: 5, windowId: 1, chromePid: 42, cgWindow: 7, dialogCgWindow: 90, token: 'fixture-dialog' }, ...opts.dialog } : { ok: true, open: false };
+      },
       ensureScreenAwake: async () => {
         log.push('screen');
         const sc = opts.screen || { woke: false, displays: 1, locked: false };
@@ -1814,34 +2077,53 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
       axInput: async () => ({ ok: true, frontmost: true, windowMatches: true, nodeFound: true,
         nativePopup: false, menuOpen: false, nativeMenuOpen: false, documentToken: 'offline-page', segments: [], blocker: null }),
       axMenuState: async () => ({ ok: true, known: true, menuOpen: false }),
+      pageContentRect: async ({ chromePid, cgWindow }) => {
+        assert.equal(chromePid, currentIdentity.chromePid); assert.equal(cgWindow, currentIdentity.cgWindow);
+        log.push('pageContentRect');
+        const ax = { ok: true, pid: chromePid, cgWindow, source: 'ax-web-area', rect: { ...contentPoints() },
+          windowBounds: { x: currentBounds.left, y: currentBounds.top, w: currentBounds.width, h: currentBounds.height } };
+        return opts.axPatch ? opts.axPatch(ax) : ax;
+      },
       openNavigationObserver: async () => ({ startedAt: Date.now(),
         untouched: async () => opts.clickIdle !== 0 && opts.navigationUntouched !== false, close: async () => {} }),
       keepAwake: () => { log.push('keepAwake'); return () => log.push('awakeStop'); },
-      moveWindow: async (id, b) => { log.push(`moveWindow ${id} ${b.left},${b.top},${b.right},${b.bottom}`); opts.moved = { id, b }; return { ok: true }; },
+      moveWindow: async (id, b, route) => {
+        const actual = consumeNativeWindow(await route.native({ kind: 'moveWindow', windowId: id,
+          ...(b != null ? { bounds: { left: b.left, top: b.top, width: b.width ?? b.right - b.left, height: b.height ?? b.bottom - b.top } } : {}),
+          ...(route.displayId !== undefined ? { displayId: route.displayId } : {}),
+          ...(route.fitCurrent !== undefined ? { fitCurrent: route.fitCurrent } : {}) }));
+        if (b != null) { log.push(`moveWindow ${id} ${b.left},${b.top},${b.right},${b.bottom}`); opts.moved = { id, b }; }
+        return target({ ...actual, url: pg.w.location.href, title: '测试页面' });
+      },
       // A shot as bridge.js returns it: the full capture at 2× (Retina) and the picture ≤ 1568 px on its longest side.
       captureRegion: async (rect) => { log.push('capture region'); opts.captured = rect; return fakeShot(rect, 'region'); },
-      captureWindow: async (w) => {
+      // PERM1: the private look at a Chrome popup (never reached here: no fixture reports a popup).
+      captureWindow: async () => { throw new Error('captureWindow reached in page.test'); },
+      capturePageContent: async (w) => {
         log.push(`capture window ${w.cgWindow}`);
         opts.capturedWindow = w;
         if (opts.windowCaptureFails) throw new bridge.BridgeError('window_off_screen', opts.windowCaptureFails);
-        return fakeShot(opts.windowRect || { x: BOUNDS.left, y: BOUNDS.top, w: BOUNDS.width, h: BOUNDS.height }, 'window');
+        return fakeShot(opts.windowRect || { x: currentBounds.left, y: currentBounds.top, w: currentBounds.width, h: currentBounds.height }, 'window');
       },
       ocrImage: async (file) => {
         log.push(`ocr ${file}`);
         return { ok: true, width: opts.lastShot.fullWidth, height: opts.lastShot.fullHeight, lines: opts.ocrLines ?? FAKE_OCR };
       },
-      answerDialog: async (b, text = null) => {
+      answerDialog: async (b, text = null, expectedIdentity = null, route) => {
+        assert.deepEqual(['tabId', 'windowId', 'chromePid', 'cgWindow'].map(k => expectedIdentity[k]), [opts.dialog?.identity?.tabId ?? 5, 1, 42, 7]);
+        assert.match(expectedIdentity.dialogToken, /^[a-f0-9]{64}$/);
+        await route.native({ kind: 'dialogAnswer', dialogToken: expectedIdentity.dialogToken, button: b, text });
         log.push(`answerDialog ${b}`);
         opts.dialogText = text;
         if (!opts.dialog || !opts.dialog.buttons.includes(b)) return { ok: false, message: `对话框里没有「${b}」按钮`, buttons: opts.dialog && opts.dialog.buttons };
         opts.dialog = null;
-        return { ok: true, open: true, pressed: b, stillOpen: false };
+        return { ok: true, open: true, pressed: b, inputDelivery: 'sent', sameStillOpen: false };
       },
-      evalInPage: async (src) => {
-        if (opts.onEval) opts.onEval(src);
+      evalInPage: async (src, _tab, options) => {
+        if (opts.onEval) opts.onEval(src, options);
         const payload = JSON.parse(pg.w.eval(src));
         if (!payload.ok) throw new bridge.BridgeError(payload.error, payload.message);
-        return { ...payload, bounds: BOUNDS, target: target() };
+        return { ...payload, bounds: { ...currentBounds }, target: target() };
       },
       cgevent: async (args) => {
         if (args[0] === 'idle') {
@@ -1853,29 +2135,43 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
             ...(hv ? { keyIdle: hv.keyIdle, held: hv.held || [], ...(hv.keyAt != null ? { keyAt: hv.keyAt } : {}) } : opts.hands ? { keyIdle: 100, held: [] } : {}) };
         }
         if (args[0] === 'mousepos') return { ok: true, x: opts.mouse ? opts.mouse.x : 11, y: opts.mouse ? opts.mouse.y : 22 };
-        if (args[0] === 'displays') return { ok: true, displays: opts.displays || [{ id: 1 }],
+        if (args[0] === 'displays') return { ok: true, displays: physicalDisplays(),
           locked: false, displaysAsleep: false, mouse: opts.mouse || { x: 11, y: 22 } };
         if (args[0] === 'warp') { log.push('warp'); return { ok: true }; }
         if (args[0] === 'windowsat') {
-          return { ok: true, windows: [{ owner: 'Google Chrome', pid: 42, layer: 0, alpha: 1, bounds: { x: 100, y: 60, w: 1400, h: 900 } }] };
+          return { ok: true, windows: [{ owner: 'Google Chrome', id: currentIdentity.cgWindow, pid: currentIdentity.chromePid, layer: 0, alpha: 1,
+            bounds: { x: currentBounds.left, y: currentBounds.top, w: currentBounds.width, h: currentBounds.height } }] };
         }
         throw new Error(`unexpected cgevent ${args[0]}`);
       },
-      snapshotScene: async () => { log.push('scene'); return { app: 'kitty', appPid: 9, chromeWindow: 1, chromeTab: 5 }; },
-      newWindow: async (...a) => { if (opts.newWindow) return opts.newWindow(...a); throw new Error('newWindow reached in a test'); },
+      snapshotScene: async () => { log.push('scene'); return { app: 'kitty', appPid: 9, chromePid: 42, chromeWindow: 1, chromeTab: 5 }; },
+      newWindow: async (url, bounds, profile, route) => {
+        opts.nativeCreated = consumeNativeWindow(await route.native({ kind: 'newWindow', url, profile, displayId: route.displayId,
+          bounds: { left: bounds.left, top: bounds.top, width: bounds.width ?? bounds.right - bounds.left, height: bounds.height ?? bounds.bottom - bounds.top } }));
+        if (opts.newWindow) return opts.newWindow(url, bounds, profile, opts.nativeCreated);
+        throw new Error('newWindow reached in a test');
+      },
       profiles: async () => ({ ok: true, default: 'Profile 3', profiles: [{ dir: 'Profile 3', name: '庄严', user: 'u@test', appleEventsJS: true }] }),
-      restoreScene: async (sc, o) => { log.push('restore'); opts.lastRestoreOpts = o; opts.lastRestoreScene = sc; return { ok: true }; },
+      restoreScene: async (sc, o) => { await o.native({ kind: 'restoreScene' }, { policy: 'restore' }); log.push('restore'); opts.lastRestoreOpts = o; opts.lastRestoreScene = sc; return { ok: true }; },
       restoreApp: async (pid, o) => { log.push(`restoreApp ${pid}`); opts.lastRestoreAppOpts = o; return { ok: true, appFrontmost: true }; },
       openInputSession: () => {
         log.push('session');
         const real = bridge.openInputSession({ env: { ...process.env, CGEVENT_DRYRUN: '1', CGEVENT_SEED: `e2e${pbN}`,
           CGEVENT_DRYRUN_PASTEBOARD: `com.chromebridge.dryrun.e2e${process.pid}.${++pbN}` } });
         opts.lastReal = real;
-        let cursor = null, pendingPaste = null;
+        let cursor = null, pendingPaste = null, initialization = null;
+        // One Owner initialization per new DRY Session, before any scene/dialog/bind request.
+        const initialize = () => initialization ||= (async () => {
+          try {
+            const result = await real.request({ op: '_native', seedBounds: { ...currentBounds }, displays: dryDisplays() }, { raw: true });
+            assert.equal(result?.ok, true, 'DRY fixture initial bounds/display configuration was rejected');
+          } catch (error) { await real.close(); throw error; }
+        })();
         return {
           get interrupted() { return real.interrupted; },
-          close: () => real.close(),
+          close: async () => { await initialize(); return real.close(); },
           async request(o, ro) {
+            await initialize();
             log.push(o.op);
             if (o.op === 'hold') opts.holdReq = o;
             if (o.op === 'click') opts.lastClickReq = o;
@@ -1887,6 +2183,14 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
             if ((o.op === 'hold' || o.op === 'begin') && opts.secureInput) await real.request({ op: '_fake', secureInput: opts.secureInput }, { raw: true });
             // A key of the user's down at the hold, for the first `heldTimes` attempts.
             if (o.op === 'hold' && (opts.heldLeft = opts.heldLeft ?? opts.heldTimes ?? 0) > 0) { opts.heldLeft--; await real.request({ op: '_fake', held: true }, { raw: true }); }
+            // Contract D: a dialog natively bound to another tab is not the requested target's (the real binding
+            // answers dialog_identity_mismatch; `inspectError` replays that reply).
+            if (o.op === 'inspectDialog' && opts.inspectError) throw bridge.sessionError({ ok: false, error: opts.inspectError, stage: 'dialog_binding' });
+            if (o.op === 'inspectDialog' && !o.dialogToken) await real.request({ op: '_native', dialog: opts.dialog &&
+              !(opts.dialog.identity && opts.dialog.identity.tabId !== o.target.tabId) ? {
+              target: o.target, dialogCgWindow: 90, instance: 'page-fixture', buttons: opts.dialog.buttons,
+              fields: opts.dialog.hasField ? 1 : 0, texts: opts.dialog.texts || []
+            } : null });
             const pending = real.request(o, ro);
             if (opts.injectDuring === o.op && (opts.injectTimes == null || (opts.injected = (opts.injected || 0) + 1) <= opts.injectTimes)) {
               setTimeout(() => real.request({ op: '_inject', kind: opts.injectKind ?? 'key' }, { raw: true }).catch(() => {}), opts.injectAfterMs ?? 300);
@@ -1903,7 +2207,8 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
             if (o.op === 'wheel') applyWheel(cursor, o.dir, r.sent);
             if (o.op === 'click') applyClick(r.landed);
             if (o.op === 'type') { applyText(o.text); applyKeyups(o.text); }
-            if (o.op === 'key') applyKeyups('\n');
+            if (o.op === 'key' && o.name === 'select_all') pg.w.document.activeElement?.select?.();
+            else if (o.op === 'key') applyKeyups('\n');
             if (o.op === 'paste') {
               pendingPaste = o.text;
               setTimeout(() => { if (pendingPaste != null) applyText(pendingPaste); pendingPaste = null; }, opts.pasteLatencyMs ?? 0);
@@ -1917,10 +2222,19 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   async function fresh(o = {}) {
     idx.__resetPanelTaskForTests();
     idx.__resetLedgerForTests();
+    idx.__resetTypedForTests?.();   // C7: typed-field records belong to the page they were typed on
     pg = page();
     log = [];
     opts = o;
-    const fake = fakeBridge();
+    currentBounds = { ...BOUNDS };
+    currentIdentity = { chromePid: 42, cgWindow: 7, windowId: 1, tabId: 5 };
+    currentZoom = opts.zoom ?? 1; currentDpr = opts.dpr ?? 2;
+    assert.ok(Number.isFinite(currentZoom) && currentZoom >= 0.25 && currentZoom <= 4);
+    assert.ok(Number.isFinite(currentDpr) && currentDpr > 0);
+    syncPageView();
+    const fake = { ...fakeBridge(),
+      observePagePrompts: async () => ({ status: 'unavailable', reason: 'fixture_observer_disabled' }),
+      disposePagePromptObserver: async () => {} };
     // Only reading the local page scripts may stay real.
     const real = idx.__bridgeKeysForTests().filter(k => !(k in fake) && k !== 'pageScript');
     if (real.length) throw new Error(`the test bridge does not fake ${real.join(', ')}: that would reach the real Chrome`);
@@ -1930,12 +2244,32 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     const missing = used.filter(k => !idx.__bridgeKeysForTests().includes(k));
     if (missing.length) throw new Error(`src/index.js calls B.${missing.join(', B.')} but its bridge table B has no such entry`);
     idx.__setBridgeForTests(fake);
+    lastFake = fake;
   }
   const m = (sel) => markerOf(pg.w, sel);
-  async function ta2(name, fn) { await fn(); passed++; console.log(`  ok  ${name}`); }
+  // Optional focused reruns; the default still executes every flow. Report
+  // skipped groups explicitly so a continuation cannot look like a full run.
+  const flowFilter = process.env.CHROME_BRIDGE_PAGE_FLOW_FILTER;
+  const flowFrom = process.env.CHROME_BRIDGE_PAGE_FLOW_FROM;
+  let flowStarted = !flowFrom;
+  let passedFlows = 0;
+  async function ta2(name, fn) {
+    if (!flowStarted && name.startsWith(flowFrom)) flowStarted = true;
+    if (!flowStarted || (flowFilter && !name.includes(flowFilter))) { skippedFlows++; return; }
+    await fn(); passed++; passedFlows++; console.log(`  ok  ${name}`);
+  }
 
   await ta2('MCP records a contiguous prefix and replays it with fresh markers through the native input path', async () => {
     await fresh();
+    // Both recorded actions need a real result; focus alone is not replay evidence.
+    const confirmedPlain = () => {
+      const status = pg.w.document.createElement('p');
+      status.setAttribute('data-rect', '20,180,200,30');
+      status.textContent = 'Waiting for confirmation';
+      pg.w.document.body.append(status);
+      pg.w.document.getElementById('plain').addEventListener('click', () => { status.textContent = 'Selection confirmed'; });
+    };
+    confirmedPlain();
     process.env.CHROME_BRIDGE_ROUTINE_RECORDING = '1';
     const invoke = (name, args) => idx.callTool({ params: { name, arguments: args } }, {});
     try {
@@ -1951,6 +2285,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
       assert.ok(saved?.id, 'saving chronological range must succeed');
       process.env.CHROME_BRIDGE_ROUTINE_RECORDING = '0';
       await fresh();
+      confirmedPlain();
       // Fixture-only change: a new control shifts marker numbers; the runner must resolve identities again.
       const unrelated = pg.w.document.createElement('button');
       unrelated.textContent = 'Unrelated'; unrelated.setAttribute('data-rect', '900,60,120,30');
@@ -1968,33 +2303,47 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     }
   });
 
-  await ta2('click: on-screen target, URL changes → ✅; scene restored and pointer warped back afterwards', async () => {
+  await ta2('click: on-screen target reports the actual URL change; scene and pointer are restored', async () => {
     await fresh();
     const out = await idx.click({ marker: m('#near') });
-    assert.match(out, /^✅ 已点击 \[\d+\] <button> Near/m);
-    assert.match(out, /页面地址已改变/);
+    assert.match(out, /^\[\d+\] → URL已变：https:\/\/example.test\//m);
+    assert.doesNotMatch(out, /落点|键盘焦点|反应 \d+ ms/);
     assert.doesNotMatch(out, /滚轮|程序滚动/);
     assert.equal(pg.clicks.near, 1);
-    // park (warp before the session begins, i.e. before activation), then the
-    // click, then the user's scene and pointer are put back.
-    assert.deepEqual(log.filter(x => ['begin', 'click', 'restore', 'warp'].includes(x)), ['warp', 'begin', 'click', 'restore', 'warp']);
+    // Preflight is read-only: no pointer write before the guarded session.
+    // The click is followed by restoration of the user's scene and pointer.
+    assert.deepEqual(log.filter(x => ['begin', 'click', 'restore', 'warp'].includes(x)), ['begin', 'click', 'restore', 'warp']);
     assert.ok(log.indexOf('restore') > log.indexOf('click'));
   });
 
-  await ta2('click: no URL change and no new focus → "no observable change", not ✅ (codex #5)', async () => {
+  await ta2('click: no visible result stays unconfirmed, without claiming the page did not change', async () => {
     await fresh();
     pg.w.document.getElementById('plain').focus();
     const out = await idx.click({ marker: m('#plain') });
     assert.equal(pg.clicks.plain, 1);
-    assert.match(out, /^已点击，页面没有可观察的变化（不代表没生效）/);
-    assert.match(out, /点击前焦点已经在它上面/);
+    assert.match(out, /^\[\d+\] → URL未变；点击已发送，结果未确认/);
+    assert.doesNotMatch(out, /✅|页面没有可观察的变化|键盘焦点/);
+  });
+
+  await ta2('click: native checkbox changes are read from the same control after each physical click', async () => {
+    await fresh();
+    const checkbox = pg.w.document.createElement('input');
+    checkbox.id = 'check-choice'; checkbox.type = 'checkbox';
+    checkbox.setAttribute('data-rect', '900,400,40,40');
+    pg.w.document.body.append(checkbox); runRead(pg.w);
+    const marker = m('#check-choice');
+    assert.match(await idx.click({ marker }), /目标控件已选中/);
+    assert.equal(checkbox.checked, true);
+    assert.match(await idx.click({ marker }), /目标控件已取消选中/);
+    assert.equal(checkbox.checked, false);
+    assert.equal(log.filter(x => x === 'click').length, 2);
   });
 
   await ta2('click: target 2.5 screens down is wheeled into view (no programmatic scroll), then clicked', async () => {
     await fresh();
     const out = await idx.click({ marker: m('#far') });
     assert.equal(pg.clicks.far, 1, out);
-    assert.match(out, /用真实滚轮滚了 \d+ 串/);
+    assert.doesNotMatch(out, /落点|反应 \d+ ms|元素可见部分/);
     assert.doesNotMatch(out, /程序滚动/);
     assert.ok(pg.state.sy > 1000, `document scrolled to ${pg.state.sy}`);
     const y = 2000 - pg.state.sy;
@@ -2022,12 +2371,140 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.ok(log.includes('restore') && log.includes('warp'));
   });
 
-  await ta2('click: activation not reaching the key window → refused, nothing pressed', async () => {
+  // FOCUS4 (contracts-batch4.md): the AX key window is a diagnostic; the click's own landing-point guard decides.
+  await ta2('click: an activation whose AX key window is not the target is not refused; the click lands once (FOCUS4)', async () => {
     await fresh({ keyWindow: false });
-    await assert.rejects(idx.click({ marker: m('#near') }), (e) => e.code === 'not_key_window');
-    // The session now starts before activation (it watches the user through
-    // it); what must not happen is any input.
-    assert.ok(!log.includes('click'));
+    await idx.click({ marker: m('#near') });
+    assert.equal(pg.clicks.near, 1);
+    assert.equal(log.filter(x => x === 'activate').length, 1);
+  });
+
+  // F4 (field 2026-10-27 #3): open_tab opens in the background, so click's pre-check measures a tab that is
+  // not shown, and Chrome reported its window as 0×0. The fixture tab is not front until activation; with
+  // zero it also reports 0×0 until then (stay: even after it; front: the tab is front all along). Every
+  // locate read is logged as 'locate', or 'locate exact' when it is the corroboration's exact-target read.
+  const backgroundTab = ({ zero = true, stay = false, front = false } = {}) => {
+    const hide = () => { for (const k of ['outerWidth', 'outerHeight']) Object.defineProperty(pg.w, k, { value: 0, configurable: true }); };
+    if (!front) opts.chromeInfo = (_tab, target) => target({ tabActive: log.includes('activate') });
+    opts.onEval = (src, options) => {
+      if (/var MODE = "target";/.test(src)) log.push(options?.exactTarget ? 'locate exact' : 'locate');
+      if (zero && (stay || !log.includes('activate'))) hide();
+    };
+    if (zero) hide();
+  };
+  // A window partly off the display: activation fits it back, which marks its geometry unverified.
+  const movedByActivation = () => { currentBounds = { left: -300, top: 60, width: 1400, height: 900 }; syncPageView(); };
+  const locatesAfterActivate = () => log.slice(log.indexOf('activate')).filter(x => x === 'locate').length;
+
+  await ta2('click: a 0×0 pre-check of a background tab is not reused; measured again in front, then clicked', async () => {
+    await fresh();
+    backgroundTab();
+    const out = await idx.click({ marker: m('#near') });
+    assert.equal(pg.clicks.near, 1, out);
+    assert.equal(log.filter(x => x === 'locate').length, 2);
+    assert.equal(locatesAfterActivate(), 1, 'the re-measure happens after activation');
+    assert.doesNotMatch(out, /工具栏高度|DevTools/);
+  });
+
+  await ta2('click: a pre-check taken while the tab was not front is measured again even with a plausible size', async () => {
+    await fresh();
+    backgroundTab({ zero: false });
+    await idx.click({ marker: m('#near') });
+    assert.equal(pg.clicks.near, 1);
+    assert.equal(log.filter(x => x === 'locate').length, 2);
+    assert.equal(locatesAfterActivate(), 1);
+    // Control: a fresh pre-check of a shown tab keeps the one-read fast path.
+    await fresh();
+    opts.onEval = src => { if (/var MODE = "target";/.test(src)) log.push('locate'); };
+    await idx.click({ marker: m('#plain') });
+    assert.equal(pg.clicks.plain, 1);
+    assert.equal(log.filter(x => x === 'locate').length, 1);
+  });
+
+  await ta2('click: a front tab whose pre-check still reported 0×0 is measured again too (QA B2)', async () => {
+    await fresh();
+    backgroundTab({ front: true });
+    await idx.click({ marker: m('#near') });
+    assert.equal(pg.clicks.near, 1);
+    assert.equal(log.filter(x => x === 'locate').length, 2);
+    assert.equal(locatesAfterActivate(), 1);
+    assert.ok(!log.includes('pageContentRect'), 'window not moved: the plain re-read, no corroboration');
+  });
+
+  await ta2('click: activation moved the window → corroborated read; still 0×0 there is "not shown", not a mismatch (QA A1)', async () => {
+    // Control: once shown, the moved window's location is corroborated (exact reads, AX) and clicked.
+    await fresh();
+    movedByActivation(); backgroundTab();
+    await idx.click({ marker: m('#near') });
+    assert.equal(pg.clicks.near, 1);
+    assert.ok(currentBounds.left >= 0, 'the activation fitted the window back');
+    assert.deepEqual(log.slice(log.indexOf('activate')).filter(x => x.startsWith('locate')), ['locate exact', 'locate exact']);
+    assert.deepEqual(log.slice(log.indexOf('activate')).filter(x => x === 'pageContentRect'), ['pageContentRect']);
+    // T1 (round 3): still 0×0 after the move, AX identity right → "not shown", decided after the AX identity
+    // check: one exact read, one AX read, no second read, no rect compare, no input.
+    await fresh();
+    movedByActivation(); backgroundTab({ stay: true });
+    await assert.rejects(idx.click({ marker: m('#near') }), (e) => {
+      assert.equal(e.code, 'tab_hidden');
+      assert.match(e.message, /标签尚未显示/);
+      assert.doesNotMatch(e.message, /未能一致确认|DevTools|开发者工具|侧边栏|工具栏高度/);
+      return true;
+    });
+    assert.deepEqual(log.slice(log.indexOf('activate')).filter(x => x.startsWith('locate') || x === 'pageContentRect'),
+      ['locate exact', 'pageContentRect']);
+    assert.ok(!log.includes('click') && !log.includes('move') && !log.includes('wheel'));
+    // The refusal keeps the window's geometry unverified: the next click (tab shown, window in place)
+    // is corroborated again, which also clears the mark for the flows after this one.
+    await fresh();
+    opts.onEval = (src, options) => { if (/var MODE = "target";/.test(src)) log.push(options?.exactTarget ? 'locate exact' : 'locate'); };
+    await idx.click({ marker: m('#plain') });
+    assert.equal(pg.clicks.plain, 1);
+    assert.deepEqual(log.slice(log.indexOf('activate')).filter(x => x.startsWith('locate')), ['locate exact', 'locate exact']);
+  });
+
+  await ta2('click: moved window, 0×0 and a wrong AX identity → "未能一致确认" (identity first), not "not shown" (QA round 3 T2)', async () => {
+    for (const [what, axPatch] of [['pid', ax => ({ ...ax, pid: ax.pid + 1 })], ['cgWindow', ax => ({ ...ax, cgWindow: ax.cgWindow + 1 })]]) {
+      await fresh();
+      movedByActivation(); backgroundTab({ stay: true });
+      opts.axPatch = axPatch;
+      await assert.rejects(idx.click({ marker: m('#near') }), (e) => {
+        assert.equal(e.code, 'window_changed', what);
+        assert.match(e.message, /未能一致确认/);
+        assert.doesNotMatch(e.message, /标签尚未显示/);
+        return true;
+      });
+      assert.deepEqual(log.slice(log.indexOf('activate')).filter(x => x.startsWith('locate') || x === 'pageContentRect'),
+        ['locate exact', 'pageContentRect'], `${what}: no second read`);
+      assert.ok(!log.includes('click') && !log.includes('move') && !log.includes('wheel'));
+    }
+    // Leaves the geometry unverified: a shown, unmoved click corroborates and clears it for later flows.
+    await fresh();
+    opts.onEval = (src, options) => { if (/var MODE = "target";/.test(src)) log.push(options?.exactTarget ? 'locate exact' : 'locate'); };
+    await idx.click({ marker: m('#plain') });
+    assert.equal(pg.clicks.plain, 1);
+    assert.deepEqual(log.slice(log.indexOf('activate')).filter(x => x.startsWith('locate')), ['locate exact', 'locate exact']);
+  });
+
+  await ta2('click: still 0×0 after activation → refused as "not shown" (no DevTools advice, no guessed point), nothing pressed', async () => {
+    await fresh();
+    backgroundTab({ stay: true });
+    await assert.rejects(idx.click({ marker: m('#near') }), (e) => {
+      assert.equal(e.code, 'tab_hidden');
+      assert.match(e.message, /标签尚未显示/);
+      assert.match(e.message, /0×0/);
+      assert.doesNotMatch(e.message, /DevTools|开发者工具|侧边栏|工具栏高度/);
+      return true;
+    });
+    assert.equal(locatesAfterActivate(), 1, 'refused only after measuring again in front');
+    assert.ok(!log.includes('click') && !log.includes('move') && !log.includes('wheel'));
+    assert.equal(pg.clicks.near, undefined);
+    // The public receipt keeps the specific code (it is on the bounded list).
+    await fresh();
+    backgroundTab({ stay: true });
+    const r = await idx.callTool({ params: { name: 'click', arguments: { marker: m('#near') } } }, {});
+    assert.equal(r.isError, true);
+    assert.equal(r.structuredContent.error.code, 'tab_hidden');
+    assert.doesNotMatch(r.content[0].text, /DevTools|开发者工具/);
   });
 
   await ta2('click: a tab that appears during the click is reported, not registered', async () => {
@@ -2036,8 +2513,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
       opts.extraTabs = [{ id: 77, url: 'https://example.test/popup', title: '弹出页', active: false }];
     });
     const out = await idx.click({ marker: m('#plain') });
-    assert.match(out, /新出现了 1 个标签：tab=77/);
-    assert.match(out, /没有登记为 agent 标签/);
+    assert.match(out, /新标签：tab=77 弹出页（未认领，保留）/);
     const { getTab } = await import('../src/tabs.js');
     assert.equal(await getTab(77), null);
   });
@@ -2053,7 +2529,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     Object.defineProperty(pg.w.document, 'referrer', { value: 'https://example.test/page?a=1', configurable: true });
     const r = await idx.callTool({ params: { name: 'click', arguments: { marker: m('#plain'), tab: 5 } } }, {});
     const out = r.content[0].text;
-    assert.match(out, /点击后新开了 1 个标签，已登记为你的标签（点击弹出的不会被自动关闭，用完请 close_tab）：tab=77（窗口 1）弹出页。读它：read_page\(tab=77\)。/);
+    assert.match(out, /新标签：tab=77 弹出页（已登记，保留）/);
     assert.match(out, /\n［你的标签有变化］tab=77 ready（tab=5 点出）「弹出页」；tab=5 ready「测试页面」$/);
     assert.doesNotMatch(out, /没有登记为 agent 标签/);
     const rec = await tabsMod.getTab(77);
@@ -2075,7 +2551,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.equal(L.get(5).state, 'ready', 'a click that did not move the URL made the markers stale');
     const r = await idx.callTool({ params: { name: 'click', arguments: { marker: m('#near'), tab: 5 } } }, {});
     assert.equal(L.get(5).state, 'stale');
-    assert.match(r.content[0].text, /页面地址：.*→ .*\/near-done/);
+    assert.match(r.content[0].text, /URL已变：.*\/near-done/);
     assert.doesNotMatch(r.content[0].text, /［你的标签有变化］/, 'the click reply already says the URL changed: no reminder line');
     await idx.readPage({ tab: 5 });
     assert.equal(L.get(5).state, 'ready');
@@ -2093,7 +2569,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     const out = await idx.typeText({ marker: m('#q'), text: 'hello world', input_mode: 'keys' });
     assert.equal(pg.w.document.getElementById('q').value, 'hello world');
     assert.match(out, /✅ 已输入并在输入框里确认：逐键输入 11 个字符/);
-    assert.match(out, /系统在 \d+ ms 内确认全部按键都已交给 Chrome/);
+    assert.doesNotMatch(out, /系统在 \d+ ms|内容：|落点|反应 \d+ ms/);
     assert.ok(log.includes('type') && !log.includes('paste'));
   });
 
@@ -2140,7 +2616,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   await ta2('codex2-5: click hands the front back right after the page saw the click; the page is observed only afterwards', async () => {
     await fresh();
     const out = await idx.click({ marker: m('#near') });
-    assert.match(out, /网页在 \d+ ms 内收到了这次点击/);
+    assert.match(out, /^\[\d+\] → URL已变/);
     assert.doesNotMatch(out, /随即交还前台|按上限交还前台/);
     const iClick = log.indexOf('click'), iRestore = log.indexOf('restore');
     assert.ok(iRestore > iClick);
@@ -2154,7 +2630,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     const fake = { restoreScene: async () => { tRestore = Date.now(); log.push('restore'); return { ok: true }; } };
     idx.__setBridgeForTests(fake);
     const out2 = await idx.click({ marker: m('#plain') });
-    assert.match(out2, /300 ms 内没看到网页收到这次点击的事件/);
+    assert.match(out2, /页面事件回执未确认/);
     assert.ok(tRestore != null && tRestore - t0 < 5000);
   });
 
@@ -2166,7 +2642,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
       if (e.key === 'Enter') setTimeout(() => pg.w.history.pushState({}, '', '/results?q=x'), 350);
     });
     const out = await idx.typeText({ marker: m('#q'), text: 'x', submit: true });
-    assert.match(out, /并已按下回车；系统在 \d+ ms 内确认回车已交给 Chrome/);
+    assert.match(out, /并已按下回车；已确认送达/);
     assert.match(out, /页面地址：.*→ .*\/results\?q=x/);
     const iKey = log.lastIndexOf('key'), iRestore = log.indexOf('restore');
     assert.ok(iRestore > iKey && log.slice(iKey, iRestore).filter(x => x === 'info').length <= 1, log.join(','));
@@ -2209,6 +2685,131 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.ok(!log.includes('key'));
   });
 
+  // C7: read_page compares a field the agent typed into with what its confirmed typing left there.
+  const fieldLine = (out, sel) => out.split('\n').find(l => l.startsWith(`[${m(sel)}] `)) || '';
+  const readAll = async () => ({ full: await idx.readPage({ tab: 5, full: true }),
+    sections: await idx.readPage({ tab: 5, sections: ['S0'], refresh: true }),
+    query: await idx.readPage({ tab: 5, query: 'no such words' }) });
+
+  await ta2('C7 typed check: text typed with type_text matches → 一致 in full, sections and query reads; the value is not printed', async () => {
+    await fresh();
+    await idx.typeText({ marker: m('#q'), text: 'hello world', input_mode: 'keys' });
+    const reads = await readAll();
+    for (const [mode, out] of Object.entries(reads)) {
+      assert.match(fieldLine(out, '#q'), /\| 搜索 \| 文本输入框 \| 已输入内容核对：一致（11 字）$/, `${mode}:\n${out}`);
+      assert.doesNotMatch(out, /hello world/, `${mode}: the field's value was printed`);
+      assert.doesNotMatch(out, /\u0003/, mode);
+    }
+    assert.match(reads.query, /没有找到[\s\S]*输入框里的文字不在查找范围；agent 输入过的框：\n\[\d+\] input\[text\] \| 搜索 .*一致（11 字）/);
+    // A field the agent did not type into gets no check.
+    assert.doesNotMatch(fieldLine(reads.full, '#q2'), /已输入内容核对/);
+  });
+
+  await ta2('C7 typed check: one character changed in the middle of a long text → 不一致 at that character, about 20 characters each side', async () => {
+    await fresh();
+    const essay = pg.w.document.createElement('textarea');
+    essay.id = 'essay'; essay.setAttribute('placeholder', 'Essay'); essay.setAttribute('data-rect', '100,590,600,100');
+    pg.w.document.body.append(essay);
+    runRead(pg.w);
+    const text = Array.from({ length: 14 }, (_, i) => `Sentence ${i + 1} keeps the essay going on.`).join(' ');
+    assert.ok(text.length > 400);
+    await idx.typeText({ marker: m('#essay'), text, input_mode: 'paste' });
+    assert.match(fieldLine(await idx.readPage({ tab: 5, full: true }), '#essay'), new RegExp(`已输入内容核对：一致（${text.length} 字）$`));
+    const scripts = [];
+    opts.onEval = src => scripts.push(src);
+    essay.value = text.slice(0, 200) + '#' + text.slice(201);
+    const { full, sections, query } = await readAll();
+    const want = `已输入内容核对：不一致：第 201 字起不同（此前「…${text.slice(180, 200)}」，应为「${text.slice(200, 220)}…」，` +
+      `现为「#${text.slice(201, 220)}…」；应 ${text.length} 字，现 ${text.length} 字）`;
+    for (const out of [full, sections, query]) {
+      assert.ok(fieldLine(out, '#essay').endsWith(want), `${fieldLine(out, '#essay')}\n≠ …${want}`);
+      assert.doesNotMatch(out, new RegExp(text.slice(40, 100)), 'more of the field than the context was printed');
+    }
+    // read_page sends only ids: the remembered text is not put into its page scripts (evalInPage writes those to a temp file).
+    assert.ok(scripts.length >= 3 && scripts.every(src => !src.includes(text.slice(100, 140))), 'remembered text was sent into a read script');
+    // A shorter field: the expected side goes on, the field has ended.
+    essay.value = text.slice(0, 300);
+    assert.match(fieldLine(await idx.readPage({ tab: 5, full: true }), '#essay'), /第 301 字起不同.*现为（已到结尾）；应 \d+ 字，现 300 字）$/);
+  });
+
+  await ta2('C7 typed check: an append continues the record, replace: true starts it again, text already in a field is said so', async () => {
+    await fresh();
+    const q = pg.w.document.getElementById('q'), q2 = pg.w.document.getElementById('q2');
+    await idx.typeText({ marker: m('#q'), text: 'abc', input_mode: 'keys' });
+    await idx.typeText({ marker: m('#q'), text: 'def', input_mode: 'keys' });
+    assert.equal(q.value, 'abcdef');
+    assert.match(fieldLine(await idx.readPage({ tab: 5, full: true }), '#q'), /已输入内容核对：一致（6 字）$/);
+    await idx.typeText({ marker: m('#q'), text: 'xyz', replace: true, input_mode: 'keys' });
+    assert.equal(q.value, 'xyz');
+    assert.match(fieldLine(await idx.readPage({ tab: 5, full: true }), '#q'), /已输入内容核对：一致（3 字）$/);
+    q2.value = 'Dear ';
+    await idx.typeText({ marker: m('#q2'), text: 'John', input_mode: 'keys' });
+    assert.equal(q2.value, 'Dear John');
+    assert.match(fieldLine(await idx.readPage({ tab: 5, full: true }), '#q2'), /已输入内容核对：一致（9 字，含输入前已有的内容）$/);
+  });
+
+  await ta2('C7 A2: a typed field without placeholder or label shows only its check, never its content, in every read', async () => {
+    await fresh();
+    const q2 = pg.w.document.getElementById('q2');
+    await idx.typeText({ marker: m('#q2'), text: 'private-ish answer seven', input_mode: 'keys' });
+    const reads = { ...(await readAll()), query2: await idx.readPage({ tab: 5, query: 'answer' }) };
+    for (const [mode, out] of Object.entries(reads)) {
+      assert.doesNotMatch(out, /answer seven|private-ish/, `${mode}: the typed content was printed`);
+      assert.match(fieldLine(out, '#q2'), /^\[\d+\] input\[text\] \| text \| 文本输入框 \| 已输入内容核对：一致（24 字）$/, mode);
+    }
+    // The page changes it: still only the check (with its bounded context), not the field.
+    q2.value = 'private-ish answer eight';
+    const full = await idx.readPage({ tab: 5, full: true });
+    assert.match(fieldLine(full, '#q2'), /\| text \| 文本输入框 \| 已输入内容核对：不一致：第 20 字起不同/);
+  });
+
+  await ta2('C7 A4: the same node reused for another field, or removed and put back, is no longer checked', async () => {
+    await fresh();
+    const q2 = pg.w.document.getElementById('q2');
+    await idx.typeText({ marker: m('#q2'), text: 'first field', input_mode: 'keys' });
+    assert.match(fieldLine(await idx.readPage({ tab: 5, full: true }), '#q2'), /一致（11 字）$/);
+    // An SPA reuses the node for another field (new name) and fills it.
+    q2.setAttribute('name', 'shipping_address');
+    q2.value = 'another field';
+    assert.doesNotMatch(await idx.readPage({ tab: 5, full: true }), /已输入内容核对/);
+    // Typed again, then taken out of the page and put back: the record ends.
+    await idx.typeText({ marker: m('#q2'), text: ' again', input_mode: 'keys' });
+    assert.match(fieldLine(await idx.readPage({ tab: 5, full: true }), '#q2'), /已输入内容核对：一致（19 字，含输入前已有的内容）$/);
+    const parent = q2.parentElement;
+    q2.remove();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    parent.append(q2);
+    const after = await idx.readPage({ tab: 5, full: true });
+    assert.ok(fieldLine(after, '#q2'), 'the field is listed again');
+    assert.doesNotMatch(after, /已输入内容核对/);
+  });
+
+  await ta2('C7 typed check: a password field and a field the user filled for the agent are never compared', async () => {
+    await fresh();
+    const q = pg.w.document.getElementById('q'), q2 = pg.w.document.getElementById('q2');
+    q.setAttribute('type', 'password');
+    await idx.typeText({ marker: m('#q2'), text: 'visible', input_mode: 'keys' });
+    await idx.typeText({ marker: m('#q'), text: 'hunter22', input_mode: 'keys' });
+    assert.equal(pg.w.__chromeBridgeTyped.fields.get(q), undefined, 'a password field got a typed-text record');
+    let reads = await readAll();
+    for (const [mode, out] of Object.entries(reads)) {
+      assert.match(fieldLine(out, '#q2'), /已输入内容核对：一致（7 字）$/, mode);
+      assert.doesNotMatch(fieldLine(out, '#q'), /已输入内容核对/, mode);
+      assert.doesNotMatch(out, /hunter22/, mode);
+    }
+    // The user then fills q2 for the agent (wait_for_user field): no comparison, no value, from then on.
+    pg.w.__chromeBridgePrivate = { set: new pg.w.WeakSet([q2]), like: [], forms: new pg.w.WeakSet() };
+    q2.value = 'PRIVATE_USER_ENTRY';
+    const payloads = [];
+    opts.onEval = src => { if (src.includes('"typed":[')) payloads.push(JSON.parse(pg.w.eval(src))); };
+    reads = await readAll();
+    for (const [mode, out] of Object.entries(reads)) {
+      assert.doesNotMatch(out, /已输入内容核对|PRIVATE_USER_ENTRY/, mode);
+    }
+    assert.equal(payloads.length, 3);
+    assert.ok(payloads.every(p => JSON.stringify(p.typed) === '{}' && !/PRIVATE_USER_ENTRY|\u0003/.test(JSON.stringify(p))));
+  });
+
   await ta2('type_text: focus is not on an editable field → nothing typed', async () => {
     await fresh();
     pg.w.document.getElementById('plain').focus();
@@ -2218,19 +2819,21 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await assert.rejects(idx.typeText({ text: 'abc' }), (e) => e.code === 'no_page_focus');
   });
 
-  await ta2('type_text: the user touches the keyboard mid-typing → stopped, only their app handed back, progress reported', async () => {
+  await ta2('type_text: the user touches the keyboard mid-typing → stopped, no later scene writes, progress reported', async () => {
     // After the pre-typing pause (at most 2 s), so some keys are already down.
     await fresh({ injectDuring: 'type', injectAfterMs: 2600 });
     await assert.rejects(idx.typeText({ marker: m('#q'), text: 'a fairly long line of text', input_mode: 'keys' }), (e) => {
       assert.equal(e.code, 'user_interrupted');
-      assert.match(e.message, /你开始操作了，已停止；完成了：点击了 \[\d+\]；逐键输入了 \d+ 个字符/);
-      assert.match(e.message, /已把前台切回你原来用的 App（光标和 Chrome 窗口没有动）；你按下的第一个键可能已经进了 agent 的网页/);
+      assert.match(e.message, /你开始操作了，已停止；完成了：点击了 \[\d+\]/);
+      assert.match(e.message, /本段已发送 \d+ 个字符，尚未读回确认/);
+      assert.doesNotMatch(e.message, /逐键输入了 \d+ 个字符/);
+      assert.match(e.message, /没有把光标和前台窗口拉回原处/);
       return true;
     });
     assert.ok(!log.includes('restore'), 'scene restored after the user took over');
-    // The only warp allowed is the park before activation (before 'begin').
+    // Preflight never parks the pointer; interruption permits no later warp.
     assert.ok(!log.slice(log.indexOf('begin') + 1).includes('warp'), 'pointer warped after the user took over');
-    assert.ok(log.includes('restoreApp 9'), `A3/A4: the user's app was not handed back: ${log.join(',')}`);
+    assert.ok(!log.includes('restoreApp 9'), `an interrupted native Session must not hand back an app: ${log.join(',')}`);
   });
 
   await ta2('codex1-7: the user takes over right after the click → their navigation is not recorded as the agent\'s; tab marked', async () => {
@@ -2250,7 +2853,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   await ta2('codex1-6: focus moves to another field holding the same text before Return → Return not pressed', async () => {
     let checks = 0;
     await fresh({ onEval: (src) => {
-      if (!src.includes('"check"')) return;
+      if (!src.includes('"check"') || !src.includes('var EXPECT = "hello world"')) return;
       if (++checks === 2) {   // the check right before Return
         const q2 = pg.w.document.getElementById('q2');
         q2.value = 'hello world';
@@ -2269,7 +2872,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
 
   await ta2('codex1-6: typing confirmed only in the field that was checked, not in one the page moved focus to', async () => {
     await fresh({ onEval: (src) => {
-      if (!src.includes('"check"')) return;
+      if (!src.includes('"check"') || !src.includes('var EXPECT = "hello world"')) return;
       const q2 = pg.w.document.getElementById('q2');
       q2.value = 'hello world';
       q2.focus();
@@ -2287,13 +2890,19 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await assert.rejects(idx.click({ marker: m('#clipped') }), (e) => e.code === 'user_interrupted');
     assert.equal(pg.calls.scrollIntoView.length, 0, 'scrollIntoView ran after the user took over');
     await fresh();
-    const out = await idx.click({ marker: m('#clipped') }).catch(e => e.message);
-    assert.equal(pg.calls.scrollIntoView.length, 1, `without a takeover the labelled fallback still runs: ${out}`);
+    await assert.rejects(idx.click({ marker: m('#clipped') }), e => e.code === 'target_offscreen' && e.targetInputDelivery === 'not_sent');
+    assert.equal(pg.calls.scrollIntoView.length, 0, 'a nested clipped target never causes script scrolling');
   });
 
   const withRetry = async (o, fn) => {
     idx.__setRetryForTests({ maxMs: 20_000, pauseMs: 10, ...o });
-    try { await fn(); } finally { idx.__setRetryForTests({ maxMs: 0, pauseMs: 400 }); }
+    const timing = process.env.CHROME_BRIDGE_TIMING_DETAIL;
+    process.env.CHROME_BRIDGE_TIMING_DETAIL = '1';
+    try { await fn(); } finally {
+      idx.__setRetryForTests({ maxMs: 0, pauseMs: 400 });
+      if (timing === undefined) delete process.env.CHROME_BRIDGE_TIMING_DETAIL;
+      else process.env.CHROME_BRIDGE_TIMING_DETAIL = timing;
+    }
   };
   const count = (op) => log.filter(x => x === op).length;
 
@@ -2301,7 +2910,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await fresh({ injectAfterOp: 'begin', injectTimes: 2 });
     await tabsMod.registerTab(5, pg.w.location.href, { windowId: 1, now: Date.now() - 60_000 });
     const out = await idx.click({ marker: m('#near') });
-    assert.match(out, /^（排队 \d+ 秒、自动重试 2 次后完成；之前几次都没有发出任何输入）/);
+    assert.match(out, /^（重试等待共 \d+ 秒，2 次；此前未发送输入）/);
     assert.equal(pg.clicks.near, 1);
     assert.equal(count('click'), 1);
     assert.equal(count('begin'), 3);
@@ -2313,7 +2922,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await fresh({ injectDuring: 'click', injectAfterMs: 30, injectTimes: 1, injectKind: 'move' });
     await tabsMod.registerTab(5, pg.w.location.href, { windowId: 1, now: Date.now() - 60_000 });
     const out = await idx.click({ marker: m('#near') });
-    assert.match(out, /自动重试 1 次后完成/);
+    assert.match(out, /重试等待共 \d+ 秒，1 次/);
     assert.equal(pg.clicks.near, 1);
     assert.equal(count('click'), 2, 'the interrupted travel and the retry');
     assert.equal((await tabsMod.getTab(5)).takenOver, false, 'a pointer move before any press marked the tab as taken over');
@@ -2341,12 +2950,12 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.equal(pg.clicks.near || 0, 0);
   }));
 
-  await ta2('queue: past the deadline → one answer saying nothing was sent and that calling again is fine', () => withRetry({ maxMs: 2000 }, async () => {
+  await ta2('queue: past the deadline → one answer saying nothing was sent and to reread the current page', () => withRetry({ maxMs: 2000 }, async () => {
     await fresh({ injectAfterOp: 'begin' });
     await assert.rejects(idx.click({ marker: m('#near') }), (e) => {
       assert.equal(e.code, 'user_interrupted');
-      assert.match(e.message, /^⏸ 排队 \d+ 秒、自动重试 \d+ 次仍没做成，没有发出任何输入/);
-      assert.match(e.message, /给 agent：可以直接再调用一次继续排队/);
+      assert.match(e.message, /^⏸ 重试等待 \d+ 秒后仍未发送输入/);
+      assert.match(e.message, /请重新读取当前页面/);
       return true;
     });
     assert.equal(count('click'), 0);
@@ -2360,19 +2969,17 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
       return target();
     } });
     const out = await idx.click({ marker: m('#near') });
-    assert.match(out, /自动重试 1 次后完成/);
+    assert.match(out, /重试等待共 \d+ 秒，1 次/);
     assert.equal(pg.clicks.near, 1);
   }));
 
-  await ta2('queue: a disturbed activation is retried 3 times only; a covered target is not retried at all', () => withRetry({}, async () => {
+  // FOCUS3 (contracts-batch3.md goal 1) retried nothing after a completed activation with the target not key; FOCUS4
+  // (contracts-batch4.md goal 1) no longer refuses it at all: one activation, one click.
+  await ta2('queue: an activation that completes with the target not key is not refused (FOCUS4); a covered target is not retried at all', () => withRetry({}, async () => {
     await fresh({ keyWindow: false });
-    await assert.rejects(idx.click({ marker: m('#near') }), (e) => {
-      assert.equal(e.code, 'not_key_window');
-      assert.match(e.message, /此前已自动重试 3 次/);
-      return true;
-    });
-    assert.equal(count('activate'), 4);
-    assert.equal(count('click'), 0);
+    await idx.click({ marker: m('#near') });
+    assert.equal(count('activate'), 1);
+    assert.equal(pg.clicks.near, 1);
     await fresh();
     await assert.rejects(idx.click({ marker: m('#hid') }), (e) => e.code === 'target_covered');
     assert.equal(count('begin'), 1);
@@ -2413,7 +3020,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await assert.rejects(idx.click({ marker: m('#near') }), (e) => {
       assert.equal(e.code, 'secure_input');
       assert.match(e.message, /「1Password」开着「安全输入」/);
-      assert.match(e.message, /排队 \d+ 秒、自动重试 \d+ 次仍没做成，没有发出任何输入/);
+      assert.match(e.message, /重试等待 \d+ 秒后仍未发送输入/);
       return true;
     });
     assert.ok(count('hold') > 4, `held only ${count('hold')} times: gave up after a few quick tries`);
@@ -2434,7 +3041,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.ok(Date.now() - t0 < 6000, 'waited for the user to pause');
   })));
 
-  await ta2('takeover: Esc twice cancels → user_cancelled, nothing pressed, not retried; the user\'s app, window and pointer put back', () => withTakeover(() => withRetry({}, async () => {
+  await ta2('takeover: Esc before activation cancels → user_cancelled, nothing pressed, not retried; no unheld restoration', () => withTakeover(() => withRetry({}, async () => {
     await fresh({ injectAfterOp: 'begin', injectKinds: ['esc', 'esc'] });
     await assert.rejects(idx.click({ marker: m('#near') }), (e) => {
       assert.equal(e.code, 'user_cancelled');
@@ -2443,8 +3050,8 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     });
     assert.equal(pg.clicks.near || 0, 0);
     assert.equal(count('begin'), 1);
-    assert.ok(log.includes('restore'), `scene not restored: ${log.join(',')}`);
-    assert.ok(log.slice(log.indexOf('begin')).includes('warp'), 'pointer not put back');
+    assert.ok(!log.includes('activate'), 'Stop must be checked before activation');
+    assert.ok(!log.includes('restore') && !log.includes('warp'), `unheld restoration after Stop: ${log.join(',')}`);
   })));
 
   await ta2('takeover veil: a click\'s hold carries the hole (pre-checked window), the subline from the element\'s text and the target point', () => withTakeover(() => withRetry({}, async () => {
@@ -2461,7 +3068,10 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   await ta2('takeover: scroll (no pre-check) is held, then begun with the window; the veil says scrolling (was a TypeError before)', () => withTakeover(() => withRetry({}, async () => {
     await fresh({ idle: 0 });
     const out = await idx.scroll({ direction: 'down', amount: 1 });
+    // withRetry explicitly enables diagnostic receipts; the normal compact
+    // receipt is checked by the default scroll test below.
     assert.match(out, /✅ 已用真实滚轮向下滚动/);
+    assert.match(out, /耗时：前台/);
     assert.ok(log.indexOf('hold') >= 0 && log.indexOf('hold') < log.indexOf('begin') && log.indexOf('begin') < log.indexOf('wheel'),
       `order: ${log.join(',')}`);
     assert.deepEqual(opts.holdReq.veil.label, { zh: '正在滚动', en: 'Scrolling' });
@@ -2483,7 +3093,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await fresh({ idle: 0, heldTimes: 2 });
     const out = await idx.click({ marker: m('#plain') });
     assert.equal(count('hold'), 3, `holds: ${count('hold')}`);
-    assert.match(out, /自动重试 2 次后完成/);
+    assert.match(out, /重试等待共 \d+ 秒，2 次/);
     assert.doesNotMatch(out, /还原之前你动了键盘鼠标/);
   })));
 
@@ -2494,7 +3104,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.equal(count('hands'), 5, `readings: ${count('hands')}`);
     assert.ok(log.lastIndexOf('hands') < log.indexOf('hold'), `held before the user was done: ${log.join(',')}`);
     assert.equal(count('hold'), 1);
-    assert.match(out, /等你停手 \d+\.\d 秒后才操作/);
+    assert.match(out, /等你停手/, 'withRetry explicitly enables timing diagnostics');
     assert.doesNotMatch(out, /自动重试/);
   })));
 
@@ -2528,9 +3138,11 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.equal(count('hands'), 1);
     // A key 100 ms after our last one (the user typing during the hand-back): the user's, waited out.
     const own2 = idx.__ownInputEndForTests();
-    opts.hands = [{ keyIdle: 0.1, keyAt: own2 + 100, held: [] }];
+    opts.hands = [{ keyIdle: 0.1, keyAt: own2 + 100, held: [] }, { keyIdle: 100, held: [] }];
+    const handsBefore = count('hands');
     const out2 = await idx.click({ marker: m('#plain') });
-    assert.match(out2, /等你停手 \d+\.\d 秒后才操作/);
+    assert.ok(count('hands') >= handsBefore + 2, 'did not recheck that the user finished');
+    assert.match(out2, /等你停手/, 'timing diagnostics report waiting for the later user input');
   })));
 
   await ta2('takeover: a key reads as down but nothing was pressed for 30 s (its release was lost) → told at once which key, nothing sent; Shift held or a drag is waited for', () => withTakeover(() => withRetry({}, async () => {
@@ -2551,7 +3163,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     opts.hands = [{ keyIdle: 31, held: ['鼠标左键'] }, { keyIdle: 31, held: ['左 ⇧'] }, { keyIdle: 31, held: ['fn'] }, { keyIdle: 31, held: [] }];
     const out = await idx.click({ marker: m('#plain') });
     assert.equal(count('hands'), 5);
-    assert.match(out, /✅/);
+    assert.match(out, /点击已发送.*结果未确认/);
   })));
 
   await ta2('takeover: a modifier read as down for a whole round with no key event (its release was lost) → input_stuck; the hold time is reported for live checks', () => withTakeover(() => withRetry({}, async () => {
@@ -2579,7 +3191,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await fresh({ idle: 0, heldTimes: 5 });
     const out = await idx.click({ marker: m('#plain') });
     assert.equal(count('hold'), 6, `holds: ${count('hold')}`);
-    assert.match(out, /自动重试 5 次后完成/);
+    assert.match(out, /重试等待共 \d+ 秒，5 次/);
   })));
 
   await ta2('held-input notifications: at most one per window, the counts in between added up (a long job takes over 100+ times)', async () => {
@@ -2604,7 +3216,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.match(out, /^（屏幕原本熄灭了，已点亮）/);
     await fresh({ screen: { woke: true, displays: 1, locked: true }, screenUnlockAfter: 3 });
     const out2 = await idx.click({ marker: m('#plain') });
-    assert.match(out2, /自动重试 3 次后完成/);
+    assert.match(out2, /重试等待共 \d+ 秒，3 次/);
     await fresh({ screen: { woke: false, displays: 1, locked: true } });
     idx.__setRetryForTests({ maxMs: 200, pauseMs: 20 });
     await assert.rejects(idx.click({ marker: m('#plain') }), (e) => e.code === 'screen_locked' && /不会输入密码/.test(e.message));
@@ -2632,40 +3244,40 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   // ── fallback: look (screenshot) and point (click_at), keys, hover ──
   // The fake window is BOUNDS (1400×900 pt) captured at 2× (2800×1800 px), given as 1568×1008.
   const screenOf = (c) => [Math.round(c.rect.x + c.rect.w / 2), Math.round(c.rect.y + c.rect.h / 2)];
-  await ta2('screenshot: the window by its number (no veil hiding), text lines with ids and centres, top to bottom; no picture by default', async () => {
+  await ta2('screenshot: proven webpage content by window and PID, OCR centres, no input or picture by default', async () => {
     await fresh();
     const r = await idx.screenshotTool({});
     assert.equal(r.image, null, 'a picture was attached without image: true');
-    assert.deepEqual(opts.capturedWindow, { cgWindow: 7 });
+    assert.deepEqual(opts.capturedWindow, { cgWindow: 7, chromePid: 42 });
     assert.ok(!log.includes('capture region') && !log.some(x => /^veil hidden/.test(x)), log.join(','));
     assert.ok(log.indexOf('ocr /fake/window.png') > log.indexOf('capture window 7'), 'OCR not on the full capture');
     assert.ok(!log.some(x => /^(hold|session|activate|restore|screen)$/.test(x)), 'read-only screenshot acquired input or activated the screen');
     assert.ok(log.includes('dispose window'), 'the capture files were not deleted');
-    assert.match(r.text, /画面：1568×1008 像素/);
-    assert.match(r.text, /只截了这个窗口/);
+    assert.match(r.text, /网页区域：1568×1008 像素/);
+    assert.match(r.text, /已排除标签栏和书签栏/);
     assert.doesNotMatch(r.text, /可能拍进/);
     // Rows: 登录 | Sign up on one row (same line), then the two body lines as one paragraph, a gap, the footer.
     const k = 1568 / 2800;
     const c = (x, y, w, h) => `(${Math.round((x + w / 2) * k)},${Math.round((y + h / 2) * k)})`;
     assert.ok(r.text.includes(`t1 ${c(400, 200, 200, 40)} 登录 | t2 ${c(900, 204, 160, 36)} Sign up`), r.text);
     assert.ok(r.text.includes(`t3 ${c(300, 400, 900, 40)} 第一行正文，说明这页是做什么的\nt4 ${c(300, 446, 700, 40)} 第二行正文紧接着第一行`), r.text);
-    assert.ok(r.text.includes(`紧接着第一行\n\nt5 ${c(300, 1500, 200, 40)} Footer (?)\n`), r.text);
+    assert.ok(r.text.endsWith(`紧接着第一行\n\nt5 ${c(300, 1500, 200, 40)} Footer (?)`), r.text);
     assert.match(r.text, /带 \(\?\) 的行识别没把握/);
     assert.doesNotMatch(r.text, /一行\s*\(\?\)/, 'a line read with confidence 0.5 or more was marked unsure');
     assert.ok(r.text.indexOf('t1 ') < r.text.indexOf('t3 ') && r.text.indexOf('t4 ') < r.text.indexOf('t5 '));
-    const est = r.text.match(/估算 token：这段文字约 (\d+)，同一画面的图片约 (\d+)/);
-    assert.ok(est, r.text);
-    assert.equal(Number(est[2]), Math.round(1568 * 1008 / 750));
-    assert.ok(Number(est[1]) < Number(est[2]), 'text should be cheaper than the picture here');
+    assert.doesNotMatch(r.text, /估算 token|本次两者都给了|用 click_at/);
     assert.doesNotMatch(r.text, /识别到的文字很少/);
   });
 
-  await ta2('screenshot image:true → the picture as well as the text', async () => {
+  await ta2('screenshot image:true skips OCR; ocr:true explicitly includes text', async () => {
     await fresh();
     const r = await idx.screenshotTool({ image: true });
     assert.equal(r.image && r.image.data, 'iVBORw0KGgo=');
-    assert.match(r.text, /t1 \(\d+,\d+\) 登录/);
-    assert.match(r.text, /本次两者都给了/);
+    assert.doesNotMatch(r.text, /t1 /);
+    assert.ok(!log.some(x => x.startsWith('ocr ')));
+    const both = await idx.screenshotTool({ image: true, ocr: true });
+    assert.match(both.text, /t1 \(\d+,\d+\) 登录/);
+    assert.ok(both.image);
   });
 
   await ta2('click_at text_id → the centre of that line on screen (2× capture scaled to 1568 px mapped back to points); x/y unchanged', () => withTakeover(async () => {
@@ -2673,16 +3285,29 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await idx.screenshotTool({});
     // t1 '登录': full-res box 400,200 200×40 → centre (500, 220) px = (250, 110) pt into the window.
     const out = await idx.clickAt({ text_id: 't1' });
-    assert.match(out, /t1「登录」的中心/);
+    assert.equal(out, 'tab=5 t1 → 已发送点击；效果未确认。');
+    assert.equal(out.split('\n').length, 1);
+    assert.doesNotMatch(out, /屏幕 x=|的中心|screenshot|read_page|✅/);
     const [x, y] = screenOf(opts.lastClickReq);
     assert.ok(Math.abs(x - (BOUNDS.left + 250)) <= 1 && Math.abs(y - (BOUNDS.top + 110)) <= 1, `clicked ${x},${y}`);
     assert.equal(opts.holdReq.veil.label.zh, '正在点击「登录」');
     await idx.clickAt({ text_id: '5' });   // 'Footer' without the t
     const [x5, y5] = screenOf(opts.lastClickReq);
     assert.ok(Math.abs(x5 - (BOUNDS.left + 200)) <= 1 && Math.abs(y5 - (BOUNDS.top + 760)) <= 1, `clicked ${x5},${y5}`);
-    await idx.clickAt({ x: 100, y: 50 });
+    const pointOut = await idx.clickAt({ x: 100, y: 50 });
+    assert.equal(pointOut, 'tab=5 截图点 → 已发送点击；效果未确认。');
     const [px, py] = screenOf(opts.lastClickReq);
     assert.deepEqual([px, py], [BOUNDS.left + Math.round(100 * 1400 / 1568), BOUNDS.top + Math.round(50 * 900 / 1008)]);
+    const previousDiagnostics = process.env.CHROME_BRIDGE_CLICK_DIAGNOSTICS;
+    process.env.CHROME_BRIDGE_CLICK_DIAGNOSTICS = '1';
+    try {
+      const detailed = await idx.clickAt({ text_id: 't1' });
+      assert.match(detailed, /屏幕 x=/);
+      assert.match(detailed, /效果未确认/);
+    } finally {
+      if (previousDiagnostics === undefined) delete process.env.CHROME_BRIDGE_CLICK_DIAGNOSTICS;
+      else process.env.CHROME_BRIDGE_CLICK_DIAGNOSTICS = previousDiagnostics;
+    }
     await assert.rejects(idx.clickAt({ text_id: 't9' }), (e) => e.code === 'no_such_text' && /t1–t5/.test(e.message));
     await assert.rejects(idx.clickAt({ text_id: 't1', x: 1, y: 1 }), (e) => e.code === 'bad_args');
     await assert.rejects(idx.clickAt({ x: 1 }), (e) => e.code === 'bad_args');
@@ -2732,10 +3357,11 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   await ta2('page dialog: read_page says what it asks and its buttons instead of hanging; answer_dialog presses one; then the page reads again', async () => {
     await fresh({ dialog: { title: 'exam.test 显示', texts: ['检测到你上次未完成的作答，是否继续？'], buttons: ['取消', '确定'] } });
     await assert.rejects(idx.readPage(), (e) => e.code === 'page_dialog' && /未完成的作答.*按钮：取消 \/ 确定/.test(e.message) && /answer_dialog/.test(e.message));
-    await assert.rejects(idx.answerDialogTool({ button: '好' }), (e) => /没有「好」按钮.*取消 \/ 确定/.test(e.message));
+    await assert.rejects(idx.answerDialogTool({ button: '好' }), (e) => e.code === 'no_such_button');
+    assert.ok(!log.includes('answerDialog 好'), 'invalid button reached native write');
     const ok = await idx.answerDialogTool({ button: '确定' });
-    assert.match(ok, /按了「确定」；对话框已关闭/);
-    assert.match(await idx.readPage(), /Near/);
+    assert.match(ok, /按了「确定」；原对话框已关闭/);
+    assert.match(await idx.readPage(), /S0 /);
     assert.match(await idx.answerDialogTool({ button: '确定' }), /现在没有网页对话框/);
   });
 
@@ -2746,8 +3372,152 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     pg.w.document.getElementById('near').addEventListener('click', () => { opts.dialog = { title: 'x 显示', texts: ['Sure?'], buttons: ['Cancel', 'OK'] }; });
     const t0 = Date.now();
     const out = await idx.click({ marker: near });
-    assert.match(out, /网页弹出了对话框.*Sure\?.*Cancel \/ OK/s);
+    assert.match(out, /新弹窗：Sure\?.*Cancel \/ OK/);
     assert.ok(Date.now() - t0 < 8000);
+  });
+
+  // ── Contract D (2026-11-01): a dialog refusal names the tab the dialog is natively bound to ──
+  // New-fix groups: each fails with the src/index.js change reverted. Every refusal: zero page evals.
+  const dCall = async (name, args) => {
+    const r = await idx.callTool({ params: { name, arguments: args } }, {});
+    return { ...r, text: (r.content || []).map(x => x.text || '').join('\n') };
+  };
+  const dDialog = (tabId) => ({ title: 'other.test 显示', texts: ['SYNTHETIC_D_DIALOG'], buttons: ['Cancel', 'OK'],
+    identity: { version: 1, tabId, windowId: 1, chromePid: 42, cgWindow: 7, dialogCgWindow: 90, token: 'fixture-dialog' } });
+  const dFresh = async (tabId, extra = {}) => {
+    await fresh({ dialog: dDialog(tabId), extraTabs: [{ id: tabId, url: 'https://other.test/', title: 'other', active: false }], ...extra });
+    let evals = 0; opts.onEval = () => { evals++; };
+    return () => evals;
+  };
+  await ta2('D new-fix: a dialog on the agent\'s other tab M: read_page(N) names M; answer_dialog(tab=M) presses on the first call', async () => {
+    const evals = await dFresh(9);
+    await tabsMod.registerTab(9, 'https://other.test/', { windowId: 1 });
+    try {
+      const r = await dCall('read_page', { tab: 5 });
+      assert.equal(r.isError, true);
+      assert.equal(r.structuredContent.error.code, 'page_dialog');
+      assert.match(r.text, /SYNTHETIC_D_DIALOG.*按钮：Cancel \/ OK/, 'dialog text shown as today');
+      assert.match(r.text, /标签 9 开着对话框/);
+      assert.match(r.text, /answer_dialog（tab=9/);
+      assert.equal(evals(), 0, 'no page eval behind a dialog');
+      const a = await dCall('answer_dialog', { tab: 9, button: 'OK' });
+      assert.equal(a.isError, undefined, a.text);
+      assert.match(a.text, /按了「OK」/);
+      assert.ok(log.includes('answerDialog OK'));
+    } finally { await tabsMod.forgetTab(9); }
+  });
+  await ta2('D new-fix: a dialog on the user\'s or another agent\'s tab: refused with "tell the user", no answer suggested', async () => {
+    for (const owner of ['user', 'agent']) {
+      const evals = await dFresh(9);
+      if (owner === 'agent') await tabsMod.registerTab(9, 'https://other.test/', { windowId: 1, ownerPid: 999999 });
+      try {
+        const r = await dCall('read_page', { tab: 5 });
+        assert.equal(r.isError, true);
+        assert.equal(r.structuredContent.error.code, 'page_dialog');
+        assert.match(r.text, /SYNTHETIC_D_DIALOG/);
+        assert.match(r.text, owner === 'user' ? /对话框在标签 9（用户的标签）/ : /对话框在标签 9（另一个 agent 的标签）/);
+        assert.match(r.text, /告诉用户去处理/);
+        assert.doesNotMatch(r.text, /answer_dialog/, 'never suggest answering someone else\'s dialog');
+        assert.equal(evals(), 0);
+        assert.ok(!log.some(x => x.startsWith('answerDialog')));
+      } finally { await tabsMod.forgetTab(9); }
+    }
+  });
+  await ta2('D new-fix: answer_dialog(tab=N) with the dialog on another tab says where and presses nothing', async () => {
+    for (const inspectError of [null, 'dialog_identity_mismatch']) {
+      const evals = await dFresh(9, inspectError ? { inspectError } : {});
+      const r = await dCall('answer_dialog', { tab: 5, button: 'OK' });
+      assert.equal(r.isError, true, r.text);
+      assert.equal(r.structuredContent.error.code, 'dialog_identity_mismatch');
+      assert.match(r.text, /标签 5 上没有网页对话框，没有按任何按钮/);
+      assert.match(r.text, /对话框在标签 9（用户的标签）/);
+      assert.doesNotMatch(r.text, /现在没有网页对话框/);
+      assert.ok(!log.some(x => x.startsWith('answerDialog')), log.join(','));
+      assert.equal(evals(), 0);
+    }
+  });
+  await ta2('D new-fix: a click, then a dialog on another tab: not counted as the click\'s evidence', async () => {
+    await fresh();
+    let evals = 0;
+    pg.w.document.getElementById('near').addEventListener('click', () => {
+      opts.dialog = dDialog(9); opts.onEval = () => { evals++; };
+    });
+    const r = await dCall('click', { marker: m('#near'), tab: 5 });
+    // The click was delivered; its observation (guard.js observer) reports the refusal as a note, not as the outcome.
+    assert.notEqual(r.isError, true, r.text);
+    assert.match(r.text, /已发送点击；之后标签 9 上开着对话框，不算这次点击的结果.*不要重发点击/s);
+    assert.doesNotMatch(r.text, /新弹窗/);
+    assert.equal(evals, 0, 'no page eval after the dialog was seen');
+    assert.equal(log.filter(x => x === 'click').length, 1, 'the click is not repeated');
+  });
+  // Round 2 (v4 A1): an explicitly targeted tab is still classified by the registry.
+  await ta2('D new-fix r2: read_page on another agent\'s tab or a taken-over tab, targeted explicitly: no answer suggested', async () => {
+    for (const kind of ['agent', 'taken_over']) {
+      const evals = await dFresh(9);
+      await tabsMod.registerTab(9, 'https://other.test/', { windowId: 1, ...(kind === 'agent' ? { ownerPid: 999999 } : {}) });
+      if (kind === 'taken_over') await tabsMod.markTakenOver(9, 'fixture');
+      try {
+        const r = await dCall('read_page', { tab: 9 });
+        assert.equal(r.isError, true);
+        assert.equal(r.structuredContent.error.code, 'page_dialog');
+        assert.match(r.text, kind === 'agent' ? /对话框在标签 9（另一个 agent 的标签）/ : /对话框在标签 9（用户的标签）/);
+        assert.doesNotMatch(r.text, /answer_dialog/);
+        assert.equal(evals(), 0);
+      } finally { await tabsMod.forgetTab(9); }
+    }
+  });
+  // Round 2 (v4 A3): targeted inspect says closed, then the global probe is ambiguous or unknown.
+  await ta2('D new-fix r2: answer_dialog after a closed targeted inspect and an ambiguous/unknown global probe refuses with that code', async () => {
+    for (const code of ['dialog_ambiguous', 'dialog_probe_unknown']) {
+      await fresh();
+      let evals = 0, probes = 0; opts.onEval = () => { evals++; };
+      lastFake.pageDialog = async () => { probes++; throw Object.assign(new bridge.BridgeError(code, 'fixture probe'), { inputDelivery: 'not_sent' }); };
+      idx.__setBridgeForTests(lastFake);
+      const r = await dCall('answer_dialog', { tab: 5, button: 'OK' });
+      assert.equal(r.isError, true, r.text);
+      assert.equal(r.structuredContent.error.code, code);
+      assert.equal(r.structuredContent.error.inputDelivery, 'not_sent');
+      assert.doesNotMatch(r.text, /没有网页对话框；可以直接继续/);
+      assert.ok(log.includes('inspectDialog'), 'the targeted inspect ran first');
+      assert.equal(probes, 1);
+      assert.ok(!log.some(x => x.startsWith('answerDialog')));
+      assert.equal(evals, 0);
+    }
+  });
+  // Kept behaviour (passes before and after the change).
+  await ta2('D kept (10-31 replay): a dialog whose title has no domain on the agent\'s tab is answered by tab, then the tab reads', async () => {
+    await fresh({ dialog: { title: '网页显示', texts: ['SYNTHETIC_1031'], buttons: ['取消', '确定'] } });
+    await tabsMod.registerTab(5, pg.w.location.href, { windowId: 1 });
+    try {
+      const refused = await dCall('read_page', { tab: 5 });
+      assert.equal(refused.isError, true);
+      assert.match(refused.text, /SYNTHETIC_1031.*answer_dialog/s);
+      const a = await dCall('answer_dialog', { tab: 5, button: '确定' });
+      assert.match(a.text, /按了「确定」/);
+      const r = await dCall('read_page', { tab: 5 });
+      assert.notEqual(r.isError, true, r.text);
+    } finally { await tabsMod.forgetTab(5); }
+  });
+  await ta2('D kept: ambiguous or unknown native dialog state refuses read_page as today, zero page evals', async () => {
+    for (const code of ['dialog_ambiguous', 'dialog_probe_unknown']) {
+      await fresh();
+      let evals = 0; opts.onEval = () => { evals++; };
+      lastFake.pageDialog = async () => { throw Object.assign(new bridge.BridgeError(code, 'fixture'), { inputDelivery: 'not_sent' }); };
+      idx.__setBridgeForTests(lastFake);
+      const r = await dCall('read_page', { tab: 5 });
+      assert.equal(r.isError, true);
+      assert.equal(r.structuredContent.error.code, code);
+      assert.equal(evals, 0);
+    }
+  });
+  await ta2('D kept: a dialog on the read tab itself still says answer_dialog; answer_dialog with no dialog anywhere says so', async () => {
+    const evals = await dFresh(5);
+    const r = await dCall('read_page', { tab: 5 });
+    assert.match(r.text, /SYNTHETIC_D_DIALOG.*answer_dialog/s);
+    assert.equal(evals(), 0);
+    await fresh();
+    const none = await dCall('answer_dialog', { tab: 5, button: 'OK' });
+    assert.match(none.text, /现在没有网页对话框/);
   });
 
   // ── select_option (round 5: a clicked <select> opens a system menu that blocks the page) ──
@@ -2796,7 +3566,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   await ta2('task hold: three actions of one task → one helper session, one hold, nothing put back in between; all put back once after the gap; the lock is held throughout', withGap(600, () => withTakeover(() => withRetry({}, async () => {
     await fresh({ idle: 0 });
     const a = await idx.click({ marker: m('#plain'), task: 'IELTS test', step: '1/3' });
-    assert.match(a, /长任务进行中/);
+    assert.match(a, /^\[\d+\] → URL未变/);
     assert.ok(lockHeld(), 'the lock was released between two actions of the job');
     await idx.click({ marker: m('#plain'), step: '2/3' });
     pg.w.document.getElementById('q').focus();
@@ -2813,8 +3583,8 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await fresh({ idle: 0 });
     await idx.click({ marker: m('#plain'), task: 'IELTS test' });
     for (const kind of ['esc', 'esc', 'escUp']) await opts.lastReal.request({ op: '_inject', kind }, { raw: true });
-    assert.ok(await until(() => count('restore') === 1, 3000), `not put back after Esc-Esc: ${log.join(',')}`);
     assert.ok(await until(() => !lockHeld(), 2000));
+    assert.deepEqual([count('restore'), count('warp')], [0, 0], `unheld restoration after Esc-Esc: ${log.join(',')}`);
     await assert.rejects(idx.click({ marker: m('#plain'), task: 'IELTS test' }), (e) => e.code === 'user_cancelled');
     assert.equal(count('hold'), 1, 'took over again after the user took control back');
     await assert.rejects(idx.click({ marker: m('#plain'), task: 'IELTS test' }), (e) => e.code === 'user_cancelled');
@@ -2873,7 +3643,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   await ta2('task_plan: guessed step indexes and notes never become completed questions or visible messages; done releases the one hold', withGap(20000, () => withTakeover(() => withRetry({}, async () => {
     await fresh({ idle: 0 });
     const ok = await idx.taskPlanTool({ task: 'IELTS reading', steps: ['Passage 1', 'Passage 2', 'Passage 3', 'Check answers', 'Submit'], estimate_minutes: 10 });
-    assert.match(ok, /整项任务/);
+    assert.match(ok, /首次输入后持续接管，直到 done:true 或用户停止/);
     await idx.click({ marker: m('#plain'), step: '1/5', note: 'Q1: paragraph A says so → TRUE' });
     await idx.click({ marker: m('#plain'), step: '2/5', note: 'Q2: not mentioned → NOT GIVEN' });
     assert.ok(opts.panels.every(x => !x.panel.notes?.length), 'tool notes must never become a message feed');
@@ -2906,7 +3676,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.ok(idx.__taskHoldForTests());
     const waiter = await otherAgent('taker', 0);
     assert.deepEqual([waiter.inherited, waiter.ownsLock], [true, true], JSON.stringify(waiter));
-    assert.deepEqual(waiter.handoff.scene, { app: 'kitty', appPid: 9, chromeWindow: 1, chromeTab: 5 });
+    assert.deepEqual(waiter.handoff.scene, { app: 'kitty', appPid: 9, chromePid: 42, chromeWindow: 1, chromeTab: 5 });
     assert.equal(waiter.handoff.touched, true);
     assert.equal(idx.__taskHoldForTests(), null, 'the job kept its hold after handing over');
     assert.equal(count('restore'), 0, `put back before handing over: ${log.join(',')}`);
@@ -2929,14 +3699,15 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.ok(await until(() => idx.__handoverRefusalForTests() === null, 5000), String(idx.__handoverRefusalForTests()));
   }))));
 
-  await ta2('queue: an agent takes over another agent\'s takeover — the user\'s scene is not read again, the handed one is put back at the end; the answer says so', () => withTakeover(() => withRetry({}, async () => {
+  await ta2('queue: an agent takes over another agent\'s takeover — the user\'s scene is not read again, the handed one is put back at the end', () => withTakeover(() => withRetry({}, async () => {
     await fresh({ idle: 0 });
     const giver = otherAgent('giver');
     assert.ok(await until(() => lockHeld(), 3000), "the other agent never took the lock");
     const out = await idx.click({ marker: m('#plain') });
     const g = await giver;
     assert.equal(g.taken, true, JSON.stringify(g));
-    assert.match(out, /直接接过上一个 agent 的接管/);
+    assert.match(out, /^\[\d+\] → /m);
+    assert.match(out, /直接接过上一个 agent 的接管/, 'withRetry enables handover diagnostics');
     assert.ok(!log.includes('scene'), `read the user's scene again: ${log.join(',')}`);
     assert.deepEqual(opts.lastRestoreScene, { appPid: 9, chromeTab: 5 });
     assert.deepEqual(opts.lastWarpTo, { x: 1, y: 2 });
@@ -2956,13 +3727,14 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.equal(idx.__taskHoldForTests(), null);
   }))));
 
-  await ta2('Codex A4: Esc twice between two steps while someone waits → the job is cancelled (not handed on), things put back; the waiter gets the lock afresh', withGap(20000, () => withTakeover(() => withRetry({}, async () => {
+  await ta2('Codex A4: Esc twice between two steps while someone waits → the job is cancelled without unheld restoration; the waiter gets the lock afresh', withGap(20000, () => withTakeover(() => withRetry({}, async () => {
     await fresh({ idle: 0 });
     await idx.click({ marker: m('#plain'), task: 'Job T' });
     for (const kind of ['esc', 'esc', 'escUp']) await opts.lastReal.request({ op: '_inject', kind }, { raw: true });
     const w = await otherAgent('taker', 0);
     assert.equal(w.inherited, false, `a hold the user had cancelled was handed on: ${JSON.stringify(w)}`);
-    assert.ok(await until(() => count('restore') === 1, 3000), log.join(','));
+    assert.ok(await until(() => !lockHeld(), 2000));
+    assert.deepEqual([count('restore'), count('warp')], [0, 0], `unheld restoration after Esc-Esc: ${log.join(',')}`);
     await assert.rejects(idx.click({ marker: m('#plain'), task: 'Job T' }), (e) => e.code === 'user_cancelled');
   }))));
 
@@ -3066,7 +3838,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.match(r, /验证\/拦截已经没有了/);
     assert.equal(idx.__blocksForTests().size, 0);
     assert.ok(!log.includes('session'));
-    assert.match(await idx.readPage({ tab: 5 }), /Near/);
+    assert.match(await idx.readPage({ tab: 5 }), /S0 /);
   });
 
   await ta2('wait_for_user: still there after `minutes` → says so and says not to solve it; the alert stays', async () => {
@@ -3168,17 +3940,17 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   await ta2('open_tab creating the agent window: the user\'s scene put back, then the front checked once more (Chrome came forward late, live 2026-10-13)', async () => {
     const saved = fsSync.readFileSync(agentStateFile, 'utf8');
     try {
-      await fresh({ displays: [MAIN], mouse: { x: 600, y: 400 }, chromeInfo: (tab, target) => target({ tabId: 88, url: 'http://example.test/' }),
-        newWindow: async (url, b, prof) => { log.push(`newWindow ${prof}`); return { ok: true, windowId: 1, tabId: 88 }; } });
+      await fresh({ displays: [MAIN], mouse: { x: 600, y: 400 }, chromeInfo: (tab, target) => target({ ...(opts.nativeCreated || {}), url: 'http://example.test/' }),
+        newWindow: async (url, b, prof, created) => { log.push(`newWindow ${prof}`); return created; } });
       setAgentState({ byProfile: {} });
       const out = await idx.openTabTool({ url: 'http://example.test/', why: 'needs_user_login' });
-      const i = log.indexOf('newWindow Profile 3'), r = log.indexOf('restore', i), a = log.indexOf('restoreApp 9', i);
-      assert.ok(i >= 0 && r > i && a > r, log.join(','));
-      // Not over a click of the user's into Chrome since; moving the mouse or typing does not stop it (Fable r12 r3 B1).
-      const o = opts.lastRestoreAppOpts;
-      assert.ok(o && o.noClickSince > 0 && o.noInputSince == null, JSON.stringify(o));
-      assert.match(out, /创建 agent 专用窗口 1/);
-    } finally { fsSync.writeFileSync(agentStateFile, saved); await tabsMod.forgetTab(88).catch(() => {}); }
+      const i = log.indexOf('newWindow Profile 3'), r = log.indexOf('restore', i), late = log.lastIndexOf('restore');
+      assert.ok(log.indexOf('hold') < i && i >= 0 && r > i && late > r, log.join(','));
+      assert.equal(count('restore'), 2, 'late activation gets a second held scene restore');
+      assert.ok(!log.includes('restoreApp 9'), 'no app restoration after releasing input');
+      assert.equal(opts.lastRestoreOpts.stopOnInput, false);
+      assert.ok(out.includes(`创建 agent 专用窗口 ${opts.nativeCreated.windowId}`));
+    } finally { fsSync.writeFileSync(agentStateFile, saved); if (opts.nativeCreated) await tabsMod.forgetTab(opts.nativeCreated.tabId).catch(() => {}); }
   });
 
   await ta2('two displays: NOT moved when the user moved/resized it, when it is not the agent\'s window, or when it is already on the other display', () => withTakeover(() => withRetry({}, async () => {
@@ -3203,64 +3975,56 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   })));
 
   // ── read_page tiers (owner, 2026-10-06): the page code within budget → the screen's text → the picture ──
-  await ta2('read_page tiers: within budget → the page code, with its token count, nothing captured', async () => {
-    await fresh(); quiet();
-    const r = await idx.readPage({ tab: 5 });
-    assert.equal(typeof r, 'string');
-    assert.match(r, /（这次读的是网页代码，约 \d+ token）/);
-    assert.ok(!log.some(x => x.startsWith('capture')), log.join(','));
+  await ta2('read_page hierarchy: default is a collapsed root, without per-call tutorials or capture', async () => {
+    await fresh();quiet();
+    const r=await idx.readPage({tab:5});
+    assert.match(r,/S0 .*\[collapsed\]/);
+    assert.doesNotMatch(r,/Near|Far|用 click|提示：|网页代码/);
+    assert.ok(!log.some(x=>x.startsWith('capture')));
+    assert.equal(await idx.readPage({tab:5}),'tab=5 unchanged');
   });
 
-  await ta2('read_page tiers: over budget, page visible → the window captured directly (no takeover), its text recognised, lines usable by click_at text_id', () => withTakeover(() => withRetry({}, async () => {
-    await fresh({ idle: 0 }); quiet();
-    const r = await idx.readPage({ tab: 5, budget: 200 });
-    assert.equal(typeof r, 'string', 'gave a picture although the text fits');
-    assert.match(r, /📖 网页代码这一屏约 \d+ token，超过预算 200，改为读屏幕上的字；网页可见，直接截了这个窗口（没有接管键鼠）/);
-    assert.match(r, /t1 \(\d+,\d+\) 登录/);
-    assert.match(r, /估算：网页代码这一屏约 \d+ token，屏幕识字约 \d+ token，整张图约 \d+ token/);
-    assert.ok(log.includes('capture window 7') && !log.includes('hold') && !log.includes('session'), log.join(','));
-    assert.ok(log.includes('dispose window'), 'the capture was not cleaned up');
-    await idx.clickAt({ text_id: 't1', tab: 5 });
-    assert.ok(opts.lastClickReq, 'click_at text_id did not click');
-  })));
-
-  await ta2('read_page tiers: the recognised text over budget too → the picture (bounded cost), with the reason and the estimates', async () => {
-    const long = Array.from({ length: 40 }, (_, i) => ({ text: '很长的一行屏幕文字'.repeat(6) + i, conf: 1, x: 100, y: 100 + i * 40, w: 1200, h: 30 }));
-    await fresh({ ocrLines: long }); quiet();
-    const r = await idx.readPage({ tab: 5, budget: 200 });
-    assert.equal(typeof r, 'object');
-    assert.ok(r.image && r.image.data && r.image.width > 0);
-    assert.match(r.text, /屏幕上的字也有约 \d+ token，直接给这一屏的图/);
+  await ta2('read_page hierarchy: a 200-token DOM budget pages expanded content without any screenshot or input lease', async () => {
+    await fresh();quiet();
+    await idx.readPage({tab:5,budget:200});
+    let r=await idx.readPage({tab:5,sections:['S0'],budget:200}), all=r;
+    for(let n=0;n<20&&/More:/.test(r);n++){r=await idx.readPage({tab:5,budget:200});all+='\n'+r;}
+    assert.match(all,/Near/);assert.match(all,/Far/);
+    assert.ok(!log.some(x=>/^(capture|hold|session|activate)/.test(x)),log.join(','));
+    assert.equal(await idx.readPage({tab:5,budget:200}),'tab=5 unchanged');
   });
 
-  await ta2('read_page tiers: most of the screen is a canvas → the screen is read even within budget; the reason says so', async () => {
-    await fresh(); quiet();
-    const c = pg.w.document.createElement('canvas');
-    c.setAttribute('data-rect', '0,0,1400,700');
-    pg.w.document.body.appendChild(c);
-    const r = await idx.readPage({ tab: 5 });
-    assert.match(String(r.text || r), /这一屏约 \d+% 是网页代码读不出字的内容/);
-    assert.ok(log.includes('capture window 7'));
+  await ta2('read_page screen fallback: unreadable canvas and excessive OCR text return the bounded picture', async () => {
+    const long=Array.from({length:40},(_,i)=>({text:'很长的一行屏幕文字'.repeat(6)+i,conf:1,x:100,y:100+i*40,w:1200,h:30}));
+    await fresh({ocrLines:long});quiet();
+    pg.w.document.body.innerHTML='<canvas data-rect="0,0,1400,700"></canvas>';
+    const r=await idx.readPage({tab:5,budget:200});
+    assert.equal(typeof r,'object');assert.ok(r.image?.data);
+    assert.match(r.text,/No readable DOM content/);
   });
 
-  // Reading never takes the keyboard and mouse or brings Chrome forward (Codex merge review, 2026-10-07).
-  await ta2('read_page tiers: page not visible (another tab in front, covered) → the page code with the reason, nothing held, captured or brought forward', () => withTakeover(() => withRetry({}, async () => {
-    await fresh({ idle: 0 }); quiet();
-    Object.defineProperty(pg.w.document, 'visibilityState', { get: () => 'hidden', configurable: true });
-    const r = await idx.readPage({ tab: 5, budget: 200 });
-    assert.equal(typeof r, 'string');
-    assert.match(r, /（这次读的是网页代码，约 \d+ token：网页代码这一屏约 \d+ token，超过预算 200，但网页当时不在屏幕上[^\n]*读网页不会接管键鼠去截图。可继续用 full \/ sections \/ query 读取/);
-    assert.match(r, /=== 这一屏[\s\S]*\[1\] Near/, 'the page code itself');
-    assert.ok(!log.some(x => /^(hold|session|capture|activate)/.test(x)), log.join(','));
-  })));
+  await ta2('read_page hierarchy: a canvas does not discard available DOM structure', async () => {
+    await fresh();quiet();
+    const c=pg.w.document.createElement('canvas');c.setAttribute('data-rect','0,0,1400,700');pg.w.document.body.appendChild(c);
+    const r=await idx.readPage({tab:5});
+    assert.match(r,/S0 .*\[collapsed\]/);
+    assert.ok(!log.includes('capture window 7'));
+  });
 
-  await ta2('read_page tiers: page visible but its window cannot be captured → the page code with the reason, no takeover, no screen-area capture', () => withTakeover(() => withRetry({}, async () => {
-    await fresh({ idle: 0, windowCaptureFails: 'window off screen' }); quiet();
-    const r = await idx.readPage({ tab: 5, budget: 200 });
-    assert.equal(typeof r, 'string');
-    assert.match(r, /但这个窗口截不到；读网页不会接管键鼠去截图/);
-    assert.ok(!log.some(x => /^(hold|session|capture region|activate)/.test(x)), log.join(','));
-  })));
+  await ta2('read_page hierarchy: hidden pages remain folded and expandable without activation or capture', async () => {
+    await fresh();quiet();Object.defineProperty(pg.w.document,'visibilityState',{get:()=> 'hidden',configurable:true});
+    const r=await idx.readPage({tab:5,budget:200});
+    assert.match(r,/S0 .*\[collapsed\]/);
+    assert.ok(!log.some(x=>/^(hold|session|capture|activate)/.test(x)),log.join(','));
+  });
+
+  await ta2('read_page screen fallback: failed canvas capture never takes over or captures a broader screen region', async () => {
+    await fresh({windowCaptureFails:'window off screen'});quiet();
+    pg.w.document.body.innerHTML='<canvas data-rect="0,0,1400,700"></canvas>';
+    const r=await idx.readPage({tab:5,budget:200});
+    assert.equal(typeof r,'string');assert.match(r,/No readable DOM content/);
+    assert.ok(!log.some(x=>/^(hold|session|capture region|activate)/.test(x)),log.join(','));
+  });
 
   await ta2('read_page tiers: asked for something specific (full, sections, query) → that, never the screen', async () => {
     await fresh(); quiet();
@@ -3273,28 +4037,54 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   });
 
   // ── tool definitions routed (owner, 2026-10-07): the routing said once in the server instructions, tools kept short ──
-  await ta2('tool definitions stay small (17 under 15,000 characters, including routines); no tool repeats the routing rule', async () => {
+  await ta2('tool definitions stay small (19 under 15,000 characters, including routines and receipt ACK); no tool repeats the routing rule', async () => {
     const tools = idx.__toolsForTests();
     const size = JSON.stringify(tools).length;
-    assert.equal(tools.length, 17);
+    assert.equal(tools.length, 19);
     assert.ok(size <= 15000, `tool definitions grew to ${size} characters`);
     assert.ok(!tools.some(t => /WHEN TO USE/.test(t.description)), 'a tool carries the routing paragraph again');
   });
 
-  await ta2('server instructions: the routing with MyChrome last, the CAPTCHA rule, the shared action behaviour', async () => {
+  await ta2('C8: a content-area probe timeout during screenshot is a Chinese screenshot message, code kept (A14); open_tab guidance matches reliable use (A15)', async () => {
+    const target = { chromePid: 42, cgWindow: 7 };
+    for (const code of ['ax_probe_timeout', 'ax_probe_failed']) {
+      await assert.rejects(bridge.capturePageContent(target, { contentProbe: async () => {
+        throw new bridge.BridgeError(code, 'Native target inspection timed out; no input was sent.');
+      } }), e => {
+        assert.equal(e.code, code);
+        assert.match(e.message, /这次没有截图/);
+        assert.doesNotMatch(e.message, /Native target|no input was sent/);
+        return true;
+      });
+    }
+    // An unrelated probe error is not rewritten.
+    await assert.rejects(bridge.capturePageContent(target, { contentProbe: async () => { throw new bridge.BridgeError('helper_missing', 'x'); } }),
+      e => e.code === 'helper_missing' && e.message === 'x');
+    const open = idx.__toolsForTests().find(t => t.name === 'open_tab').description;
+    // P5: the reply carries the read, so the guidance no longer says to call read_page after it.
+    assert.match(open, /known URL: open_tab is reliable/);
+    assert.match(open, /returns tab id plus its read_page output \(read_page again shows changes\)/);
+    assert.doesNotMatch(open, /First page of a site only|open_tab then read_page/);
+  });
+
+  await ta2('server instructions: the user\'s visible page goes to MyChrome first (ROUTE1), then the routing with MyChrome last, the CAPTCHA rule, the shared action behaviour', async () => {
     const r = idx.serverInstructions({ home: '/nonexistent-home', execPath: '/nonexistent/node' });
-    assert.match(r, /It is the fallback, not the first choice/);
+    assert.match(r, /It is the fallback, not the first choice, for pages the user is not watching\./);
+    const clause = r.indexOf('If the user asks you to work on a page they already have open, to collaborate on their visible page, or to use their own Chrome, use MyChrome on that exact tab. This takes precedence over every route below.');
+    assert.ok(clause >= 0 && clause < r.indexOf('1. Public page or API'), 'the visible-page clause is missing or after the routes');
+    assert.match(r, /If MyChrome cannot act on the page the user needs, keep that page requirement and report the blocker;/);
+    assert.doesNotMatch(r, /Claude in Chrome|installed here/);
     assert.match(r, /Never solve it or switch tools to get around it/);
     assert.match(r, /Esc pressed twice returns user_cancelled/);
     assert.match(r, /computer use can see browsers but not click in them/);
   });
 
   await ta2('open_tab accepts why=other_tool_failed (another tool failed or was blocked); an unknown why is still refused', async () => {
-    await fresh({ chromeInfo: (tab, target) => target({ tabId: 88, url: 'https://example.test/' }) });
+    await fresh({ chromeInfo: (tab, target) => target({ tabId: tab ?? 5, url: Number(tab) === opts.nativeOpened?.tabId ? 'https://example.test/' : pg.w.location.href }) });
     const out = await idx.openTabTool({ url: 'http://example.test/', why: 'other_tool_failed' });
-    assert.match(out, /新开标签 tab=88/);
+    assert.ok(out.includes(`新开标签 tab=${opts.nativeOpened.tabId}`));
     await assert.rejects(idx.openTabTool({ url: 'http://example.test/', why: 'because' }), (e) => e.code === 'why_required' && /other_tool_failed/.test(e.message));
-    await tabsMod.forgetTab(88);
+    await tabsMod.forgetTab(opts.nativeOpened.tabId);
   });
 
   // ── progress panel (docs/discussion-round4/summary.md) ──
@@ -3333,7 +4123,7 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.equal(opts.holdReq.veil.panel.step, '', 'an impossible step was shown');
   }))));
 
-  await ta2('panel: type_text into a field names it by its placeholder (never its value), counts characters typed key by key, confirms, then restores', () => withTakeover(() => withRetry({}, async () => {
+  await ta2('panel: type_text names the field by its placeholder, counts only after readback, then restores', () => withTakeover(() => withRetry({}, async () => {
     await fresh({ idle: 0 });
     pg.w.document.getElementById('q').value = 'old value';
     await idx.typeText({ marker: m('#q'), text: 'abc', input_mode: 'keys' });
@@ -3342,9 +4132,14 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     assert.doesNotMatch(JSON.stringify(opts.holdReq), /old value/);
     assert.deepEqual(keys(p), ['hold', 'focus', 'move', 'press', 'type', 'confirm', 'restore']);
     assert.deepEqual([p.chars, p.perChar, p.showCount], [3, true, true]);
-    const typed = opts.panels.find(x => x.op === 'type').panel;
-    assert.deepEqual(typed.chars, [3, 3]);
+    const typedAt = opts.panels.findIndex(x => x.op === 'type');
+    assert.ok(typedAt >= 0);
+    const typed = opts.panels[typedAt].panel;
+    assert.deepEqual(typed.chars, [0, 3], 'posted keys are not field-confirmed characters');
     assert.equal(states(typed).type, 'running');
+    const confirmed = opts.panels.slice(typedAt + 1).find(x => x.op === 'panel' && x.panel.chars?.[0] === 3);
+    assert.ok(confirmed, 'a later panel must reflect the field readback confirmation');
+    assert.deepEqual(confirmed.panel.chars, [3, 3]);
     const restoreAt = log.lastIndexOf('panel');
     assert.ok(restoreAt > log.indexOf('type'), `order: ${log.join(',')}`);
   })));
@@ -3412,7 +4207,8 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
   await ta2('scroll: visible tab, real wheel only, pointer put back, the user\'s scene untouched', async () => {
     await fresh();
     const out = await idx.scroll({ direction: 'down', amount: 1 });
-    assert.match(out, /✅ 已用真实滚轮向下滚动：整页 0 → \d+/);
+    assert.match(out, /✅ 已向下滚动/);
+    assert.doesNotMatch(out, /目标约|共 \d+ 串|整项任务持续接管|操作完已把/);
     assert.ok(pg.state.sy >= 700, `moved ${pg.state.sy}`);
     assert.ok(!log.includes('activate') && !log.includes('restore'));
     assert.equal(log.at(-1), 'warp');
@@ -3429,8 +4225,10 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     const out = await idx.scroll({ direction: 'down', amount: 0.5, tab: 5 });
     assert.ok(log.includes('select window=1'), `selectTab was not used with the agent window: ${log.join(',')}`);
     assert.ok(!log.includes('activate'));
-    assert.match(out, /已先把它设为当前标签；没有把 Chrome 切到前面/);
-    assert.ok(log.indexOf('select window=1') < log.indexOf('session'), 'select happens before the session');
+    assert.match(out, /tab=5 ✅ 已向下滚动/);
+    assert.doesNotMatch(out, /已先把它设为当前标签|没有把 Chrome 切到前面/);
+    assert.ok(log.includes('wheel') && pg.state.sy > 0, 'the selected tab was actually scrolled');
+    assert.ok(log.indexOf('begin') < log.indexOf('select window=1'), 'monitored Session must begin before background tab selection');
   });
 
   await ta2('codex1-9: the tab is dragged into the user\'s window while queued → decided again under the lock, not selected', async () => {
@@ -3464,15 +4262,15 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     const out = await idx.listTabsTool();
     assert.ok(out.split('\n')[0].startsWith(`MyChrome MCP 版本 ${idx.VERSION}`), out.split('\n')[0]);
     // Registered by this process: the session's own tab, listed first and labelled as its own (tab ledger).
-    assert.match(out.split('\n')[1], /^你（这个会话）的标签（\d+ 个）：$/);
+    assert.match(out.split('\n')[1], /^你（这个连接；主会话与子 agent 共用）的标签（\d+ 个）：$/);
     assert.match(out, /^ {2}tab=5 ready /m);
     assert.match(out, /tab=5 .*［你的·ready］/);
     await tabsMod.forgetTab(5);
   });
 
-  await ta2('open_tab: under the input lock, --select in the agent window, registered with its window; redirect recorded', async () => {
+  await ta2('open_tab: under the input lock, preserves shared window selection; redirect recorded', async () => {
     const lockDuringSettle = [];
-    await fresh({ chromeInfo: (tab, target) => target({ tabId: 88, url: 'https://example.test/landing' }),
+    await fresh({ chromeInfo: (tab, target) => target({ tabId: tab ?? 5, url: Number(tab) === opts.nativeOpened?.tabId ? 'https://example.test/landing' : pg.w.location.href }),
       onChromeInfo: () => lockDuringSettle.push(fsSync.existsSync(process.env.CHROME_BRIDGE_LOCK)) });
     await assert.rejects(idx.openTabTool({ url: 'http://example.test/' }), (e) => {
       assert.equal(e.code, 'why_required');
@@ -3481,19 +4279,23 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     });
     assert.ok(!log.some(x => x.startsWith('openTab')), 'opened a tab without a reason');
     const out = await idx.openTabTool({ url: 'http://example.test/', why: 'needs_user_login' });
-    assert.match(out, /✅ 已在用户资料「庄严」（u@test）的 agent 专用窗口（1）新开标签 tab=88/);
-    assert.ok(log.includes('openTab http://example.test/ 1 select=true lock=true'), log.join(','));
-    assert.ok(!log.includes('session') && !log.includes('activate'), 'open_tab took the pointer');
-    const rec = await tabsMod.getTab(88);
+    assert.ok(out.includes(`✅ 已在窗口 1 新开标签 tab=${opts.nativeOpened.tabId}`));
+    assert.doesNotMatch(out, /u@test|庄严/);
+    assert.ok(log.includes('openTab http://example.test/ 1 select=false lock=true'), log.join(','));
+    assert.ok(log.includes('session') && log.indexOf('hold') < log.findIndex(x => x.startsWith('openTab ')), 'even background tab creation requires hold');
+    assert.ok(log.includes('restore') && !log.includes('activate'), 'background open restores without selecting the new tab');
+    const rec = await tabsMod.getTab(opts.nativeOpened.tabId);
     assert.equal(rec.windowId, 1);
     assert.equal(rec.expectedUrl, 'https://example.test/landing');
     assert.match(out, /页面跳转到了/);
     assert.ok(lockDuringSettle.length > 0 && lockDuringSettle.every(Boolean),
       `A4: the redirect settled outside the input lock (a sweep could mark the tab): ${lockDuringSettle}`);
+    await tabsMod.forgetTab(opts.nativeOpened.tabId);
   });
 
   await ta2('close_tab: closes an agent tab and confirms it is gone; refuses user tabs and taken-over tabs', async () => {
     await fresh();
+    await tabsMod.registerTab(88, 'https://example.test/landing', { windowId: 1 });
     opts.extraTabs = [{ id: 88, url: 'https://example.test/landing', title: 'new', active: false }];
     assert.match(await idx.closeTabTool({ tab: 88 }), /✅ 已关闭 agent 标签 88（已确认它不在了）/);
     assert.equal(await tabsMod.getTab(88), null);
@@ -3515,35 +4317,828 @@ console.log('\nindex.js tool flows (jsdom page + the helper in DRY-RUN; no Chrom
     await tabsMod.forgetTab(5);
   });
 
-  await ta2('read_page (round 7): default = this screen + outline with the expand hint as the last line; sections / query / full reach the page script; a bad section id is refused', async () => {
+  await ta2('read_page hierarchy: compact default, explicit full/query and normalized sections preserve the existing API', async () => {
     await fresh();
-    const d = await idx.readPage();
-    assert.match(d.split('\n').at(-1), /^提示：这个页面没有目录可展开/);
-    assert.match(d, /这个页面没有标题结构/);
-    assert.match(d, /=== 这一屏[\s\S]*Near/);
-    assert.doesNotMatch(d, /Far/, '#far is 2000 px down, off screen');
-    assert.match(d, /（页面共 \d+ 个可点击元素；用 click 工具/);
-    assert.ok(d.indexOf('（页面共') < d.lastIndexOf('提示：'), 'the hint comes after the click note');
-    const f = await idx.readPage({ full: true });
-    assert.match(f, /Far/);
-    assert.match(f, /=== 可点击元素索引（共 \d+ 个）===/);
-    assert.match(f.split('\n').at(-1), /^（想点的东西没有编号时/, 'full mode ends as before');
-    const q = await idx.readPage({ query: 'FAR' });
-    // The buttons sit inline in one block here, so the hit is that whole line.
-    assert.match(q, new RegExp(`查找「FAR」（不区分大小写）：找到 1 处 ===\\n页面：\\n  [^\\n]*\\[${m('#far')}\\] Far`));
-    await assert.rejects(idx.readPage({ sections: ['历史'] }), (e) => e.code === 'bad_sections' && /\["S3","S7"\]/.test(e.message));
-    assert.match(await idx.readPage({ sections: 'S1, 2' }), /没有标题结构，没有可展开的节/);
-    // The page script gets the request as given (normalized ids), under its placeholder.
-    let seen = null;
-    opts.onEval = (src) => { const mm = src.match(/var REQ = typeof \{.*?\} === 'undefined' \? \{ full: true \} : \((\{.*?\}) \|\| \{\}\);/); if (mm) seen = JSON.parse(mm[1]); };
-    await idx.readPage({ sections: ['s3', '7'], query: ' 关键 词 ' });
-    assert.deepEqual(seen, { sections: ['S3', 'S7'], query: '关键 词' });
-    const tool = idx.__toolsForTests().find(x => x.name === 'read_page');
-    assert.deepEqual(Object.keys(tool.inputSchema.properties), ['tab', 'budget', 'sections', 'query', 'full']);
-    assert.ok(tool.description.length <= 1273, `description ${tool.description.length} > 1.5 × 849`);
+    const d=await idx.readPage();
+    assert.match(d,/S0 .*\[collapsed\]/);assert.doesNotMatch(d,/Near|Far|提示：|用 click/);
+    const f=await idx.readPage({full:true});assert.match(f,/Far/);assert.doesNotMatch(f,/可点击元素索引/);
+    assert.doesNotMatch(f,/想点的东西没有编号时/);
+    const q=await idx.readPage({query:'FAR'});assert.match(q,/Far/);
+    assert.match(await idx.readPage({sections:['S0']}),/Far/);
+    const freshContext=await idx.readPage({refresh:true});
+    assert.match(freshContext,/S0 .*\[collapsed\]/);assert.doesNotMatch(freshContext,/Near|Far|Removed:|unchanged/);
+    assert.equal(await idx.readPage(), 'tab=5 unchanged');
+    await assert.rejects(idx.readPage({sections:['历史']}),e=>e.code==='bad_sections');
+    assert.match(await idx.readPage({sections:'S1, 2'}),/Unknown sections: S1, S2/);
+    let seen=null;
+    opts.onEval=src=>{const mm=src.match(/var REQ = typeof \{.*?\} === 'undefined' \? \{ full: true \} : \((\{.*?\}) \|\| \{\}\);/);if(mm)seen=JSON.parse(mm[1]);};
+    await idx.readPage({sections:['s3','7'],query:' 关键 词 '});
+    assert.deepEqual(seen,{sections:['S3','S7'],query:'关键 词'});
+    const tool=idx.__toolsForTests().find(x=>x.name==='read_page');
+    assert.deepEqual(Object.keys(tool.inputSchema.properties),['tab','budget','refresh','sections','query','full']);
+    assert.ok(tool.description.length<=1273);
   });
 
+  // ── P2 (2026-10-29): fewer duplicate checks per call, counted at the bridge on the production path ──
+  // Every page script is told apart by its own header comment; a combined eval lists both (block+read).
+  const SCRIPT_HEADS = Object.fromEntries(fsSync.readdirSync(path.join(ROOT, 'src/page')).filter(f => f.endsWith('.js'))
+    .map(f => [f.slice(0, -3), fsSync.readFileSync(path.join(ROOT, 'src/page', f), 'utf8').slice(0, 160)]));
+  const scriptKind = src => Object.keys(SCRIPT_HEADS).filter(k => String(src).includes(SCRIPT_HEADS[k])).sort().join('+') || 'inline';
+  /** The src/index.js function that called the bridge, and its caller. */
+  const indexCallers = () => new Error().stack.split('\n').filter(l => l.includes('/src/index.js')).slice(0, 2)
+    .map(l => ((l.trim().match(/^at (?:async )?(\S+) \(/) || [])[1] || '<anonymous>').replace(/^(Module|Object)\./, ''));
+  /** Count what one tool call asks of Chrome: every bridge entry and helper-session request, in order.
+   * `evalFault(kind)`: an Error fails that page eval before its script runs; `{ afterRun: Error }` runs the
+   * script in the page first and then fails the call (chromectl's eval_bounds failing after executeJavascript). */
+  function countBridge({ evalFault = null } = {}) {
+    const fake = lastFake, n = { pageDialog: 0, chromeInfo: 0, evalInPage: 0, prepareNativeTarget: 0,
+      dialogBy: {}, chromeInfoBy: {}, evalBy: {}, seq: [] };
+    const bump = (m, k) => { m[k] = (m[k] || 0) + 1; };
+    const wrapped = {};
+    for (const k of Object.keys(fake)) wrapped[k] = function (...a) { n.seq.push(k); return fake[k].apply(this, a); };
+    wrapped.pageDialog = (...a) => { n.pageDialog++; n.seq.push('pageDialog'); bump(n.dialogBy, indexCallers().join('<')); return fake.pageDialog(...a); };
+    wrapped.chromeInfo = (...a) => {
+      const [by] = indexCallers();
+      n.chromeInfo++; n.seq.push('chromeInfo'); bump(n.chromeInfoBy, by);
+      if (by === 'prepareNativeTarget') n.prepareNativeTarget++;
+      return fake.chromeInfo(...a);
+    };
+    wrapped.evalInPage = (src, ...a) => {
+      const k = scriptKind(src), fault = evalFault && evalFault(k);
+      n.evalInPage++; n.seq.push(`evalInPage ${k}`); bump(n.evalBy, k);
+      if (fault && fault.afterRun) return fake.evalInPage(src, ...a).then(() => Promise.reject(fault.afterRun), () => Promise.reject(fault.afterRun));
+      return fault ? Promise.reject(fault) : fake.evalInPage(src, ...a);
+    };
+    wrapped.openInputSession = (...a) => {
+      n.seq.push('openInputSession');
+      const s = fake.openInputSession(...a), request = s.request;
+      s.request = function (o, ro) { n.seq.push(`session ${o.op}`); return request.call(this, o, ro); };
+      return s;
+    };
+    idx.__setBridgeForTests(wrapped);
+    return n;
+  }
+  /** Dialog checks with nothing between them (no eval, no other native read, no input): the first protects nothing. */
+  const backToBack = n => n.seq.filter((x, i) => x === 'pageDialog' && n.seq[i + 1] === 'pageDialog').length;
+  /** Every page eval after input `op` has a dialog check right before it (no eval or input in between). */
+  const guardedAfter = (n, op) => {
+    const start = n.seq.indexOf(`session ${op}`);
+    return start >= 0 && n.seq.every((x, i) => i <= start || !x.startsWith('evalInPage') || n.seq[i - 1] === 'pageDialog');
+  };
+  /** The page eval of `kind` comes right after a dialog check of its own. */
+  const freshDialogBefore = (n, kind) => n.seq.some((x, i) => x === `evalInPage ${kind}` && n.seq[i - 1] === 'pageDialog');
+  /** The first page eval of the call comes after a dialog check. */
+  const dialogBeforeEval = n => { const e = n.seq.findIndex(x => x.startsWith('evalInPage')); const d = n.seq.indexOf('pageDialog'); return e < 0 || (d >= 0 && d < e); };
+  const p2Record = (name, value) => {
+    const file = process.env.CHROME_BRIDGE_P2_COUNTS;
+    if (!file) return;
+    const all = fsSync.existsSync(file) ? JSON.parse(fsSync.readFileSync(file, 'utf8')) : {};
+    all[name] = value;
+    fsSync.writeFileSync(file, JSON.stringify(all, null, 2));
+  };
+  const TWO_DISPLAYS = { displays: [DEFAULT_DISPLAYS[0], { id: 2, isMain: false, boundsPoints: { x: 1920, y: 0, w: 1920, h: 1080 } }],
+    mouse: { x: 2400, y: 500 } };
+
+  await ta2('P2 counts: read_page makes one dialog check and one page eval; click, type_text and scroll bind their target once', () => withTakeover(async () => {
+    // Two displays and the user's pointer on the other one: keepAgentAway has to look at the agent window.
+    const rows = {};
+    await fresh(TWO_DISPLAYS); quiet();
+    rows.read_page = countBridge();
+    assert.match(await idx.readPage({ tab: 5 }), /S0 /);
+    // A click that does not navigate: the button adds a line, so the observation ends on its first round.
+    await fresh(TWO_DISPLAYS); quiet();
+    pg.w.document.getElementById('plain').addEventListener('click', () => {
+      const p = pg.w.document.createElement('p');
+      p.textContent = 'Saved'; p.setAttribute('data-rect', '100,450,200,30');
+      pg.w.document.body.append(p);
+    });
+    rows.click = countBridge();
+    assert.match(await idx.click({ marker: m('#plain'), tab: 5 }), /^\[\d+\] → URL未变；新出现：Saved/);
+    await fresh(TWO_DISPLAYS); quiet();
+    rows.type_text = countBridge();
+    await idx.typeText({ marker: m('#q'), text: 'abcdefghijklmno', tab: 5 });
+    assert.equal(pg.w.document.getElementById('q').value, 'abcdefghijklmno');
+    await fresh(TWO_DISPLAYS); quiet();
+    rows.scroll = countBridge();
+    assert.match(await idx.scroll({ direction: 'down', amount: 0.5, tab: 5 }), /已向下滚动/);
+    // A hidden tab of the agent window is selected first: the target is bound again after the selection.
+    await fresh({ ...TWO_DISPLAYS, chromeInfo: (tab, target) => target({ tabActive: !!opts.selected }) }); quiet();
+    rows.scroll_selected = countBridge();
+    assert.match(await idx.scroll({ direction: 'down', amount: 0.5, tab: 5 }), /已向下滚动/);
+    assert.ok(log.includes('select window=1'), log.join(','));
+    for (const [name, n] of Object.entries(rows)) p2Record(name, { ...n, backToBack: backToBack(n), seq: n.seq.join(' > ') });
+
+    assert.deepEqual([rows.read_page.pageDialog, rows.read_page.evalInPage, rows.read_page.chromeInfo], [1, 1, 0],
+      JSON.stringify(rows.read_page.seq));
+    assert.deepEqual(rows.read_page.evalBy, { 'block+read': 1 });
+    for (const [name, n] of Object.entries(rows)) {
+      assert.ok(dialogBeforeEval(n), `${name}: a page eval before any dialog check: ${n.seq.join(' > ')}`);
+      assert.equal(n.chromeInfoBy.keepAgentAway, undefined, `${name}: keepAgentAway read the target again`);
+    }
+    assert.equal(backToBack(rows.click), 0, rows.click.seq.join(' > '));
+    assert.ok(guardedAfter(rows.click, 'click'), `a page eval after the click without its own dialog check: ${rows.click.seq.join(' > ')}`);
+    // SPEED2: waitAck's first read (its own probe, then one gated eval) also takes the first observation, so the observation
+    // loop's separate probe is gone when that round already observed the change (was 1).
+    assert.equal(rows.click.dialogBy['inspectDialog<clickReport'] || 0, 0, 'no separate observation round after waitAck');
+    assert.equal(rows.click.dialogBy['inspectDialog<read'] || 0, 1, 'waitAck\'s one read probes before its eval');
+    assert.deepEqual(['click', 'type_text', 'scroll', 'scroll_selected'].map(k => rows[k].prepareNativeTarget), [1, 1, 1, 2]);
+  }));
+
+  // Script-side evidence: read.js keeps its marker registry and field privacy lists on window; block.js never
+  // touches them. Traps on those properties record any access.
+  const readTraps = () => {
+    const touched = new Set();
+    for (const key of ['__chromeBridge', '__chromeBridgeMarkerIdentity', '__chromeBridgeSectionIdentity', '__chromeBridgeReadDocument',
+      '__chromeBridgeReaders', '__chromeBridgePrivate', '__chromeBridgeTyped']) {
+      let value;
+      delete pg.w[key];
+      Object.defineProperty(pg.w, key, { configurable: true, get() { touched.add(key); return value; }, set(v) { touched.add(key); value = v; } });
+    }
+    return touched;
+  };
+  const addChallenge = () => {
+    const cf = pg.w.document.createElement('div');
+    cf.id = 'challenge-form'; cf.setAttribute('data-rect', '100,120,500,300');
+    pg.w.document.body.append(cf);
+  };
+
+  await ta2('P2 challenge page: read_page stops inside its one eval before read.js reads content or builds markers; siteGate handling unchanged', async () => {
+    // Control: on a readable page the same traps fire, so silence below means read.js did not run.
+    await fresh(); quiet();
+    let touched = readTraps();
+    assert.match(await idx.readPage({ tab: 5 }), /S0 /);
+    for (const key of ['__chromeBridge', '__chromeBridgeMarkerIdentity', '__chromeBridgePrivate']) assert.ok(touched.has(key), `${key}: ${[...touched]}`);
+    await fresh(); listen();
+    addChallenge();
+    touched = readTraps();
+    const n = countBridge();
+    await assert.rejects(idx.readPage({ tab: 5 }), e => e.code === 'site_blocked' && /Cloudflare/.test(e.message) && /wait_for_user/.test(e.message));
+    assert.deepEqual([...touched], [], 'read.js ran on a challenge page');
+    assert.deepEqual([n.pageDialog, n.evalInPage, n.evalBy], [1, 1, { 'block+read': 1 }], n.seq.join(' > '));
+    assert.equal(idx.__blocksForTests().get(5)?.kind, 'challenge');
+    assert.equal(told.length, 1, JSON.stringify(told));
+    assert.match(menuState().alert, /需要你处理：example\.test/);
+    assert.ok(!log.includes('session'), log.join(','));
+    quiet();
+  });
+
+  // The receipts below were produced by bda7086 (before P2) on this same flow, word for word.
+  const P2_DIALOG_RECEIPTS = { polite: '[1] → 新弹窗：Sure?；按钮：Cancel / OK', takeover: '[1] → 新弹窗：Sure?；按钮：Cancel / OK' };
+  await ta2('P2 dialog after a click: the receipt is word for word the earlier one; waitAck\'s own check now catches it', async () => {
+    const got = {};
+    for (const mode of ['polite', 'takeover']) {
+      const run = async () => {
+        await fresh(); quiet();
+        opts.onEval = () => {};
+        pg.w.document.getElementById('near').addEventListener('click', () => { opts.dialog = { title: 'x 显示', texts: ['Sure?'], buttons: ['Cancel', 'OK'] }; });
+        const n = countBridge();
+        got[mode] = { out: await idx.click({ marker: m('#near') }), dialogBy: n.dialogBy, backToBack: backToBack(n) };
+      };
+      if (mode === 'takeover') await withTakeover(run); else await run();
+    }
+    p2Record('dialog_receipt', got);
+    for (const mode of ['polite', 'takeover']) {
+      assert.equal(got[mode].out, P2_DIALOG_RECEIPTS[mode], mode);
+      assert.equal(got[mode].dialogBy['inspectDialog<read'], 1, `${mode}: ${JSON.stringify(got[mode].dialogBy)}`);
+      assert.equal(got[mode].dialogBy['inspectDialog<clickReport'], undefined, `${mode}: ${JSON.stringify(got[mode].dialogBy)}`);
+    }
+  });
+
+  await ta2('P2 several checks fail at once: read_page reports the first one in the old order', async () => {
+    // A dialog over a challenge page: page_dialog, and no page eval at all.
+    await fresh({ dialog: { title: 'x 显示', texts: ['Leave?'], buttons: ['Cancel', 'OK'] } }); quiet();
+    addChallenge();
+    let n = countBridge();
+    await assert.rejects(idx.readPage({ tab: 5 }), e => e.code === 'page_dialog' && /Leave\?/.test(e.message));
+    assert.deepEqual([n.pageDialog, n.evalInPage], [1, 0]);
+    // Unknown native dialog state over a challenge page: dialog_probe_unknown, no eval.
+    await fresh(); quiet();
+    addChallenge();
+    n = countBridge();
+    idx.__setBridgeForTests({ pageDialog: async () => {
+      n.pageDialog++;
+      throw Object.assign(new bridge.BridgeError('dialog_probe_unknown', '❌ fixture'), { inputDelivery: 'not_sent' });
+    } });
+    await assert.rejects(idx.readPage({ tab: 5 }), e => e.code === 'dialog_probe_unknown' && e.inputDelivery === 'not_sent');
+    assert.deepEqual([n.pageDialog, n.evalInPage], [1, 0]);
+    // A challenge page whose read would also fail: site_blocked, because the read never starts.
+    await fresh(); quiet();
+    addChallenge();
+    Object.defineProperty(pg.w, '__chromeBridgeMarkerIdentity', { configurable: true, get() { throw new Error('read.js must not run'); } });
+    n = countBridge();
+    await assert.rejects(idx.readPage({ tab: 5 }), e => e.code === 'site_blocked');
+    assert.deepEqual(n.evalBy, { 'block+read': 1 }, n.seq.join(' > '));
+    // The same failing read without a challenge fails as the read (the check found nothing to stop for):
+    // read.js failed inside the combined eval, so it runs again on its own, after a fresh dialog check.
+    await fresh(); quiet();
+    Object.defineProperty(pg.w, '__chromeBridgeMarkerIdentity', { configurable: true, get() { throw new Error('read.js failed'); } });
+    n = countBridge();
+    await assert.rejects(idx.readPage({ tab: 5 }), e => /read\.js failed/.test(e.message));
+    assert.equal(idx.__blocksForTests().size, 0);
+    // G1 r2: the fallback read eval gates itself (block+read), still one eval after its own dialog check.
+    assert.deepEqual(n.evalBy, { 'block+read': 2 }, n.seq.join(' > '));
+    assert.ok(freshDialogBefore(n, 'block+read') && n.seq.lastIndexOf('pageDialog') === n.seq.lastIndexOf('evalInPage block+read') - 1, n.seq.join(' > '));
+  });
+
+  // Codex QA r1 A1 / Fable ruling (2026-10-30): the combined eval keeps bda7086's failure behaviour. When it
+  // fails as a whole (its verdict may have been computed and lost), the bda7086 sequence runs: the site check
+  // on its own (dialog check, lean block eval, verdict), then the read eval on its own after a dialog check.
+  // When read.js fails inside it, the verdict applies first and then read.js runs on its own; its result counts.
+  const CHECK_FAULT = () => Object.assign(new bridge.BridgeError('chrome_error', '❌ fixture: the eval with block.js failed'), { stage: 'eval_bounds' });
+  const READ_FAULT = () => new bridge.BridgeError('chrome_error', '❌ fixture: the read eval failed');
+  const evalsOf = n => n.seq.filter(x => x === 'pageDialog' || x.startsWith('evalInPage')).join(' > ');
+  /** A tab whose earlier challenge is gone: its block record is stale. */
+  const staleRecord = async () => {
+    await fresh(); quiet();
+    addChallenge();
+    await assert.rejects(idx.readPage({ tab: 5 }), e => e.code === 'site_blocked');
+    assert.ok(idx.__blocksForTests().has(5));
+    pg.w.document.getElementById('challenge-form').remove();
+  };
+
+  await ta2('P2 T1 challenge page, the combined eval fails after its script ran: site_blocked from the check on its own, read.js never runs', async () => {
+    await fresh(); listen();
+    addChallenge();
+    const touched = readTraps();
+    const n = countBridge({ evalFault: k => (k === 'block+read' ? { afterRun: CHECK_FAULT() } : null) });
+    await assert.rejects(idx.readPage({ tab: 5 }), e => e.code === 'site_blocked' && /Cloudflare/.test(e.message));
+    p2Record('T1_challenge_post_script_failure', { touched: [...touched], blocked: idx.__blocksForTests().has(5), evals: evalsOf(n) });
+    assert.deepEqual([...touched], [], 'read.js ran on a challenge page');
+    assert.equal(idx.__blocksForTests().get(5)?.kind, 'challenge');
+    assert.equal(evalsOf(n), 'pageDialog > evalInPage block+read > pageDialog > evalInPage block');
+    assert.equal(told.length, 1, JSON.stringify(told));
+    quiet();
+  });
+
+  await ta2('P2 T2 combined eval fails, the check on its own finds nothing: stale record cleared, then the read on its own', async () => {
+    await staleRecord();
+    // G1 r2: only the combined eval fails; the fallback read (now also block+read) does not.
+    let combined = 0;
+    const n = countBridge({ evalFault: k => (k === 'block+read' && ++combined === 1 ? { afterRun: CHECK_FAULT() } : null) });
+    const out = await idx.readPage({ tab: 5 });
+    p2Record('T2_combined_failure_check_clear', { matched: /S0 /.test(out), blockRecordKept: idx.__blocksForTests().has(5), evals: evalsOf(n) });
+    assert.match(out, /S0 /);
+    // As at bda7086 when its lean check ran and found nothing: the record is cleared.
+    assert.equal(idx.__blocksForTests().has(5), false, 'stale block record kept after a check that found nothing');
+    // G1 r2: the fallback read eval gates itself (block+read), still one eval after its own dialog check.
+    assert.equal(evalsOf(n), 'pageDialog > evalInPage block+read > pageDialog > evalInPage block > pageDialog > evalInPage block+read');
+    assert.deepEqual([n.pageDialog, n.evalBy], [3, { 'block+read': 2, block: 1 }]);
+  });
+
+  // G1 (2026-11-02) reverses T3's earlier outcome (bda7086: the read on its own ran on an unknown verdict and decided).
+  await ta2('P2 T3 combined eval and the check on its own both fail: the check stays unknown (record kept); nothing is read (G1)', async () => {
+    const outcome = {};
+    for (const readFault of [false, true]) {
+      await staleRecord();
+      const touched = readTraps();
+      const n = countBridge({ evalFault: k => (k.includes('block') ? CHECK_FAULT() : readFault && k === 'read' ? READ_FAULT() : null) });
+      let error = null;
+      await assert.rejects(idx.readPage({ tab: 5 }), e => { error = e; return true; });
+      outcome[readFault ? 'readFails' : 'readSucceeds'] = { code: error.code, blockRecordKept: idx.__blocksForTests().has(5), evals: evalsOf(n) };
+      assert.equal(error.code, 'cannot_check', error.message);
+      assert.equal(idx.__blocksForTests().has(5), true);
+      assert.deepEqual([...touched], [], 'read.js ran without a verdict');
+      // The check on its own still runs (its verdict may have been lost in the combined eval); no read eval follows.
+      assert.equal(evalsOf(n), 'pageDialog > evalInPage block+read > pageDialog > evalInPage block');
+    }
+    p2Record('combined_eval_failure', outcome);
+  });
+
+  await ta2('P2 T4 read.js throws only the first time: the verdict applies, read.js runs again on its own and its page is returned', async () => {
+    await staleRecord();
+    let thrown = false, value;
+    Object.defineProperty(pg.w, '__chromeBridgeMarkerIdentity', { configurable: true,
+      get() { if (!thrown) { thrown = true; throw new Error('read.js failed once'); } return value; },
+      set(v) { value = v; } });
+    const n = countBridge();
+    const out = await idx.readPage({ tab: 5 });
+    p2Record('T4_read_throws_once', { matched: /S0 /.test(out), blockRecordKept: idx.__blocksForTests().has(5), evals: evalsOf(n) });
+    // Decision (contract v4): the second run's result counts; read.js is read-only and idempotent.
+    assert.match(out, /S0 /);
+    assert.equal(thrown, true);
+    assert.equal(idx.__blocksForTests().has(5), false);
+    // No separate site check: the combined eval came back with its verdict, only read.js failed in it.
+    // G1 r2: the fallback read eval gates itself (block+read), still one eval after its own dialog check.
+    assert.equal(evalsOf(n), 'pageDialog > evalInPage block+read > pageDialog > evalInPage block+read');
+  });
+
+  await ta2('P2 T5 stale block record, challenge gone, read.js fails every time: the record is cleared first, then the read error', async () => {
+    await staleRecord();
+    Object.defineProperty(pg.w, '__chromeBridgeMarkerIdentity', { configurable: true, get() { throw new Error('read.js failed'); } });
+    const n = countBridge();
+    let error = null;
+    await assert.rejects(idx.readPage({ tab: 5 }), e => { error = e; return true; });
+    p2Record('stale_block_read_failure', { message: error.message, blockRecordKept: idx.__blocksForTests().has(5), evals: evalsOf(n) });
+    // The error read.js gives in its own eval (the fake's semantics: the page's exception as is).
+    assert.match(error.message, /read\.js failed/);
+    assert.equal(idx.__blocksForTests().has(5), false, 'the stale block record outlived a check that found nothing');
+    // G1 r2: the fallback read eval gates itself (block+read), still one eval after its own dialog check.
+    assert.equal(evalsOf(n), 'pageDialog > evalInPage block+read > pageDialog > evalInPage block+read');
+    assert.deepEqual(n.evalBy, { 'block+read': 2 });
+  });
+
+  // ── P5 (2026-10-30): open_tab's reply ends with the new tab's default read_page output ──
+  // One jsdom page stands for the new tab as well; the fake Chrome answers an eval for the tab it was asked about.
+  // p5Track: every page eval (its scripts, its tab, and the lock / job hold / Session state when it began), the
+  // first hold request and the Session close of the call.
+  const P5_URL = 'https://example.test/page?a=1';
+  const p5Track = { evals: [], hold: null, closed: null };
+  async function p5Fresh(o = {}) {
+    await fresh({ chromeInfo: (tab, target) => target({ tabId: tab ?? 5, url: pg.w.location.href }), ...o }); quiet();
+    Object.assign(p5Track, { evals: [], hold: null, closed: null });
+    const evalBase = lastFake.evalInPage, sessionBase = lastFake.openInputSession;
+    lastFake.evalInPage = async (src, tab, options) => {
+      p5Track.evals.push({ kind: scriptKind(src), tab, at: Date.now(), lock: lockHeld(), taskHold: !!idx.__taskHoldForTests(),
+        closed: p5Track.closed != null });
+      const r = await evalBase(src, tab, options);
+      return { ...r, target: { ...r.target, tabId: tab ?? r.target.tabId } };
+    };
+    lastFake.openInputSession = (...a) => {
+      const s = sessionBase(...a), request = s.request, close = s.close;
+      s.request = function (req, ro) { if (req.op === 'hold') p5Track.hold ??= Date.now(); return request.call(this, req, ro); };
+      s.close = async () => { const r = await close(); p5Track.closed ??= Date.now(); return r; };
+      return s;
+    };
+    idx.__setBridgeForTests({ evalInPage: lastFake.evalInPage, openInputSession: lastFake.openInputSession });
+  }
+  /** An open modal: the default (folded) read lists its controls with numbers, as read_page does for any page. */
+  const addDialog = () => {
+    const d = pg.w.document.createElement('div');
+    d.setAttribute('role', 'dialog'); d.setAttribute('aria-modal', 'true'); d.setAttribute('aria-label', 'Sign in');
+    d.setAttribute('data-rect', '300,150,500,300');
+    d.innerHTML = '<p data-rect="320,170,300,30">Sign in to continue</p><button id="go" data-rect="320,240,140,36">Continue</button>';
+    pg.w.document.body.append(d);
+  };
+  const p5Open = () => idx.openTabTool({ url: P5_URL, why: 'needs_user_login' });
+  const p5Hint = tab => new RegExp(`\n页面内容未能读取，可 read_page\\(tab=${tab}\\)。$`);
+  const p5Counts = (name, value) => {
+    const file = process.env.CHROME_BRIDGE_P5_COUNTS;
+    if (!file) return;
+    const all = fsSync.existsSync(file) ? JSON.parse(fsSync.readFileSync(file, 'utf8')) : {};
+    all[name] = value;
+    fsSync.writeFileSync(file, JSON.stringify(all, null, 2));
+  };
+
+  await ta2('P5 counts: open_tab then read_page, standalone and in a plan (recorded for the report before any assertion)', async () => {
+    const rows = {};
+    for (const planned of [false, true]) {
+      await p5Fresh(); addDialog();
+      if (planned) { idx.__setTaskGapForTests(20000); await idx.taskPlanTool({ task: 'P5 job', steps: ['open', 'read'] }); }
+      let n = countBridge(), t0 = Date.now();
+      const out = await p5Open();
+      const tab = opts.nativeOpened.tabId, openMs = Date.now() - t0;
+      const open = { ms: openMs, holdMs: p5Track.hold != null && p5Track.closed != null ? p5Track.closed - p5Track.hold : null,
+        heldAfterReply: !!idx.__taskHoldForTests(), pageDialog: n.pageDialog, evalBy: n.evalBy, chromeInfo: n.chromeInfo,
+        sessionOps: n.seq.filter(x => x.startsWith('session ')).length, numbered: /\[\d+\]/.test(out), carriesRead: out.includes(`\ntab=${tab} `) };
+      n = countBridge(); t0 = Date.now();
+      const next = await idx.readPage({ tab });
+      const read = { ms: Date.now() - t0, pageDialog: n.pageDialog, evalBy: n.evalBy, unchanged: next === `tab=${tab} unchanged`, numbered: /\[\d+\]/.test(next) };
+      rows[planned ? 'planned' : 'standalone'] = { open_tab: open, read_page_after: read,
+        callsToFirstContent: open.carriesRead ? 1 : 2 };
+      if (planned) { await idx.taskPlanTool({ done: true }); idx.__setTaskGapForTests(30000); }
+      await tabsMod.forgetTab(tab);
+    }
+    p5Counts('open_then_read', rows);
+    for (const row of Object.values(rows)) {
+      assert.deepEqual([row.callsToFirstContent, row.open_tab.numbered, row.read_page_after.unchanged], [1, true, true], JSON.stringify(row));
+      assert.deepEqual(row.open_tab.evalBy, { 'block+read': 1 });
+    }
+  });
+
+  await ta2('P5 open_tab standalone: the reply ends with the new tab\'s default read (an open dialog\'s controls numbered); the read starts after the hold is released; read_page next is unchanged', async () => {
+    await p5Fresh(); addDialog();
+    const out = await p5Open();
+    const tab = opts.nativeOpened.tabId;
+    assert.match(out, new RegExp(`^✅ 已在窗口 1 新开标签 tab=${tab}（后台打开，未替换原标签）。\n`));
+    assert.match(out, new RegExp(`\ntab=${tab} `));
+    assert.match(out, /Dialog: Sign in[^]*\[\d+\] [^\n]*Continue/);
+    assert.doesNotMatch(out, /页面内容未能读取|页面可能还在加载/);
+    assert.deepEqual(p5Track.evals.map(e => [e.kind, e.tab]), [['block+read', tab]]);
+    const [ev] = p5Track.evals;
+    assert.ok(p5Track.hold != null && p5Track.closed != null && p5Track.hold <= p5Track.closed, JSON.stringify(p5Track));
+    assert.ok(ev.at >= p5Track.closed, `the read began ${p5Track.closed - ev.at} ms before the Session was released`);
+    assert.deepEqual([ev.closed, ev.lock, ev.taskHold], [true, false, false], JSON.stringify(ev));
+    assert.equal(await idx.readPage({ tab }), `tab=${tab} unchanged`);
+    await tabsMod.forgetTab(tab);
+  });
+
+  await ta2('P5 open_tab in a plan: the same reply, read inside the hold the plan keeps (lock and hold on, nothing released for it); read_page next is unchanged', withGap(20000, async () => {
+    await p5Fresh(); addDialog();
+    await idx.taskPlanTool({ task: 'P5 job', steps: ['open', 'read'] });
+    const out = await p5Open();
+    const tab = opts.nativeOpened.tabId;
+    assert.match(out, /^✅ 已在窗口 1 新开标签 tab=/);
+    assert.match(out, /Dialog: Sign in[^]*\[\d+\] [^\n]*Continue/);
+    assert.deepEqual(p5Track.evals.map(e => [e.kind, e.lock, e.taskHold, e.closed]), [['block+read', true, true, false]]);
+    assert.ok(idx.__taskHoldForTests(), 'the plan\'s hold was given back');
+    assert.equal(p5Track.closed, null, 'the Session was closed for the read');
+    assert.equal(await idx.readPage({ tab }), `tab=${tab} unchanged`);
+    await idx.taskPlanTool({ done: true });
+    await tabsMod.forgetTab(tab);
+  }));
+
+  await ta2('P5 open_tab on a challenge page: no content or marker script runs on the new tab; site_blocked keeps its stop and says the tab is open', async () => {
+    for (const planned of [false, true]) {
+      await p5Fresh(); listen(); addChallenge();
+      const touched = readTraps();
+      if (planned) { idx.__setTaskGapForTests(20000); await idx.taskPlanTool({ task: 'P5 job', steps: ['open'] }); }
+      let error = null;
+      await assert.rejects(p5Open(), e => { error = e; return true; });
+      const tab = opts.nativeOpened.tabId;
+      assert.deepEqual([error.code, error.noRetry, error.inputDelivery], ['site_blocked', true, 'sent'], error.message);
+      assert.match(error.message, /Cloudflare/);
+      assert.match(error.message, /不要重试，也不要换别的工具去绕过/);
+      assert.match(error.message, new RegExp(`wait_for_user（tab=${tab}）`));
+      assert.match(error.message, new RegExp(`\n标签已打开：已在窗口 1 新开标签 tab=${tab}（后台打开，未替换原标签）。\n页面内容没有读取；不要重复 open_tab。$`));
+      assert.deepEqual([...touched], [], 'read.js ran on the challenge page');
+      assert.deepEqual(p5Track.evals.map(e => e.kind), ['block+read']);
+      assert.equal(idx.__blocksForTests().get(tab)?.kind, 'challenge');
+      assert.equal(told.length, 1, JSON.stringify(told));
+      assert.ok(await tabsMod.getTab(tab), 'the opened tab is no longer recorded');
+      if (planned) {
+        assert.equal(idx.__taskHoldForTests(), null, 'the keyboard and mouse were not given back for the challenge');
+        await idx.taskPlanTool({ done: true }); idx.__setTaskGapForTests(30000);
+      }
+      await tabsMod.forgetTab(tab); quiet();
+    }
+  });
+
+  await ta2('P5 open_tab, the site check errs inside the eval: the verdict is unknown, read.js never runs, no fallback eval; the receipt keeps a hint', async () => {
+    for (const planned of [false, true]) {
+      await p5Fresh();
+      pg.w.performance.getEntriesByType = () => { throw new Error('fixture: the site check failed'); };
+      const touched = readTraps();
+      if (planned) { idx.__setTaskGapForTests(20000); await idx.taskPlanTool({ task: 'P5 job', steps: ['open'] }); }
+      const out = await p5Open();
+      const tab = opts.nativeOpened.tabId;
+      assert.match(out, /^✅ 已在窗口 1 新开标签 tab=/);
+      assert.match(out, p5Hint(tab));
+      assert.deepEqual([...touched], [], 'read.js ran without a verdict');
+      assert.deepEqual(p5Track.evals.map(e => e.kind), ['block+read']);
+      if (planned) { assert.ok(idx.__taskHoldForTests()); await idx.taskPlanTool({ done: true }); idx.__setTaskGapForTests(30000); }
+      // G1 (2026-11-02): read_page no longer reads on block.js's own error (it was "not seen" until then).
+      await assert.rejects(idx.readPage({ tab }), e => e.code === 'cannot_check');
+      await tabsMod.forgetTab(tab);
+    }
+  });
+
+  await ta2('P5 open_tab, the combined eval fails as a whole: no fallback (no lone check or read eval), success receipt with the hint', async () => {
+    for (const fault of ['before', 'after']) {
+      await p5Fresh();
+      const touched = readTraps();
+      const n = countBridge({ evalFault: k => (k === 'block+read' ? (fault === 'after' ? { afterRun: CHECK_FAULT() } : CHECK_FAULT()) : null) });
+      const out = await p5Open();
+      const tab = opts.nativeOpened.tabId;
+      assert.match(out, /^✅ 已在窗口 1 新开标签 tab=/);
+      assert.match(out, p5Hint(tab));
+      assert.deepEqual(n.evalBy, { 'block+read': 1 }, n.seq.join(' > '));
+      if (fault === 'before') assert.deepEqual([...touched], []);
+      // Control: read_page on the same fault takes P2's fallback (the check on its own, then the read).
+      // G1 r2: only the combined eval fails; the fallback read (now also block+read) does not.
+      let combined = 0;
+      const m = countBridge({ evalFault: k => (k === 'block+read' && ++combined === 1 ? CHECK_FAULT() : null) });
+      assert.match(await idx.readPage({ tab }), /S0 /);
+      // G1 r2: the fallback read eval gates itself (block+read).
+      assert.deepEqual(m.evalBy, { 'block+read': 2, block: 1 }, m.seq.join(' > '));
+      await tabsMod.forgetTab(tab);
+    }
+  });
+
+  await ta2('P5 open_tab in a plan, the read stuck: receipt and hint at most 3 s after the read began, hold kept; the late read commits nothing', withGap(20000, async () => {
+    await p5Fresh(); addDialog();
+    await idx.taskPlanTool({ task: 'P5 job', steps: ['open'] });
+    let unblock, began = null, finished = false;
+    const stuck = new Promise(resolve => { unblock = resolve; });
+    const base = lastFake.evalInPage;
+    idx.__setBridgeForTests({ evalInPage: async (src, tab, o) => {
+      if (scriptKind(src) !== 'block+read' || began != null) return base(src, tab, o);
+      began = Date.now(); await stuck;
+      try { return await base(src, tab, o); } finally { finished = true; }
+    } });
+    const out = await Promise.race([p5Open(), new Promise(resolve => setTimeout(resolve, 15000, 'no reply'))]);
+    assert.ok(began != null, 'no read began');
+    const ms = Date.now() - began, tab = opts.nativeOpened.tabId;
+    assert.ok(ms >= 2900 && ms <= 3300, `replied ${ms} ms after the read began`);
+    assert.match(out, /^✅ 已在窗口 1 新开标签 tab=/);
+    assert.match(out, p5Hint(tab));
+    assert.ok(idx.__taskHoldForTests(), 'the hold was given back');
+    assert.equal(p5Track.closed, null);
+    unblock();
+    for (let i = 0; i < 50 && !finished; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(finished, 'the late read never finished');
+    const next = await idx.readPage({ tab });
+    assert.notEqual(next, `tab=${tab} unchanged`, 'the read the reply gave up on became the baseline');
+    assert.match(next, /Dialog: Sign in[^]*\[\d+\] [^\n]*Continue/);
+    await idx.taskPlanTool({ done: true });
+    await tabsMod.forgetTab(tab);
+  }));
+
+  await ta2('P5 open_tab through callTool on a readable page: the read is in the reply; the read leaves the call\'s routine target and the ownership check to read_page', async () => {
+    await p5Fresh(); addDialog();
+    const routines = idx.__routinesForTests(), barrier = routines.barrier, barriers = [];
+    routines.barrier = async (tab, tool) => { barriers.push([tab ?? null, tool]); };
+    let r;
+    try { r = await idx.callTool({ params: { name: 'open_tab', arguments: { url: P5_URL, why: 'needs_user_login' } } }, {}); }
+    finally { routines.barrier = barrier; }
+    const tab = opts.nativeOpened?.tabId;
+    assert.notEqual(r.isError, true, JSON.stringify(r.content));
+    assert.match(r.content[0].text, new RegExp(`^✅ 已在窗口 1 新开标签 tab=${tab}`));
+    assert.match(r.content[0].text, /Dialog: Sign in[^]*\[\d+\] [^\n]*Continue/);
+    // As before P5: open_tab's call names no tab for the routine boundary (ownershipNote would set it).
+    assert.deepEqual(barriers, [[null, 'open_tab']]);
+    await tabsMod.forgetTab(tab);
+  });
+
+  await ta2('P5 open_tab through callTool on a page only the screen can read: no capture, OCR or second site check, the receipt keeps the hint; read_page still takes the screen tier; the routine boundary keeps no tab', async () => {
+    // More screen text than the default 2,500-token budget: read_page answers with the picture.
+    const long = Array.from({ length: 80 }, (_, i) => ({ text: '很长的一行屏幕文字'.repeat(6) + i, conf: 1, x: 100, y: 100 + i * 20, w: 1200, h: 16 }));
+    await p5Fresh({ ocrLines: long });
+    pg.w.document.body.innerHTML = '<canvas data-rect="0,0,1400,700"></canvas>';
+    const routines = idx.__routinesForTests(), barrier = routines.barrier, barriers = [];
+    routines.barrier = async (tab, tool) => { barriers.push([tab ?? null, tool]); };
+    let r;
+    try { r = await idx.callTool({ params: { name: 'open_tab', arguments: { url: P5_URL, why: 'needs_user_login' } } }, {}); }
+    finally { routines.barrier = barrier; }
+    const tab = opts.nativeOpened?.tabId;
+    assert.notEqual(r.isError, true, JSON.stringify(r.content));
+    assert.deepEqual(r.content.map(c => c.type), ['text']);
+    assert.match(r.content[0].text, new RegExp(`^✅ 已在窗口 1 新开标签 tab=${tab}`));
+    assert.match(r.content[0].text, new RegExp(`\n页面内容未能读取，可 read_page\\(tab=${tab}\\)。`));
+    assert.deepEqual(p5Track.evals.map(e => e.kind), ['block+read'], 'a second site check ran');
+    assert.ok(!log.some(x => /^(capture|ocr)/.test(x)), log.join(','));
+    assert.deepEqual(barriers, [[null, 'open_tab']]);
+    // Control: read_page on the same page still answers from the screen.
+    const read = await idx.readPage({ tab });
+    assert.equal(typeof read, 'object'); assert.ok(read.image?.data);
+    assert.ok(log.some(x => x.startsWith('capture window')), log.join(','));
+    await tabsMod.forgetTab(tab);
+  });
+
+  await ta2('P5 open_tab in a plan on a challenge page, the hand-back stuck: site_blocked within 3 s; the hold ends and the user is told once it completes', withGap(20000, async () => {
+    await p5Fresh(); listen(); addChallenge();
+    await idx.taskPlanTool({ task: 'P5 job', steps: ['open'] });
+    let unstick, restoring = 0;
+    const stuck = new Promise(resolve => { unstick = resolve; });
+    const restoreBase = lastFake.restoreScene;
+    idx.__setBridgeForTests({ restoreScene: async (...a) => { restoring++; await stuck; return restoreBase(...a); } });
+    let tab;
+    try {   // the stuck restore is always let go, or the plan's own end below would wait on it forever
+      const out = await Promise.race([p5Open().then(() => 'no error', e => e), new Promise(resolve => setTimeout(resolve, 15000, 'no reply'))]);
+      tab = opts.nativeOpened.tabId;
+      assert.ok(p5Track.evals.length, 'no read began');
+      const ms = Date.now() - p5Track.evals[0].at;
+      assert.equal(out?.code, 'site_blocked', String(out?.message || out));
+      assert.ok(ms >= 2900 && ms <= 3300, `replied ${ms} ms after the read began`);
+      assert.deepEqual([out.noRetry, out.inputDelivery], [true, 'sent']);
+      assert.match(out.message, /Cloudflare/);
+      assert.match(out.message, /\n正在提醒用户（系统通知 \+ 菜单栏）并交还键盘鼠标，3 秒内尚未确认完成。\n不要重试，也不要换别的工具去绕过/);
+      assert.match(out.message, new RegExp(`\n标签已打开：已在窗口 1 新开标签 tab=${tab}（后台打开，未替换原标签）。\n页面内容没有读取；不要重复 open_tab。$`));
+      assert.equal(restoring, 1, 'the hand-back did not start');
+      assert.equal(idx.__blocksForTests().get(tab)?.kind, 'challenge');
+      assert.equal(told.length, 0, 'told before the keyboard and mouse were back');
+    } finally { unstick(); }
+    for (let i = 0; i < 100 && (idx.__taskHoldForTests() || told.length === 0); i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(idx.__taskHoldForTests(), null, 'the plan\'s hold was not given back');
+    assert.equal(told.length, 1, JSON.stringify(told));
+    await idx.taskPlanTool({ done: true });
+    await tabsMod.forgetTab(tab); quiet();
+  }));
+
+  await ta2('P5 open_tab in a plan, the read given up on finishes after a newer hold began: that hold is kept and nothing is committed (no block record, notice, ledger change or baseline)', withGap(20000, () => withTakeover(() => withRetry({}, async () => {
+    await p5Fresh({ idle: 0 }); listen(); addDialog();
+    await idx.taskPlanTool({ task: 'P5 job', steps: ['open'] });
+    let unblock, finished = false;
+    const stuck = new Promise(resolve => { unblock = resolve; });
+    const base = lastFake.evalInPage;
+    idx.__setBridgeForTests({ evalInPage: async (src, tab, o) => {
+      if (scriptKind(src) !== 'block+read' || Number(tab) === 5 || finished) return base(src, tab, o);
+      await stuck;
+      try { return await base(src, tab, o); } finally { finished = true; }
+    } });
+    const out = await Promise.race([p5Open(), new Promise(resolve => setTimeout(resolve, 15000, 'no reply'))]);
+    const tab = opts.nativeOpened.tabId;
+    assert.match(out, p5Hint(tab));
+    await idx.taskPlanTool({ done: true });
+    assert.equal(idx.__taskHoldForTests(), null);
+    // A newer job takes the keyboard and mouse: its own plan and its own hold.
+    await idx.taskPlanTool({ task: 'P5 next job', steps: ['click'] });
+    await idx.click({ marker: m('#plain'), tab: 5 });
+    const newer = idx.__taskHoldForTests();
+    assert.ok(newer, 'no newer hold');
+    // The abandoned read now meets a challenge page and finishes.
+    addChallenge();
+    const ledgerBefore = JSON.stringify(idx.__ledgerForTests().get(tab));
+    unblock();
+    for (let i = 0; i < 50 && !finished; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.ok(finished, 'the late read never finished');
+    assert.equal(idx.__taskHoldForTests(), newer, 'the late read ended or replaced the newer hold');
+    assert.equal(idx.__blocksForTests().has(tab), false, 'the late read left a block record');
+    assert.equal(told.length, 0, JSON.stringify(told));
+    assert.equal(JSON.stringify(idx.__ledgerForTests().get(tab)), ledgerBefore);
+    await idx.taskPlanTool({ done: true });
+    pg.w.document.getElementById('challenge-form').remove();
+    assert.notEqual(await idx.readPage({ tab }), `tab=${tab} unchanged`, 'the late read became the baseline');
+    await tabsMod.forgetTab(tab); quiet();
+  }))));
+
+  await ta2('P5 open_tab in a plan, its dialog check stuck past 3 s: the hint; once the check returns, no page script runs on the new tab', withGap(20000, async () => {
+    await p5Fresh(); addDialog();
+    await idx.taskPlanTool({ task: 'P5 job', steps: ['open'] });
+    let unblock, stalled = false, after = false;
+    const stuck = new Promise(resolve => { unblock = resolve; });
+    const dialogBase = lastFake.pageDialog;
+    idx.__setBridgeForTests({ pageDialog: async (...a) => {
+      if (opts.nativeOpened && !stalled) { stalled = true; await stuck; const r = await dialogBase(...a); after = true; return r; }
+      return dialogBase(...a);
+    } });
+    const touched = readTraps();
+    const out = await Promise.race([p5Open(), new Promise(resolve => setTimeout(resolve, 15000, 'no reply'))]);
+    const tab = opts.nativeOpened.tabId;
+    assert.ok(stalled, 'the attached read made no dialog check');
+    assert.match(out, p5Hint(tab));
+    unblock();
+    for (let i = 0; i < 50 && !after; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(after);
+    assert.deepEqual(p5Track.evals, [], 'a page script ran after the reply gave the read up');
+    assert.deepEqual([...touched], []);
+    await idx.taskPlanTool({ done: true });
+    await tabsMod.forgetTab(tab);
+  }));
+
+  await ta2('P5 tool text: open_tab says its reply carries the read; the server instructions suggest one ToolSearch; definitions stay within 15,000', async () => {
+    const r = idx.serverInstructions({ home: '/nonexistent-home', execPath: '/nonexistent/node' });
+    // v5: the routing line itself (src/peers.js) says what open_tab returns; the ToolSearch advice is said once.
+    assert.match(r, /open_tab with `why` returns the page read \(read_page again for more or changes\); then the action tools\./);
+    assert.doesNotMatch(r, /then read_page and the action tools|open_tab returns the new tab's read_page output/);
+    assert.equal(r.match(/When your client supports it, load all MyChrome tools with one ToolSearch call\./g)?.length, 1);
+    const tools = idx.__toolsForTests();
+    assert.ok(JSON.stringify(tools).length <= 15000);
+  });
+
+  // ── G1 (2026-11-02): strict challenge gate on read_page and on a click's observation ──
+  // New-fix groups fail with the G1 src/index.js change reverted (contracts-batch2.md G1). The real generated
+  // merged scripts run in the jsdom page; readTraps() counts any access to read.js / click-observation.js state.
+  /** Block.js's own JSON answer is replaced once by `text` (the first JSON.stringify in the eval is block.js's). */
+  const g1Answer = text => {
+    const real = pg.w.JSON.stringify;
+    let first = true;
+    pg.w.JSON.stringify = function (...a) { if (first) { first = false; return text; } return real.apply(this, a); };
+    return () => { pg.w.JSON.stringify = real; };
+  };
+  const G1_ERR = () => { throw new Error('fixture: block.js fails inside its own try'); };
+  await ta2('G1 new-fix: read_page on an unknown verdict reads nothing (block.js errs, its answer is lost or malformed, or no lone verdict after a whole failure)', async () => {
+    const cases = {
+      error: () => { pg.w.performance.getEntriesByType = G1_ERR; return () => {}; },
+      unparsable: () => g1Answer('not json'),
+      no_blocked: () => g1Answer('{"ok":true}'),
+      string: () => g1Answer('"clear"'),
+      nul: () => g1Answer('null'),
+      blocked_text: () => g1Answer('{"ok":true,"blocked":"no"}'),
+    };
+    for (const [name, arm] of Object.entries(cases)) {
+      await staleRecord(); quiet();
+      const undo = arm();
+      const touched = readTraps();
+      const n = countBridge();
+      await assert.rejects(idx.readPage({ tab: 5 }), e => e.code === 'cannot_check' && /没有读取页面内容/.test(e.message), name);
+      undo();
+      assert.deepEqual([...touched], [], `${name}: read.js ran without a verdict`);
+      assert.deepEqual(n.evalBy, { 'block+read': 1 }, `${name}: ${n.seq.join(' > ')}`);
+      assert.equal(idx.__blocksForTests().has(5), true, `${name}: an unknown verdict cleared the block record`);
+    }
+    // The combined eval fails as a whole and the check on its own errs: no read eval at all.
+    await staleRecord(); quiet();
+    pg.w.performance.getEntriesByType = G1_ERR;
+    const touched = readTraps();
+    const n = countBridge({ evalFault: k => (k === 'block+read' ? CHECK_FAULT() : null) });
+    await assert.rejects(idx.readPage({ tab: 5 }), e => e.code === 'cannot_check');
+    assert.deepEqual([...touched], []);
+    assert.equal(evalsOf(n), 'pageDialog > evalInPage block+read > pageDialog > evalInPage block');
+    assert.equal(idx.__blocksForTests().has(5), true);
+  });
+
+  /** On the click: the tab shows a new document at the same URL (a reload is not the same document): read.js's
+   * registries are gone; `then` dresses it. Returns the trap set installed on the new document. */
+  const g1NewDocument = (sel, then) => {
+    const state = { touched: null };
+    pg.w.document.getElementById(sel).addEventListener('click', () => {
+      for (const el of [...pg.w.document.body.children]) el.remove();
+      const p = pg.w.document.createElement('p');
+      p.textContent = 'Fresh document'; p.setAttribute('data-rect', '100,450,200,30');
+      pg.w.document.body.append(p);
+      then();
+      state.touched = readTraps();
+    });
+    return state;
+  };
+  await ta2('G1 new-fix: click, then a same-URL document with a challenge: nothing read or marked on it; the call ends site_blocked, sent, not repeated', async () => {
+    await fresh(); listen();
+    const doc = g1NewDocument('plain', addChallenge);
+    const r = await dCall('click', { marker: m('#plain'), tab: 5 });
+    assert.equal(r.isError, true, r.text);
+    assert.equal(r.structuredContent.error.code, 'site_blocked', r.text);
+    assert.equal(r.structuredContent.error.inputDelivery, 'sent', r.text);
+    assert.match(r.text, /已发送点击，结果未确认，不要重发点击/);
+    assert.match(r.text, /Cloudflare/);
+    assert.match(r.text, /wait_for_user（tab=5）/);
+    assert.ok(doc.touched, 'the click did not reach the page');
+    assert.deepEqual([...doc.touched], [], 'a content or marker script ran on the challenge document');
+    assert.equal(log.filter(x => x === 'click').length, 1, 'the click is not repeated');
+    assert.equal(idx.__blocksForTests().get(5)?.kind, 'challenge');
+    assert.equal(told.length, 1, JSON.stringify(told));
+    quiet();
+  });
+
+  await ta2('G1 new-fix: click, then a document whose check errs: nothing read on it; the receipt says unconfirmed, the click is not repeated', async () => {
+    await fresh(); quiet();
+    const doc = g1NewDocument('plain', () => { pg.w.performance.getEntriesByType = G1_ERR; });
+    const r = await dCall('click', { marker: m('#plain'), tab: 5 });
+    assert.notEqual(r.isError, true, r.text);
+    assert.match(r.text, /页面检查结果未知，没有读取页面内容，结果未确认/);
+    assert.doesNotMatch(r.text, /Fresh document/);
+    assert.ok(doc.touched, 'the click did not reach the page');
+    assert.deepEqual([...doc.touched], [], 'a content or marker script ran without a verdict');
+    assert.equal(log.filter(x => x === 'click').length, 1, 'the click is not repeated');
+  });
+
+  // Page evals of a document-replacing click, recorded on f91f746 (before G1): 7. SPEED2: 6, since the first ack read
+  // and the first observation share one gated eval (waitAck's first read).
+  const G1_REPLACED_EVALS = 6;
+  // G1 r2 (Codex QA A1): the page reloads into a check during the fallback read's dialog probe. The fallback
+  // read gates itself in its own eval; a verdict from an earlier eval never lets read.js run on the new document.
+  await ta2('G1 new-fix r2: a fallback read after the page changed to a challenge or an unknown check reads nothing (both fallback orders)', async () => {
+    const orders = {
+      // The combined eval fails as a whole, the check on its own says clear; the switch is at the read's dialog probe.
+      whole: { probe: 3, arm: () => countBridge({ evalFault: k => (k === 'block+read' && !orders.whole.done ? (orders.whole.done = true, CHECK_FAULT()) : null) }),
+        evals: 'pageDialog > evalInPage block+read > pageDialog > evalInPage block > pageDialog > evalInPage block+read' },
+      // The combined gate says clear but read.js fails in it; the switch is at the fallback read's dialog probe.
+      read: { probe: 2, arm: () => {
+        Object.defineProperty(pg.w, '__chromeBridgeMarkerIdentity', { configurable: true, get() { throw new Error('read.js failed'); } });
+        return countBridge();
+      }, evals: 'pageDialog > evalInPage block+read > pageDialog > evalInPage block+read' },
+    };
+    const becomes = {
+      challenge: { to: addChallenge, refused: e => e.code === 'site_blocked' && /Cloudflare/.test(e.message), record: 'challenge' },
+      unknown: { to: () => { pg.w.performance.getEntriesByType = G1_ERR; }, refused: e => e.code === 'cannot_check' && /没有读取页面内容/.test(e.message), record: undefined },
+    };
+    for (const [order, o] of Object.entries(orders)) for (const [name, b] of Object.entries(becomes)) {
+      await fresh(); quiet();
+      o.done = false;
+      let probes = 0, touched = null;
+      const probe = lastFake.pageDialog;
+      lastFake.pageDialog = async (...a) => {
+        if (++probes === o.probe) { b.to(); touched = readTraps(); }   // a new document: read.js's registries are gone
+        return probe(...a);
+      };
+      const n = o.arm();
+      await assert.rejects(idx.readPage({ tab: 5 }), e => b.refused(e), `${order}/${name}`);
+      assert.ok(touched, `${order}/${name}: the page never changed`);
+      assert.deepEqual([...touched], [], `${order}/${name}: a content or marker script ran on the new document`);
+      assert.equal(evalsOf(n), o.evals, `${order}/${name}`);
+      assert.equal(idx.__blocksForTests().get(5)?.kind, b.record, `${order}/${name}`);
+    }
+  });
+
+  // B (Codex QA): a click that replaces the document at a new URL keeps its normal receipt and eval count.
+  await ta2('G1 kept r2: a click that replaces the document (registries gone, new URL) keeps its receipt and eval count', async () => {
+    await fresh(); quiet();
+    const doc = g1NewDocument('plain', () => pg.w.history.pushState({}, '', '/next-document'));
+    const n = countBridge();
+    const out = await idx.click({ marker: m('#plain'), tab: 5 });
+    assert.match(out, /^\[\d+\] → URL已变：.*\/next-document/);
+    assert.doesNotMatch(out, /结果未确认|页面检查结果未知/);
+    assert.ok(doc.touched, 'the click did not reach the page');
+    p2Record('G1_replaced_document_evals', n.evalInPage);
+    assert.equal(n.evalInPage, G1_REPLACED_EVALS);
+  });
+
+  // Page evals of each call, recorded on f91f746 (before G1) and unchanged by it: 7 and 7. SPEED2: one fewer each, since
+  // the first ack read and the first observation share one gated eval (waitAck's first read).
+  const G1_CLICK_EVALS = { plain: 6, navigation: 6 };
+  await ta2('G1 kept: a normal click and a same-document navigation keep their page-eval count; the observation still sees the change', async () => {
+    const got = {};
+    await fresh(); quiet();
+    pg.w.document.getElementById('plain').addEventListener('click', () => {
+      const p = pg.w.document.createElement('p');
+      p.textContent = 'Saved'; p.setAttribute('data-rect', '100,450,200,30');
+      pg.w.document.body.append(p);
+    });
+    let n = countBridge();
+    assert.match(await idx.click({ marker: m('#plain'), tab: 5 }), /^\[\d+\] → URL未变；新出现：Saved/);
+    got.plain = n.evalInPage;
+    await fresh(); quiet();
+    n = countBridge();
+    assert.match(await idx.click({ marker: m('#near'), tab: 5 }), /URL已变：.*near-done/);
+    got.navigation = n.evalInPage;
+    p2Record('G1_click_evals', got);
+    assert.deepEqual(got, G1_CLICK_EVALS);
+  });
+
+  assert.ok(passedFlows > 0, 'No native tool-flow tests matched the explicit filter');
   await fs.rm(tmp, { recursive: true, force: true });
 }
 
-console.log(`\n${passed} test groups passed.`);
+console.log(`\n${passed} test groups passed.${skippedFlows ? ` ${skippedFlows} flow groups skipped by explicit filter.` : ''}`);

@@ -1,0 +1,421 @@
+{
+  "text": [
+    {
+      "input": " AB C\r\n D ",
+      "expected": "A B C D"
+    },
+    {
+      "input": "﻿A​",
+      "expected": "﻿A​"
+    },
+    {
+      "input": "é",
+      "expected": "é"
+    },
+    {
+      "input": "é",
+      "expected": "é"
+    }
+  ],
+  "origin": [
+    {
+      "input": "http://127.0.0.1:17744",
+      "expected": "http://127.0.0.1:17744"
+    },
+    {
+      "input": "http://localhost:17744",
+      "expected": "http://localhost:17744"
+    },
+    {
+      "input": "https://example.com",
+      "expected": "https://example.com"
+    },
+    {
+      "input": "https://example.com:8443",
+      "expected": "https://example.com:8443"
+    },
+    {
+      "input": "https://example.com:443",
+      "expected": null
+    },
+    {
+      "input": "HTTP://localhost:17744",
+      "expected": null
+    },
+    {
+      "input": "http://127.0.0.1:17744/",
+      "expected": null
+    },
+    {
+      "input": "http://0177.0.0.1:17744",
+      "expected": null
+    },
+    {
+      "input": "http://0x7f000001:17744",
+      "expected": null
+    },
+    {
+      "input": "https://foo.123",
+      "expected": null
+    },
+    {
+      "input": "https://foo.0x12",
+      "expected": null
+    },
+    {
+      "input": "https://0x",
+      "expected": null
+    },
+    {
+      "input": "https://xn--a",
+      "expected": null
+    },
+    {
+      "input": "https://xn--bcher-kva.example",
+      "expected": null
+    },
+    {
+      "input": "https://[::1]",
+      "expected": null
+    },
+    {
+      "input": "https://user@example.com",
+      "expected": null
+    },
+    {
+      "input": "https://example.com?x=1",
+      "expected": null
+    },
+    {
+      "input": "https://example.com\n",
+      "expected": null
+    }
+  ],
+  "settings": [
+    {
+      "name": "missing",
+      "valid": true
+    },
+    {
+      "name": "null",
+      "raw": null,
+      "valid": false
+    },
+    {
+      "name": "valid_fixture",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "rule_final_newline",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule\n",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "string_enabled",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": "true",
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "noncanonical_origin",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744/",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "other_port",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17745",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "https_fixture",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "https://localhost:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "button_case",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "button_semantic_mismatch",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Exit session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "string_version",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": "1",
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "unknown_semantic",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "yes",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "unknown_template",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "missing",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "unknown_rule_key",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session",
+            "authority": "arbitrary"
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "duplicate_rule_id",
+      "raw": {
+        "version": 1,
+        "policy": "auto_safe",
+        "rules": [
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          },
+          {
+            "id": "rule_1",
+            "enabled": true,
+            "origin": "http://127.0.0.1:17744",
+            "templateId": "fixture-dom-inactivity",
+            "templateVersion": 1,
+            "semantic": "keep_session",
+            "button": "Keep session"
+          }
+        ]
+      },
+      "valid": false
+    }
+  ],
+  "catalog": [
+    {
+      "name": "composition_distinct_labels",
+      "mutate": {
+        "buttons": [
+          "é",
+          "é"
+        ],
+        "choices": {
+          "keep_session": "é",
+          "exit_session": "é"
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "duplicate_labels",
+      "mutate": {
+        "buttons": [
+          "Keep session",
+          "Keep session"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "noncanonical_text",
+      "mutate": {
+        "texts": [
+          "  Your session is inactive. Keep this session open?  "
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "unknown_catalog_key",
+      "wrapperExtra": {
+        "ignored": true
+      },
+      "valid": false
+    }
+  ],
+  "compositionRule": {
+    "catalogMutation": {
+      "buttons": [
+        "é",
+        "é"
+      ],
+      "choices": {
+        "keep_session": "é",
+        "exit_session": "é"
+      }
+    },
+    "ruleMutation": {
+      "semantic": "keep_session",
+      "button": "é"
+    },
+    "valid": false
+  }
+}

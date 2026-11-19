@@ -2,7 +2,8 @@
  * Which other browser tools this user already has (owner, 2026-10-07: "look for Playwright, Codex in
  * Chrome, Claude in Chrome first, and make yourself the fallback"). Read-only, local files only:
  * the MCP client configs, Chrome's extension folders, Playwright's install. Nothing leaves the Mac.
- * The result shapes the server's instructions (src/index.js): use these first, MyChrome last.
+ * The result shapes the server's instructions (src/index.js): use these first, MyChrome last, except for the page the
+ * user has open or their own Chrome (MyChrome first).
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
@@ -88,22 +89,28 @@ export function detectPeers({ home = os.homedir(), execPath = process.execPath }
 }
 
 /**
- * The server's instructions: which tool to use for which page, with what this user has, MyChrome last.
+ * The server's instructions: which tool to use for which page, with what this user has, MyChrome last — except the
+ * page the user has open or their own Chrome, which goes to MyChrome on that exact tab ahead of every route (ROUTE1).
+ * Local files show a tool is present, never that it is connected or controls the window in front of the user.
  * Said once here instead of in every tool's description.
  */
 export function routingInstructions(p) {
-  const pwWhere = p.playwrightMcp.length ? `Playwright MCP (configured in ${p.playwrightMcp.join(' and ')})` : p.playwrightLib ? 'Playwright (installed here; headless)' : 'Playwright headless';
-  const ext = [p.claudeInChrome ? 'Claude in Chrome (installed here)' : '', p.codexExtension ? 'the ChatGPT / Codex Chrome extension (installed here)' : '', p.playwrightExtension ? 'Playwright MCP in extension mode (configured here)' : ''].filter(Boolean);
-  const found = p.playwrightMcp.length || p.devtoolsMcp.length || p.playwrightLib || ext.length;
+  const pwWhere = p.playwrightMcp.length ? `Playwright MCP (configured in ${p.playwrightMcp.join(' and ')})` : p.playwrightLib ? 'Playwright (found on this Mac; headless)' : 'Playwright headless';
+  const chromeExt = [p.claudeInChrome ? 'Claude in Chrome' : '', p.codexExtension ? 'the ChatGPT / Codex Chrome extension' : ''].filter(Boolean);
+  const ext = [...chromeExt, p.playwrightExtension ? 'Playwright MCP in extension mode' : ''].filter(Boolean);
+  const seen = [chromeExt.length ? 'extension files found in a Chrome profile on this Mac' : '',
+    p.playwrightExtension ? 'Playwright MCP\'s --extension in an MCP client config' : ''].filter(Boolean).join('; ');
   const lines = [
-    'This server (MyChrome) drives the user\'s OWN Chrome with the real mouse and keyboard (it briefly takes them over). It is the fallback, not the first choice. ' +
-      `Route each page to the first tool that fits and that you actually have in this session${found ? ' ("installed here" means on this Mac, not necessarily connected to you)' : ''}:`,
+    'This server (MyChrome) drives the user\'s OWN Chrome with the real mouse and keyboard (it briefly takes them over). It is the fallback, not the first choice, for pages the user is not watching.',
+    'If the user asks you to work on a page they already have open, to collaborate on their visible page, or to use their own Chrome, use MyChrome on that exact tab. This takes precedence over every route below.',
+    'Route each page to the first tool that fits and that you actually have in this session:',
     '1. Public page or API → WebFetch, curl or the API.',
     `2. JavaScript page that needs no login → ${pwWhere}.`,
     p.devtoolsMcp.length ? `   Debugging the user's own web app → Chrome DevTools MCP (configured in ${p.devtoolsMcp.join(' and ')}).` : '',
-    ext.length ? `3. Needs the user's logged-in browser and an extension is fine → ${ext.join(' or ')}.` : '',
+    ext.length ? `3. Needs the user's logged-in browser and an extension is fine → ${ext.join(' or ')} (${seen}; not verified to be connected in this session, ` +
+      'and they act in their own browser context, not necessarily the window in front of the user).' : '',
     `${ext.length ? 4 : 3}. Otherwise → MyChrome: the site blocks automation (403/429, a challenge page, a bot-blocking login wall), the page needs the user's login, ` +
-      'you work on a page the user has open, the user asks for their Chrome, or the tools above failed or are not in this session. open_tab with `why`, then read_page and the action tools.',
+      'you work on a page the user has open, the user asks for their Chrome, or the tools above failed or are not in this session. open_tab with `why` returns the page read (read_page again for more or changes); then the action tools.',
     'A CAPTCHA or bot check is the user\'s: MyChrome stops (site_blocked); call wait_for_user. Never solve it or switch tools to get around it.',
     'A field only the user should fill (a password, a one-time code, details you were not given): instead of asking in chat, call wait_for_user ' +
       'with `field` (its number) and `reason`; the field is highlighted for them and the call returns once they press Return in it.',
@@ -114,8 +121,8 @@ export function routingInstructions(p) {
     'A task_plan keeps ONE continuous takeover across actions and reading. When a supported host provides a verified conversation binding, the sidebar mirrors its existing visible assistant messages; check task_plan\'s stream status. Do not generate extra notes or guessed completion checklists. ' +
       'Call done:true only after the whole job finishes or is abandoned, never between steps. Standalone actions give control back after each call. Esc pressed twice returns user_cancelled: ' +
       'ask the user, do not retry. Waits for the user or for another agent (one mouse; calls queue) happen inside the call: do not retry those yourself.',
-    'If MyChrome itself cannot reach something, screenshot + click_at first; Claude in Chrome is the next step (it does not queue with MyChrome). ' +
-      'computer use can see browsers but not click in them.',
+    'If MyChrome cannot act on the page the user needs, keep that page requirement and report the blocker; screenshot + click_at is for an element with no number, ' +
+      'not for a focus refusal, a user stop or a site challenge. Never switch browser tools to get around any of those. computer use can see browsers but not click in them.',
     'A failure about a macOS permission or Chrome\'s Apple Events switch is one-time setup: ask the user to run `mychrome-mcp doctor` in a terminal, which says what to click.',
   ];
   return lines.filter(Boolean).join('\n');

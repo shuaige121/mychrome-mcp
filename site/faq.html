@@ -1,275 +1,229 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>MyChrome FAQ — Clients, privacy and controls</title>
-    <meta
-      name="description"
-      content="Clients, existing logins, privacy, desktop controls and website compatibility."
-    />
-    <meta name="theme-color" content="#f7f6f2" />
-    <link
-      rel="canonical"
-      href="https://shuaige121.github.io/mychrome-mcp/faq.html"
-    />
-    <link
-      rel="alternate"
-      hreflang="en"
-      href="https://shuaige121.github.io/mychrome-mcp/faq.html"
-    />
-    <link
-      rel="alternate"
-      hreflang="zh-CN"
-      href="https://shuaige121.github.io/mychrome-mcp/zh/faq.html"
-    />
-    <link
-      rel="alternate"
-      hreflang="x-default"
-      href="https://shuaige121.github.io/mychrome-mcp/faq.html"
-    />
-    <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="MyChrome" />
-    <meta
-      property="og:title"
-      content="MyChrome FAQ — Clients, privacy and controls"
-    />
-    <meta
-      property="og:description"
-      content="Clients, existing logins, privacy, desktop controls and website compatibility."
-    />
-    <meta
-      property="og:url"
-      content="https://shuaige121.github.io/mychrome-mcp/faq.html"
-    />
-    <meta property="og:locale" content="en_US" />
+<!DOCTYPE html><html lang="en"><head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>MyChrome FAQ — Logged-in Chrome, controls and privacy</title>
+    <meta name="description" content="Answers about using MyChrome with Claude Code or Codex: existing logins, Mac requirements, input controls, privacy and website limits.">
+    <meta name="theme-color" content="#f7f6f2">
+    <link rel="canonical" href="https://shuaige121.github.io/mychrome-mcp/faq.html">
+    <link rel="alternate" hreflang="en" href="https://shuaige121.github.io/mychrome-mcp/faq.html">
+    <link rel="alternate" hreflang="zh-CN" href="https://shuaige121.github.io/mychrome-mcp/zh/faq.html">
+    <link rel="alternate" hreflang="x-default" href="https://shuaige121.github.io/mychrome-mcp/faq.html">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="MyChrome">
+    <meta property="og:title" content="MyChrome FAQ — Logged-in Chrome, controls and privacy">
+    <meta property="og:description" content="Answers about using MyChrome with Claude Code or Codex: existing logins, Mac requirements, input controls, privacy and website limits.">
+    <meta property="og:url" content="https://shuaige121.github.io/mychrome-mcp/faq.html">
+    <meta property="og:locale" content="en_US">
 
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="stylesheet" href="./styles.css" />
-    <script src="./site.js" defer></script>
-    <meta
-      property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
-    />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta
-      property="og:image:alt"
-      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
-    />
-    <meta
-      name="twitter:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
-    />
-    <meta
-      name="twitter:image:alt"
-      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
-    />
-  </head>
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./site.js" defer=""></script>
+    <meta property="og:image" content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.14.0">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="MyChrome — Keep browsing. Bring AI in when you need it.">
+    <meta name="twitter:image" content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.14.0">
+    <meta name="twitter:image:alt" content="MyChrome — Keep browsing. Bring AI in when you need it.">
+  <meta name="twitter:title" content="MyChrome FAQ — Logged-in Chrome, controls and privacy"><meta name="twitter:description" content="Answers about using MyChrome with Claude Code or Codex: existing logins, Mac requirements, input controls, privacy and website limits."><meta property="og:locale:alternate" content="zh_CN"><script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "@id": "https://shuaige121.github.io/mychrome-mcp/#mychrome",
+  "name": "MyChrome",
+  "description": "MyChrome is a local MCP server with a native macOS app. It lets Codex, Claude Code and other local stdio MCP clients work in the Google Chrome you already use, with your existing tabs, signed-in accounts and real mouse and keyboard.",
+  "operatingSystem": "macOS 13 or later (Apple Silicon)",
+  "softwareRequirements": "Google Chrome in /Applications; native arm64 Node.js 24+ recommended, 20.19+ or 22.13+ supported; Git; Xcode Command Line Tools; local stdio MCP client",
+  "license": "https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE",
+  "url": "https://shuaige121.github.io/mychrome-mcp/",
+  "downloadUrl": "https://github.com/shuaige121/mychrome-mcp",
+  "image": "https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.14.0"
+}
+</script><script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is MyChrome?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "MyChrome is a local MCP server with a native macOS app. It lets Codex, Claude Code and other local stdio MCP clients work in the Google Chrome you already use, with your existing tabs, signed-in accounts and real mouse and keyboard."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I let Claude Code use my logged-in Chrome on a Mac?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Install MyChrome from source with bash scripts/setup.sh. Run bash scripts/setup.sh --instructions and use the printed Claude Code connection command. MyChrome works with your existing Google Chrome tabs and signed-in accounts. Follow the source installation and permissions guide."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use MyChrome with Codex, and which Mac do I need?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Codex and Claude Code can use the browser tools; other local stdio MCP clients can connect with the printed paths. You need an Apple Silicon Mac with macOS 13+, Google Chrome in /Applications, native arm64 Node.js 24+ recommended (20.19+ and 22.13+ also supported), Git and Xcode Command Line Tools. Intel Macs, Rosetta Node, Windows, Linux and other browsers are not supported. MyChrome runs on the Mac whose Chrome it controls."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need a Chrome extension or another browser profile?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No Chrome extension, remote debugging port or separate browser profile is needed. MyChrome uses your existing Google Chrome and reads pages through Chrome’s “Allow JavaScript from Apple Events” setting."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I start a Codex or Claude Code conversation in MyChrome?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. New conversation (⌘N) starts a separate conversation with an installed, signed-in CLI, a model from that CLI, a supported reasoning effort and a working folder; the first task is optional. These choices do not rewrite client configuration. App-created conversations show live text, follow-up replies and supported questions or approval requests. Stop generation interrupts them. Closing the app leaves them running; reopening rejoins them while the backend process is alive, with no automatic recovery after it exits. An existing Codex conversation needs a supported local integration and an associated thread."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I see my terminal Claude Code conversation in MyChrome?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "In 0.15.0, a terminal Claude Code session connected to MyChrome appears as a read-only mirror of your prompts and Claude’s reply text from connection time. During takeover, the sidebar shows Claude’s reply text. Thinking, tool calls and tool results are not shown. You reply in the terminal; MyChrome never types into it. Mirror text stays in memory and is not written to logs or files. It is on by default; set CHROME_BRIDGE_CLAUDE_FEED=0 in the MCP server’s environment and reconnect the MCP client to turn it off."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is MyChrome available in English?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "In 0.15.0, MyChrome’s windows and notifications follow your Mac’s language (English or Chinese), with a Language setting under Settings in the menu bar panel. You can also set CHROME_BRIDGE_UI_LANG=en|zh. Agent-facing tool text does not change."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Will MyChrome work on every website?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No workflow is guaranteed. Compatibility depends on the website, account permissions and current page. Named-platform requests on this site are examples, not verified case studies."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can MyChrome solve CAPTCHAs or get around an access block?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. At a CAPTCHA or bot check, MyChrome stops and hands over. On access denial or rate limits, the assistant should stop and report the restriction, without retrying or switching tools to get around it."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I continue after entering a password or verification code?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "A field that needs you can be highlighted, and the menu bar alert can take you to the waiting page. After handling the step, explicitly say “continue” in the original conversation. The assistant should reread the page before resuming the authorized task. Continuation follows the assistant’s instructions; MyChrome does not enforce a cross-client continuation gate."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I stop MyChrome and get my mouse back?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Press Esc twice within 0.8 seconds to stop the current agent and regain the mouse and keyboard. A new instruction is needed before another takeover. Stopping does not undo actions already sent. The pause control blocks further input from every connection. During takeover, ordinary physical input is intercepted; the takeover card shows the agent, task, checklist, time left and speed. Physical actions from several agents queue for one pointer and keyboard; page reads can run together."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I choose the typing speed and use my input habits?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Choose follow-task, key-by-key or paste input, with typing, pointer and scrolling speed from 0.5× to 3×. Use paste for Chinese or other text key-by-key input cannot type. Optional personal input habit sampling is experimental: a 3-minute sample supplies timing statistics for later input; values without enough samples keep defaults. You can turn it off, resample or delete it. Only a local statistical summary is stored: no keys, typed text, screen coordinates, window or app names, or screenshots; raw events are never written to disk. It is not a behavioural clone and does not guarantee a site will accept automation."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does my page content stay on my Mac?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "MyChrome runs locally, and screenshots and text recognition run on the Mac using Apple Vision. Page content returned through MCP goes to your AI client and is handled under that client’s settings. Website routine recording of local action metadata is on by default and can be turned off. Typed and selected values are not saved as replay defaults. Local records and routine metadata may reveal which sites you use; keep runtime records private."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I replay a saved website routine?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Saved sequences replay with fresh values on a tab you select, without model calls between steps. They stop when the page or target no longer matches. Routine completion is not proof of a business outcome."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is MyChrome licensed, and who provides model access?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "MyChrome is open source under the MIT License, installed from source and not published to npm. Your AI client provides model access under its own account; its charges or subscription may apply."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "When should I use MyChrome vs. other browser tools?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "MyChrome’s instructions route public pages to an API or web fetch first, and JavaScript pages without a login to headless Playwright first. Use MyChrome where your own Chrome, login or shared view matters. A site restriction does not authorize a bypass: stop and hand over at a CAPTCHA or bot check; stop and report access denial or rate limits."
+      }
+    }
+  ]
+}
+</script></head>
   <body class="docs-page">
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header wrap">
-      <a class="wordmark" href="./" aria-label="MyChrome home"
-        >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
-      >
+      <a class="wordmark" href="./" aria-label="MyChrome home">MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a>
       <nav aria-label="Main navigation">
-        <a href="getting-started.html">Get started</a><a href="faq.html">FAQ</a
-        ><a href="https://github.com/shuaige121/mychrome-mcp">GitHub</a
-        ><a class="language" href="zh/faq.html" lang="zh-CN">中文</a>
+        <a href="getting-started.html">Get started</a><a href="faq.html">FAQ</a><a href="https://github.com/shuaige121/mychrome-mcp">GitHub</a><a class="language" href="zh/faq.html" lang="zh-CN">中文</a>
       </nav>
     </header>
     <main id="main">
       <div class="wrap doc-header">
         <p class="eyebrow">FAQ</p>
-        <h1>A few things you may be wondering.</h1>
-        <p class="intro">
-          Clients, existing logins, privacy, desktop controls and website
-          compatibility.
-        </p>
+        <h1>Your questions about MyChrome.</h1>
+        <p class="intro">MyChrome is a local MCP server with a native macOS app. It lets Codex, Claude Code and other local stdio MCP clients work in the Google Chrome you already use, with your existing tabs, signed-in accounts and real mouse and keyboard.</p>
       </div>
       <div class="wrap faq-layout">
-        <article class="prose">
-          <h2 id="what-is-mychrome">What is MyChrome?</h2>
-          <p>
-            MyChrome is a local MCP server and native macOS app. Keep using
-            Chrome as usual and bring in AI on the same page when you need help.
-            Take over when a step needs you, then tell it to continue. It uses
-            your real pointer and keyboard, with adjustable pace and optional
-            personal rhythm sampling.
-          </p>
-          <h2 id="which-computers-and-clients-work">
-            Which computers and clients work?
-          </h2>
-          <p>
-            Apple Silicon Macs running macOS 13+ with Google Chrome, supported
-            Node.js and Xcode Command Line Tools. Codex and Claude Code support
-            the browser tools; other local stdio MCP clients can use the
-            generated connection paths. Codex and Claude Code conversations
-            created in MyChrome support live text and direct replies in the
-            native window. Existing external Codex conversations require a
-            supported integration and associated thread. Existing external
-            Claude Code conversations cannot be associated; continue them in
-            Claude Code.
-          </p>
-          <p>
-            Click <strong>新对话 (New conversation)</strong> to choose an
-            installed, logged-in Codex or Claude Code CLI, an available model,
-            supported reasoning effort and a working directory. Model choices
-            come from the selected CLI. The first task is optional, and this
-            creates a separate conversation.
-          </p>
-          <h2 id="can-it-use-my-existing-login">
-            Can it use my existing login?
-          </h2>
-          <p>
-            Yes, it operates your installed Chrome. Ask your assistant to use
-            the exact existing tab and confirm the account displayed by the
-            website before making changes. A Chrome profile and a website
-            account are not necessarily the same identity.
-            <a
-              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/faq/use-my-logged-in-chrome-with-claude-code.md"
-              >Claude Code setup</a
-            >.
-          </p>
-          <h2 id="does-it-work-on-every-website">
-            Does it work on every website?
-          </h2>
-          <p>
-            What works depends on the site’s controls, account permissions and
-            current page. You may need to take over for login or verification.
-            The task examples on this website describe requests you can make;
-            they do not establish compatibility with every workflow.
-          </p>
-          <h2 id="personal-rhythm">Can it use my input habits?</h2>
-          <p>
-            Choose an input mode and pace from 0.5× to 3×. The optional My input
-            habits feature samples your rhythm for 3 minutes, then uses typing
-            and pointer statistics with enough samples to shape later input.
-            Sampling is experimental; you can turn it off or delete its data.
-            Only a local statistical summary is saved, without typed content,
-            raw paths or screenshots.
-          </p>
-          <h2 id="continue-after-handoff">
-            How does AI continue after I take over?
-          </h2>
-          <p>
-            The handoff instructions tell the AI to wait for your request to
-            continue. After handling the step, say “continue” in the original
-            conversation; it should read the page again before proceeding.
-            Page-change or input detection only ends the observation; your AI
-            client must follow the handoff instructions.
-          </p>
-          <h2 id="how-do-i-stop-it">How do I stop it?</h2>
-          <p>
-            Press Esc twice quickly, within 0.8 seconds, to cancel the current
-            agent and return keyboard and mouse control. The agent must wait for
-            a new instruction before taking over again. To prevent new input
-            across agents, use Pause AI actions after control is returned.
-            Stopping does not undo actions already sent.
-          </p>
-          <h2 id="can-i-use-the-mouse-while-it-works">
-            Can I use the mouse while it works?
-          </h2>
-          <p>
-            During takeover, ordinary physical input is intercepted. There is
-            one pointer and keyboard on the desktop, and agent input takes
-            turns. Reading can happen concurrently. Use double Esc when you need
-            to take over.
-          </p>
-          <h2 id="what-stays-on-my-mac">What stays on my Mac?</h2>
-          <p>
-            MyChrome's settings, operation records and website routine metadata
-            are local. Routine recording is enabled by default and can be turned
-            off. It records filtered page/target descriptions and action order;
-            typed and selected values are not saved as replay defaults. Paths,
-            labels and routine names may still reveal usage context. Page
-            content returned through MCP goes to your AI client and is handled
-            under its settings. Do not share runtime directories or account
-            screenshots.
-          </p>
-          <h2 id="what-are-website-routines">What are website routines?</h2>
-          <p>
-            Saved continuous sequences of supported website actions. Review the
-            steps, enter fresh values and select an existing tab for each run.
-            Replay uses the same guarded input path without model calls between
-            steps and stops when the page or target no longer matches. It does
-            not support every control or prove an external business result.
-            <a
-              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/routines.md"
-              >Full routine guide</a
-            >.
-          </p>
-          <h2 id="is-it-free">Is it free?</h2>
-          <p>
-            The project is open source under the
-            <a
-              href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE"
-              >MIT License</a
-            >. Your AI client supplies model access, and its own charges or
-            subscription may apply. This release uses source installation and is
-            not published to npm.
-          </p>
-          <h2 id="should-i-use-it-for-every-page">
-            Should I use it for every page?
-          </h2>
-          <p>
-            Choose the tool that fits the task. Public information often needs
-            only an API or web fetch; headless browser automation suits
-            JavaScript pages without your personal session. MyChrome is useful
-            when your existing Chrome context or shared page matters.
-            <a
-              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/faq/mychrome-or-playwright.md"
-              >Choosing a browser tool</a
-            >.
-          </p>
-          <h2 id="does-it-always-save-tokens">Does it always save tokens?</h2>
-          <p>
-            There is no general savings guarantee. Page reads can return an
-            outline or focused text instead of an image; actual model usage
-            depends on the page, client and task.
-            <a
-              href="https://github.com/shuaige121/mychrome-mcp/blob/main/docs/faq/how-it-saves-tokens.md"
-              >How page reading works</a
-            >.
-          </p>
-        </article>
+        <article class="prose"><h2 id="what-is-mychrome">What is MyChrome?</h2><p>MyChrome is a local MCP server with a native macOS app. It lets Codex, Claude Code and other local stdio MCP clients work in the Google Chrome you already use, with your existing tabs, signed-in accounts and real mouse and keyboard.</p>
+<h2 id="logged-in-chrome">How do I let Claude Code use my logged-in Chrome on a Mac?</h2><p>Install MyChrome from source with <code>bash scripts/setup.sh</code>. Run <code>bash scripts/setup.sh --instructions</code> and use the printed Claude Code connection command. MyChrome works with your existing Google Chrome tabs and signed-in accounts. <a href="getting-started.html">Follow the source installation and permissions guide</a>.</p>
+<h2 id="which-computers-and-clients-work">Can I use MyChrome with Codex, and which Mac do I need?</h2><p>Codex and Claude Code can use the browser tools; other local stdio MCP clients can connect with the printed paths. You need an Apple Silicon Mac with macOS 13+, Google Chrome in <code>/Applications</code>, native arm64 Node.js 24+ recommended (20.19+ and 22.13+ also supported), Git and Xcode Command Line Tools. Intel Macs, Rosetta Node, Windows, Linux and other browsers are not supported. MyChrome runs on the Mac whose Chrome it controls.</p>
+<h2 id="can-it-use-my-existing-login">Do I need a Chrome extension or another browser profile?</h2><p>No Chrome extension, remote debugging port or separate browser profile is needed. MyChrome uses your existing Google Chrome and reads pages through Chrome’s “Allow JavaScript from Apple Events” setting.</p>
+<h2 id="app-conversations">Can I start a Codex or Claude Code conversation in MyChrome?</h2><p>Yes. New conversation (⌘N) starts a separate conversation with an installed, signed-in CLI, a model from that CLI, a supported reasoning effort and a working folder; the first task is optional. These choices do not rewrite client configuration. App-created conversations show live text, follow-up replies and supported questions or approval requests. Stop generation interrupts them. Closing the app leaves them running; reopening rejoins them while the backend process is alive, with no automatic recovery after it exits. An existing Codex conversation needs a supported local integration and an associated thread.</p>
+<h2 id="claude-code-conversation">Can I see my terminal Claude Code conversation in MyChrome?</h2><p>In 0.15.0, a terminal Claude Code session connected to MyChrome appears as a read-only mirror of your prompts and Claude’s reply text from connection time. During takeover, the sidebar shows Claude’s reply text. Thinking, tool calls and tool results are not shown. You reply in the terminal; MyChrome never types into it. Mirror text stays in memory and is not written to logs or files. It is on by default; set <code>CHROME_BRIDGE_CLAUDE_FEED=0</code> in the MCP server’s environment and reconnect the MCP client to turn it off.</p>
+<h2 id="is-the-app-in-english">Is MyChrome available in English?</h2><p>In 0.15.0, MyChrome’s windows and notifications follow your Mac’s language (English or Chinese), with a Language setting under Settings in the menu bar panel. You can also set <code>CHROME_BRIDGE_UI_LANG=en|zh</code>. Agent-facing tool text does not change.</p>
+<h2 id="does-it-work-on-every-website">Will MyChrome work on every website?</h2><p>No workflow is guaranteed. Compatibility depends on the website, account permissions and current page. Named-platform requests on this site are examples, not verified case studies.</p>
+<h2 id="captcha">Can MyChrome solve CAPTCHAs or get around an access block?</h2><p>No. At a CAPTCHA or bot check, MyChrome stops and hands over. On access denial or rate limits, the assistant should stop and report the restriction, without retrying or switching tools to get around it.</p>
+<h2 id="continue-after-handoff">How do I continue after entering a password or verification code?</h2><p>A field that needs you can be highlighted, and the menu bar alert can take you to the waiting page. After handling the step, explicitly say “continue” in the original conversation. The assistant should reread the page before resuming the authorized task. Continuation follows the assistant’s instructions; MyChrome does not enforce a cross-client continuation gate.</p>
+<h2 id="how-do-i-stop-it">How do I stop MyChrome and get my mouse back?</h2><p>Press Esc twice within 0.8 seconds to stop the current agent and regain the mouse and keyboard. A new instruction is needed before another takeover. Stopping does not undo actions already sent. The pause control blocks further input from every connection. During takeover, ordinary physical input is intercepted; the takeover card shows the agent, task, checklist, time left and speed. Physical actions from several agents queue for one pointer and keyboard; page reads can run together.</p>
+<h2 id="personal-rhythm">Can I choose the typing speed and use my input habits?</h2><p>Choose follow-task, key-by-key or paste input, with typing, pointer and scrolling speed from 0.5× to 3×. Use paste for Chinese or other text key-by-key input cannot type. Optional personal input habit sampling is experimental: a 3-minute sample supplies timing statistics for later input; values without enough samples keep defaults. You can turn it off, resample or delete it. Only a local statistical summary is stored: no keys, typed text, screen coordinates, window or app names, or screenshots; raw events are never written to disk. It is not a behavioural clone and does not guarantee a site will accept automation.</p>
+<h2 id="what-stays-on-my-mac">Does my page content stay on my Mac?</h2><p>MyChrome runs locally, and screenshots and text recognition run on the Mac using Apple Vision. Page content returned through MCP goes to your AI client and is handled under that client’s settings. Website routine recording of local action metadata is on by default and can be turned off. Typed and selected values are not saved as replay defaults. Local records and routine metadata may reveal which sites you use; keep runtime records private.</p>
+<h2 id="what-are-website-routines">Can I replay a saved website routine?</h2><p>Saved sequences replay with fresh values on a tab you select, without model calls between steps. They stop when the page or target no longer matches. Routine completion is not proof of a business outcome.</p>
+<h2 id="is-it-free">How is MyChrome licensed, and who provides model access?</h2><p>MyChrome is open source under the <a href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE">MIT License</a>, installed from source and not published to npm. Your AI client provides model access under its own account; its charges or subscription may apply.</p>
+<h2 id="should-i-use-it-for-every-page">When should I use MyChrome vs. other browser tools?</h2><p>MyChrome’s instructions route public pages to an API or web fetch first, and JavaScript pages without a login to headless Playwright first. Use MyChrome where your own Chrome, login or shared view matters. A site restriction does not authorize a bypass: stop and hand over at a CAPTCHA or bot check; stop and report access denial or rate limits.</p></article>
         <aside class="help-note">
           <h2>Ready to try it?</h2>
           <p>
             Connect the Chrome you already use and start with the work at hand.
           </p>
-          <a class="button primary" href="getting-started.html"
-            >Get started ↗</a
-          >
+          <a class="button primary" href="getting-started.html">Get started ↗</a>
         </aside>
       </div>
     </main>
     <footer class="site-footer wrap">
       <div>
-        <a class="wordmark" href="./"
-          >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
-        >
+        <a class="wordmark" href="./">MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a>
         <p>Your Chrome. A hand when you need one.</p>
       </div>
       <div class="footer-links">
-        <a
-          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md"
-          >Support</a
-        ><a
-          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md"
-          >Security</a
-        ><a
-          href="https://github.com/shuaige121/mychrome-mcp/blob/main/CONTRIBUTING.md"
-          >Contribute</a
-        ><a href="./llms.txt">llms.txt</a
-        ><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE"
-          >MIT License</a
-        >
+        <a href="https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md">Support</a><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md">Security</a><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/CONTRIBUTING.md">Contribute</a><a href="./llms.txt">llms.txt</a><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE">MIT License</a>
       </div>
-      <p class="legal">
-        © 2026 Leonard Chow. Independent project. Not affiliated with or
-        endorsed by Google. Chrome is a trademark of Google LLC.
-      </p>
+      <p class="legal">Copyright Leonard Chow. MyChrome is an independent project, not affiliated with or endorsed by Google. Chrome is a trademark of Google LLC.</p>
     </footer>
-  </body>
-</html>
+
+
+</body></html>

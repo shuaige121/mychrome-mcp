@@ -32,7 +32,8 @@ try {
   assert.equal((await call('send', { ...draft, threadId: fresh.threadId, bindingId: fresh.bindingId, nonce: 'second' })).result.status, 'accepted');
   assert.deepEqual(sent, [{ threadId: 'thread-b', text: 'answer for a' }]);
   service.bind('thread-a', 'Claude');
-  assert.equal((await call('snapshot')).snapshot.reason, 'unsupported_client');
+  assert.equal((await call('snapshot')).snapshot.reason, 'transcript_unavailable');
+  assert.equal((await call('snapshot')).snapshot.threadId, null);
   assert.equal((await call('send', draft)).delivery, 'not_sent');
   assert.deepEqual(closed, ['thread-a', 'thread-b']);
   console.log('GUI service: old binding rejected, explicit current destination accepted, Claude never misbound to inherited Codex thread');
@@ -343,7 +344,7 @@ for (const identity of ['Claude', 'Agent']) {
   }) => {
     service.bind(null, null);
     service.bind('thread-a', identity);
-    assert.equal(service.snapshot().reason, 'unsupported_client');
+    assert.equal(service.snapshot().reason, identity === 'Claude' ? 'transcript_unavailable' : 'browser_only');
     assert.equal(service.snapshot().threadId, null);
     assert.equal(service.exportBinding(), null);
     service.bind(null, 'Codex');

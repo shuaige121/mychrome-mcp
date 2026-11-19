@@ -148,7 +148,7 @@ export async function runSetup(options = {}, overrides = {}) {
   const swift = xcode.code === 0 ? await p.run('/usr/bin/xcrun', ['--find', 'swiftc']) : null;
   checks.push(check('swift', 'Swift compiler', swift?.code === 0, swift?.stdout?.trim() || 'Swift compiler is unavailable.', 'Install the Xcode Command Line Tools using xcode-select --install.'));
   checks.push(check('chrome', 'Google Chrome', p.exists(CHROME_APP), CHROME_APP, 'Install Google Chrome from https://www.google.com/chrome/ and move it to /Applications.'));
-  const required = ['package.json', 'package-lock.json', 'src/index.js', 'src/helper.swift', 'src/chromectl.swift', 'src/menubar.swift', 'scripts/install-gui.mjs'];
+  const required = ['package.json', 'package-lock.json', 'src/index.js', 'src/helper.swift', 'src/chromectl.swift', 'src/native-chrome.swift', 'scripts/build-native.sh', 'src/menubar.swift', 'src/page-events.js', 'src/page-event-host.js', 'src/page-prompt-templates.json', 'src/page/prompt-observation.js', 'scripts/install-gui.mjs'];
   const missing = required.filter(name => !p.exists(path.join(p.root, name)));
   checks.push(check('source', 'Complete source checkout', missing.length === 0, missing.length ? `Missing: ${missing.join(', ')}` : p.root,
     'Use the complete source release or Git checkout, keep it in a stable directory, and run scripts/setup.sh from there.'));

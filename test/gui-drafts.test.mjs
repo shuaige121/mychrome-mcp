@@ -28,13 +28,14 @@ after(() => {
   rmdirSync(dir);
 });
 writeFileSync(swift, `import Foundation
+func L(_ zh: String, _ en: String) -> String { zh }   // I18N1: the production two-language pair (src/onboarding-ui.swift), Chinese here
 struct ServerInfo {
     let id: Int32
     let guiInstance: String?, conversationThread: String?, conversationBinding: String?
     var managedSession = false
     var conversationTitle: String?
 }
-struct ConversationEntry: Identifiable { let id: String, text: String }
+${source.split('\n').find(line => line.startsWith('struct ConversationEntry: Identifiable'))}
 ${block('struct ConversationState')}
 ${block('func conversationKey(')}
 ${block('func hasPreviousBindingDraft(')}

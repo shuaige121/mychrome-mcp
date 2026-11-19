@@ -15,6 +15,11 @@ const PUBLIC_MEDIA = new Map([
   ['site/assets/mychrome-overview.gif', { format: 'gif', maxBytes: 12 * 1024 * 1024 }],
   ['site/assets/mychrome-overview-poster.webp', { format: 'webp', maxBytes: 4 * 1024 * 1024 }],
   ['site/assets/social-card.png', { format: 'png', maxBytes: 4 * 1024 * 1024 }],
+  // Takeover card rendered offscreen by `cgevent veilsnap --lang en` with sample data (MKT1 privacy review 2026-11-04).
+  ['site/assets/takeover-card-en.gif', { format: 'gif', maxBytes: 2 * 1024 * 1024 }],
+  ['site/assets/takeover-card-en.png', { format: 'png', maxBytes: 1024 * 1024 }],
+  // OCR1 warm-up image: synthetic sample words and numbers only (coordinator privacy review 2026-11-04).
+  ['src/ocr-warm.png', { format: 'png', maxBytes: 256 * 1024 }],
 ]);
 const FORBIDDEN = /(^|\/)(?:\.git|\.ssh|\.aws|\.npmrc|\.netrc|node_modules|bin|verification|handover|experiments|sessions?|histories|cache|caches|logs|\.env(?:\..*)?|auth\.json|Codex\.local\.md|settings\.local\.json|[^/]*credentials[^/]*)(?:\/|$)|^docs\/(?:live|research|discussion[^/]*|marketing|routing-eval)(?:\/|$)|\.(?:log|jsonl|db|sqlite\d*|png|jpe?g|gif|webp|mp4|mov|tgz|zip)$/i;
 const CONTENT_RULES = [

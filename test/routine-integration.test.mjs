@@ -171,10 +171,13 @@ test('interruption and failed actions remain barriers and do not add post-action
 test('uncompleted begin survives a new controller as an interrupted barrier', async () => {
   const f = fixture(); await f.action();
   await f.integration.beforeInput({ routineAttempt: { tool: 'type_text', args: { tab: 7, marker: 1 } } }, 7);
-  const fresh = createRoutineIntegration({ store: f.store, adapter: f.adapter });
+  const fresh = createRoutineIntegration({ store: f.store, adapter: f.adapter, recording: () => true });
   const context = { routineAttempt: { tool: 'type_text', args: { tab: 7, marker: 1 } } };
   await fresh.beforeInput(context, 7); await fresh.afterInput(context, {}, observed());
-  const events = await f.events(); assert.equal(events[1].reason, 'in_progress');
+  const events = await f.events();
+  assert.equal(events.length, 3);
+  assert.equal(events[0].replayable, true); assert.equal(events[2].replayable, true);
+  assert.equal(events[1].reason, 'in_progress');
   await noGap(f, events[0], events.at(-1));
 });
 

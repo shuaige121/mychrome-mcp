@@ -32,7 +32,7 @@ test('sanitized records, exact origins, static descriptors and parameterized sav
   const first = await store.record(action({ tool: 'type_text', task: secret,
     target: { ...target('Search', 'input'), type: 'search', value: secret, text: secret, raw: secret },
     before: { ...at('/form?token=' + secret + '#/edit?secret=' + secret), fingerprint: 'a'.repeat(64) },
-    after: at('/form#/edit'), args: { text: secret, submit: true, input_mode: 'keys', token: secret }, metadata: secret }));
+    after: at('/form#/edit'), args: { text: secret, submit: true, replace: true, input_mode: 'keys', token: secret }, metadata: secret }));
   const second = await store.record(action({ tool: 'select_option', task: secret, target: { ...target('Region', 'select'), role: 'combobox' },
     before: at('/form#/edit'), after: at('/form#/edit'), args: { value: secret, label: secret } }));
   const third = await store.record(action({ task: secret, before: at('/form#/edit'), after: at('/result'),
@@ -41,6 +41,7 @@ test('sanitized records, exact origins, static descriptors and parameterized sav
   const routine = await store.save({ name: 'Search and apply', description: 'Find a region', eventIds: [first.id, second.id, third.id] });
   assert.deepEqual(routine.parameters, [{ name: 'input_1', label: 'Search' }, { name: 'option_1', label: 'Region' }]);
   assert.equal(routine.steps[0].args.textParam, 'input_1');
+  assert.equal(routine.steps[0].args.replace, true);
   assert.equal(routine.steps[1].args.valueParam, 'option_1');
   assert.equal(routine.steps[2].target.href, 'https://example.test/result');
   assert.deepEqual(routine.steps[2].targetState, { disabled: false, checked: false, focused: false });

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "fixture-dom-inactivity",
+      "version": 1,
+      "fixtureOnly": true,
+      "kind": "dom",
+      "semanticClass": "inactivity",
+      "title": "Session inactive",
+      "texts": ["Your session is inactive. Keep this session open?"],
+      "buttons": ["Keep session", "Exit session"],
+      "choices": {"keep_session": "Keep session", "exit_session": "Exit session"},
+      "hasField": false,
+      "origins": ["http://127.0.0.1:17744", "http://localhost:17744"]
+    },
+    {
+      "id": "fixture-native-inactivity",
+      "version": 1,
+      "fixtureOnly": true,
+      "kind": "native",
+      "semanticClass": "inactivity",
+      "title": "Session inactive",
+      "texts": ["Your session is inactive. Keep this session open?"],
+      "buttons": ["Keep session", "Exit session"],
+      "choices": {"keep_session": "Keep session", "exit_session": "Exit session"},
+      "hasField": false,
+      "origins": ["http://127.0.0.1:17744", "http://localhost:17744"]
+    }
+  ]
+}

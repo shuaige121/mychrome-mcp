@@ -1,3 +1,4 @@
+import { pageEventStubs } from './page-event-test-stubs.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
@@ -6,11 +7,13 @@ import readline from 'node:readline';
 import vm from 'node:vm';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 import * as S from '../src/settings.js';
 
 // Compile actual settings/lock/token functions with Foundation only. Every path
 // is a newly-created fixture; no native UI, helper input or real settings.
+const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const source = readFileSync(new URL('../src/menubar.swift', import.meta.url), 'utf8');
 function block(source, marker) {
   const start = source.indexOf(marker);
@@ -38,15 +41,19 @@ const functions = ['readJSON', 'jsonBool', 'jsonNum', 'withSettingsWriteLock',
   'settingsPauseTokens', 'requestSettingsPause', 'clearSettingsPauseTokens', 'writeSettingsObject']
   .map(name => block(source, `func ${name}(`)).join('\n');
 writeFileSync(path.join(build, 'probe.swift'), `import Foundation
+func L(_ zh: String, _ en: String) -> String { zh }   // I18N1: the production two-language pair (src/onboarding-ui.swift), Chinese here
 import CoreFoundation
 import Darwin
 let SETTINGS_FILE = CommandLine.arguments[1]
 ${functions}
+let ROOT_DIR = CommandLine.arguments[3]
+${source.slice(source.indexOf("private enum SettingsJSONValue:"), source.indexOf("/// Used by both GUI surfaces."))}
 ${block(source, 'struct Settings:')}
 func report(_ value: [String: Any]) {
     print(String(decoding: try! JSONSerialization.data(withJSONObject: value), as: UTF8.self)); fflush(stdout)
 }
 let command = CommandLine.arguments[2]
+if command == "catalog" { report(["root": ROOT_DIR, "ids": PagePromptCatalog.load()?.templates.map { $0.id } ?? []]); exit(0) }
 if command == "read" { report(["paused": Settings.read().paused]); exit(0) }
 if command == "resume-commit-barrier" {
     let observed = settingsPauseTokens(SETTINGS_FILE)
@@ -62,10 +69,10 @@ if command.hasPrefix("prepare-") { report(["ready": true]); _ = readLine() }
 report(["ok": save(), "paused": Settings.read().paused])
 `);
 execFileSync('/usr/bin/swiftc', [path.join(build, 'probe.swift'), '-o', binary], { timeout: 60_000, stdio: 'pipe' });
-const native = (file, command) => JSON.parse(execFileSync(binary, [file, command], { encoding: 'utf8', timeout: 5000 }));
+const native = (file, command, catalogRoot = root) => JSON.parse(execFileSync(binary, [file, command, catalogRoot], { encoding: 'utf8', timeout: 5000 }));
 const activeWrites = new Set();
 async function prepared(file, command) {
-  const child = spawn(binary, [file, command], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(binary, [file, command, root], { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '', timer;
   child.stderr.on('data', bytes => { stderr += bytes; });
   const lines = readline.createInterface({ input: child.stdout }), values = [];
@@ -98,6 +105,16 @@ async function fixture(run) {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('extracted Swift loads only the intended checkout or explicitly isolated catalog', () => {
+  const catalog = JSON.parse(readFileSync(path.join(root, 'src/page-prompt-templates.json'), 'utf8'));
+  const file = path.join(build, 'catalog-settings.json'); writeFileSync(file, '{}');
+  assert.deepEqual(native(file, 'catalog'), { root, ids: catalog.templates.map(t => t.id) });
+  const isolated = path.join(build, 'isolated-catalog'); mkdirSync(path.join(isolated, 'src'), { recursive: true });
+  catalog.templates[0].id = 'fixture-isolated-inactivity';
+  writeFileSync(path.join(isolated, 'src/page-prompt-templates.json'), JSON.stringify(catalog));
+  assert.deepEqual(native(file, 'catalog', isolated), { root: isolated, ids: catalog.templates.map(t => t.id) });
+});
 
 test('emergency pause remains effective with malformed JSON; failed resume preserves it', () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'mychrome-pause-'));
@@ -185,7 +202,7 @@ test('emergency tokens enter the production input gate and release a between-act
   const index = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
   let released = 0, cleaned = 0, poll;
   const requests = [], th = { task: 'Synthetic task', kept: { session: { request: async x => { requests.push(x.op); } } } };
-  const context = vm.createContext({ S: { get: key => S.get(key, env) }, TASK_HOLD: th,
+  const context = vm.createContext({ ...pageEventStubs, S: { get: key => S.get(key, env) }, TASK_HOLD: th,
     PLAN: { task: th.task }, YIELDING: null,
     setInterval: fn => { poll = fn; return 1; },
     endTaskHold: async () => { released++; }, pauseCleanup: () => { cleaned++; },

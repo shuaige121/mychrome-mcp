@@ -67,11 +67,12 @@ struct Duration: Identifiable {
     var id: String { key }
 }
 /// What "keep the screen on" can last; the panel shows them once the switch is on.
-let DURATIONS: [Duration] = [
-    Duration(key: "15", label: "15 分钟", minutes: 15), Duration(key: "30", label: "30 分钟", minutes: 30),
-    Duration(key: "60", label: "1 小时", minutes: 60), Duration(key: "120", label: "2 小时", minutes: 120),
-    Duration(key: "task", label: "直到任务结束", minutes: nil), Duration(key: "forever", label: "一直保持", minutes: nil)
-]
+/// I18N1: computed, so a language change applies without a restart (the same for the tables below).
+var DURATIONS: [Duration] { [
+    Duration(key: "15", label: L("15 分钟", "15 min"), minutes: 15), Duration(key: "30", label: L("30 分钟", "30 min"), minutes: 30),
+    Duration(key: "60", label: L("1 小时", "1 hour"), minutes: 60), Duration(key: "120", label: L("2 小时", "2 hours"), minutes: 120),
+    Duration(key: "task", label: L("直到任务结束", "Until task ends"), minutes: nil), Duration(key: "forever", label: L("一直保持", "Always on"), minutes: nil)
+] }
 
 @discardableResult
 func setMode(_ key: String) -> Bool {
@@ -105,7 +106,7 @@ func liveTasks() -> [AgentTask] {
         guard let t = readJSON(path), let pid = (t["pid"] as? NSNumber)?.int32Value else { continue }
         guard alive(pid) else { try? FileManager.default.removeItem(atPath: path); continue }
         let num = { (k: String) in (t[k] as? NSNumber)?.doubleValue }
-        out.append((num("since") ?? 0, AgentTask(id: pid, who: t["who"] as? String ?? "AI 助手", task: t["task"] as? String ?? "",
+        out.append((num("since") ?? 0, AgentTask(id: pid, who: uiWho(t["who"] as? String), task: t["task"] as? String ?? "",
             stepName: t["stepName"] as? String ?? "", current: num("current").map { Int($0) }, total: num("total").map { Int($0) },
             color: Int(num("color") ?? 0), etaMs: num("etaMs"), etaAt: num("etaAt"), alert: t["alert"] as? String,
             alertTab: num("alertTab").map { Int($0) }, alertToken: t["alertToken"] as? String,
@@ -116,9 +117,9 @@ func liveTasks() -> [AgentTask] {
 
 func minutesText(_ ms: Double) -> String {
     let m = Int((ms / 60_000).rounded(.up))
-    if m < 1 { return "不到 1 分钟" }
-    if m < 60 { return "\(m) 分钟" }
-    return m % 60 == 0 ? "\(m / 60) 小时" : "\(m / 60) 小时 \(m % 60) 分钟"
+    if m < 1 { return L("不到 1 分钟", "less than 1 min") }
+    if m < 60 { return L("\(m) 分钟", "\(m) min") }
+    return m % 60 == 0 ? L("\(m / 60) 小时", "\(m / 60) h") : L("\(m / 60) 小时 \(m % 60) 分钟", "\(m / 60) h \(m % 60) min")
 }
 
 // MARK: - habits (src/helper.swift "habits": a statistical summary of the user's own input rhythm)
@@ -163,10 +164,10 @@ func clockText(_ ms: Double) -> String {
 }
 
 func dateText(_ d: Date?) -> String {
-    guard let d = d else { return "日期不明" }
+    guard let d = d else { return L("日期不明", "Date unknown") }
     let f = DateFormatter()
-    f.locale = Locale(identifier: "zh_CN")
-    f.dateFormat = "M月d日 HH:mm"
+    f.locale = Locale(identifier: uiEnglish() ? "en_US_POSIX" : "zh_CN")
+    f.dateFormat = L("M月d日 HH:mm", "MMM d, HH:mm")
     return f.string(from: d)
 }
 
@@ -190,6 +191,8 @@ let RESTART_FILE = BASE + "/restart-all.json"
 struct RestartItem: Identifiable, Equatable {
     let id: Int
     let name: String, state: String, note: String
+    /// How the session is reached (src/restart.js `how`: kitty, tmux, background, print, other, unknown, self, gone).
+    var how: String? = nil
 }
 struct RestartJob: Equatable {
     let pid: Int32, startedAt: Double, at: Double, finished: Bool
@@ -203,14 +206,47 @@ struct RestartJob: Equatable {
 func readRestartJob() -> RestartJob? {
     guard let j = readJSON(RESTART_FILE), let pid = (j["pid"] as? NSNumber)?.int32Value else { return nil }
     let items = (j["items"] as? [[String: Any]] ?? []).map { i in
-        RestartItem(id: Int(jsonNum(i["client"]) ?? 0), name: i["name"] as? String ?? "", state: i["state"] as? String ?? "", note: i["note"] as? String ?? "")
+        RestartItem(id: Int(jsonNum(i["client"]) ?? 0), name: i["name"] as? String ?? "", state: i["state"] as? String ?? "", note: i["note"] as? String ?? "",
+                    how: i["how"] as? String)
     }
     let finished = jsonBool(j["finished"]) ?? false
     let died = !finished && !alive(pid)
     return RestartJob(pid: pid, startedAt: jsonNum(j["startedAt"]) ?? 0, at: jsonNum(j["at"]) ?? 0, finished: finished, died: died, items: items.map { i in
         died && (i.state == "waiting" || i.state == "sent")
-            ? RestartItem(id: i.id, name: i.name, state: "failed", note: "重启程序中途退出了，这个没做完：再点一次「全部重启」") : i
+            ? RestartItem(id: i.id, name: i.name, state: "failed", note: L("重启程序中途退出了，这个没做完：再点一次「全部重启」", "The restart program exited early and this one was not finished: click Restart all again"), how: i.how) : i
     }, error: j["error"] as? String)
+}
+/// I18N1: a 「全部重启」 item in the UI language. The restart program writes its notes in Chinese (src/restart.js); in English the
+/// note is worded from the item's actual outcome, never from its state alone: restarted on the new version, already on it,
+/// the session closed (not restarted), the reconnect command typed but Return withheld (left in its input box), sent and
+/// unconfirmed, or left untouched. Only restart.js's fixed note openings are matched; the command is copied from the note.
+func restartNoteText(state: String, how: String?, note: String) -> String {
+    guard uiEnglish(), note.unicodeScalars.contains(where: { $0.value >= 0x3000 }) else { return note }
+    let command = note.range(of: "/mcp reconnect [A-Za-z0-9_.@-]+", options: .regularExpression).map { String(note[$0]) } ?? "/mcp reconnect"
+    switch state {
+    case "done":
+        if note.hasPrefix("已重启") { return "Restarted; now on the new version" }   // i18n-exempt: restart.js note matched
+        if note.hasPrefix("已经换成新版") { return "Already on the new version (reconnected meanwhile); nothing was typed" }   // i18n-exempt: restart.js note matched
+        if note.hasPrefix("会话已经关了") { return "The session has closed; it was not restarted" }   // i18n-exempt: restart.js note matched
+        return "Finished, but the outcome was not recognised; check that session"
+    case "skipped":
+        if note.contains("没有按回车") {   // i18n-exempt: restart.js note matched
+            return "\(command) was typed into that session's input box, but Return was not pressed and nothing was deleted (someone was using the computer, or the screen changed). Press Return there to restart, or delete it."
+        }
+        switch how {
+        case "other": return "Not a Claude Code session; nothing was typed. Close it and reopen it."
+        case "print": return "A one-off task (claude -p); nothing was typed. It ends by itself."
+        case "self": return "This is the session running the restart; nothing was typed. When the command finishes, type \(command) here."
+        case "unknown": return "Not in kitty or tmux, so MyChrome cannot type for it; nothing was typed. Type \(command) in that window, or close and reopen it."
+        default: return "Left untouched: nothing was typed. Type \(command) in that session, or choose Reconnect under /mcp."
+        }
+    case "failed":
+        if note.contains("旧的 MyChrome 停了") { return "The old MyChrome stopped, but the new one did not start: type /mcp in that session to check its status." }   // i18n-exempt: restart.js note matched
+        if note.hasPrefix("claude respawn") { return "claude respawn did not succeed: open the session with claude attach and reconnect it under /mcp." }
+        return "The reconnect was sent, but the switch to the new version was not confirmed. If the /mcp menu is open there, press Esc and choose Reconnect, or close and reopen the session."
+    case "sent": return "Reconnect sent; confirming the new version"
+    default: return "Waiting for this session to be idle"
+    }
 }
 /// 「带我去」: the session `pid` brings `tab` (the page waiting for the user) to the front (src/index.js onGotoRequest).
 func writeGotoRequest(pid: Int32, tab: Int, task: AgentTask? = nil, requestId: String = UUID().uuidString) -> String? {
@@ -239,12 +275,13 @@ let ROOT_DIR: String = {
 /// A server of this checkout (its root, resolved) — the restart check compares with this checkout's files.
 func sameRoot(_ root: String?) -> Bool { root == nil || realPath(root!) == ROOT_DIR }
 
-/// src/settings.js sourceFingerprint, the same bytes: sha256 over "<name>\0<bytes>\0" for each src/*.js in name order.
+/// src/settings.js sourceFingerprint: identical sorted src-relative JS/catalog inputs.
 func sourceFingerprint(_ root: String) -> String? {
     let dir = root + "/src"
     guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return nil }
     var h = SHA256()
-    for n in names.filter({ $0.hasSuffix(".js") }).sorted(by: { Array($0.utf16).lexicographicallyPrecedes(Array($1.utf16)) }) {
+    let inputs = names.filter({ $0.hasSuffix(".js") }) + ["page-prompt-templates.json", "page/prompt-observation.js"]
+    for n in inputs.sorted(by: { Array($0.utf16).lexicographicallyPrecedes(Array($1.utf16)) }) {
         guard let d = FileManager.default.contents(atPath: dir + "/" + n) else { return nil }
         h.update(data: Data(n.utf8)); h.update(data: Data([0])); h.update(data: d); h.update(data: Data([0]))
     }
@@ -259,6 +296,305 @@ func jsonBool(_ v: Any?) -> Bool? {
 func jsonNum(_ v: Any?) -> Double? {
     guard let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
     return n.doubleValue
+}
+
+/// JSONSerialization strips a leading U+FEFF from string values on macOS.
+/// Decode this settings/catalog boundary without changing Unicode text or JSON Bool types.
+private enum SettingsJSONValue: Decodable {
+    case object([String: SettingsJSONValue]), array([SettingsJSONValue]), string(String), bool(Bool)
+    case integer(Int64), unsigned(UInt64), decimal(Decimal), null
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null }
+        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? container.decode(String.self) { self = .string(value) }
+        else if let value = try? container.decode(Int64.self) { self = .integer(value) }
+        else if let value = try? container.decode(UInt64.self) { self = .unsigned(value) }
+        else if let value = try? container.decode(Decimal.self) { self = .decimal(value) }
+        else if let value = try? container.decode([SettingsJSONValue].self) { self = .array(value) }
+        else { self = .object(try container.decode([String: SettingsJSONValue].self)) }
+    }
+    var value: Any {
+        switch self {
+        case .object(let values): return values.mapValues { $0.value }
+        case .array(let values): return values.map { $0.value }
+        case .string(let value): return value
+        case .bool(let value): return NSNumber(value: value)
+        case .integer(let value): return NSNumber(value: value)
+        case .unsigned(let value): return NSNumber(value: value)
+        case .decimal(let value): return NSDecimalNumber(decimal: value)
+        case .null: return NSNull()
+        }
+    }
+}
+func decodeSettingsObject(_ data: Data) -> [String: Any]? {
+    guard let values = try? JSONDecoder().decode([String: SettingsJSONValue].self, from: data) else { return nil }
+    return values.mapValues { $0.value }
+}
+func readSettingsObject(_ file: String) -> [String: Any]? {
+    guard let data = FileManager.default.contents(atPath: file) else { return nil }
+    return decodeSettingsObject(data)
+}
+
+// MARK: - reviewed page-prompt catalog and settings (pure Node/Swift parity)
+
+func normalizePromptText(_ value: String) -> String {
+    var result = "", pendingSpace = false
+    for scalar in value.unicodeScalars {
+        let n = scalar.value
+        let whitespace = (9...13).contains(n) || n == 32 || n == 0x85 || n == 0xA0 || n == 0x1680
+            || (0x2000...0x200A).contains(n) || n == 0x2028 || n == 0x2029 || n == 0x202F || n == 0x205F || n == 0x3000
+        if whitespace { pendingSpace = !result.isEmpty }
+        else {
+            if pendingSpace { result.append(" ") }
+            result.unicodeScalars.append(scalar); pendingSpace = false
+        }
+    }
+    return result
+}
+
+/// Deliberately portable canonical origins: ASCII DNS/IPv4 only, no credentials or URL suffix.
+func canonicalPromptOrigin(_ value: String) -> String? {
+    guard value.utf8.count <= 280, value.unicodeScalars.allSatisfy({ (0x21...0x7e).contains($0.value) }),
+          value.hasPrefix("https://") || value.hasPrefix("http://") else { return nil }
+    let scheme = value.hasPrefix("https://") ? "https" : "http"
+    let authority = String(value.dropFirst(scheme.count + 3))
+    let parts = authority.split(separator: ":", omittingEmptySubsequences: false)
+    guard (1...2).contains(parts.count) else { return nil }
+    let host = String(parts[0])
+    guard !host.isEmpty, host.utf8.count <= 253, !host.hasSuffix(".") else { return nil }
+    let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+    for label in labels {
+        guard !label.hasPrefix("xn--"),
+              label.range(of: "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\z", options: .regularExpression) != nil else { return nil }
+    }
+    if host.allSatisfy({ $0.isNumber || $0 == "." }) {
+        guard labels.count == 4, labels.allSatisfy({ label in
+            guard let n = Int(label), (0...255).contains(n) else { return false }
+            return String(n) == label
+        }) else { return nil }
+    } else if let last = labels.last, last.allSatisfy({ $0.isNumber }) || last.range(of: "^0x[0-9a-f]*$", options: .regularExpression) != nil {
+        // WHATWG interprets a numeric final DNS label as IPv4; do not diverge from Node.
+        return nil
+    }
+    if parts.count == 2 {
+        let raw = String(parts[1])
+        guard let port = Int(raw), (1...65535).contains(port), String(port) == raw,
+              port != (scheme == "https" ? 443 : 80) else { return nil }
+    }
+    return value
+}
+
+func promptExactKeys(_ value: [String: Any], _ keys: [String]) -> Bool { Set(value.keys) == Set(keys) }
+// Swift String equality folds canonical Unicode equivalents; Node exact text matching does not.
+func promptTextEqual(_ left: String, _ right: String) -> Bool { left.utf16.elementsEqual(right.utf16) }
+func promptUniqueText(_ values: [String]) -> Bool { Set(values.map { Array($0.utf16) }).count == values.count }
+func promptID(_ value: String) -> Bool {
+    value.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\\z", options: .regularExpression) != nil
+}
+func promptVersion(_ value: Any?) -> Int? {
+    guard let n = jsonNum(value), n.isFinite, n >= 1, n <= 9_007_199_254_740_991, n.rounded() == n else { return nil }
+    return Int(n)
+}
+
+struct PagePromptTemplate: Identifiable, Equatable {
+    let id: String, version: Int, fixtureOnly: Bool, kind: String
+    let title: String, texts: [String], buttons: [String], choices: [String: String], origins: [String]
+    var label: String { L("\(fixtureOnly ? "仅测试页面 · " : "")\(title) · \(kind) · v\(version)", "\(fixtureOnly ? "Test pages only · " : "")\(title) · \(kind) · v\(version)") }
+}
+
+struct PagePromptCatalog {
+    let templates: [PagePromptTemplate]
+    static let fixtureOrigins: Set<String> = ["http://127.0.0.1:17744", "http://localhost:17744"]
+    static func parse(_ raw: Any?) -> PagePromptCatalog? {
+        let rows: [[String: Any]]
+        if let array = raw as? [[String: Any]] { rows = array }
+        else {
+            guard let wrapper = raw as? [String: Any], promptExactKeys(wrapper, ["version", "templates"]),
+                  jsonNum(wrapper["version"]) == 1, let array = wrapper["templates"] as? [[String: Any]] else { return nil }
+            rows = array
+        }
+        guard (1...64).contains(rows.count) else { return nil }
+        var templates: [PagePromptTemplate] = [], ids = Set<String>()
+        for row in rows {
+            guard promptExactKeys(row, ["id", "version", "fixtureOnly", "kind", "semanticClass", "title", "texts", "buttons", "choices", "hasField", "origins"]),
+                  let id = row["id"] as? String, promptID(id), ids.insert(id).inserted,
+                  let version = promptVersion(row["version"]), let fixture = jsonBool(row["fixtureOnly"]),
+                  let kind = row["kind"] as? String, ["dom", "native"].contains(kind),
+                  row["semanticClass"] as? String == "inactivity", jsonBool(row["hasField"]) == false,
+                  let title = row["title"] as? String, let texts = row["texts"] as? [String], texts.count <= 32,
+                  let buttons = row["buttons"] as? [String], (1...8).contains(buttons.count), promptUniqueText(buttons),
+                  let choices = row["choices"] as? [String: String], (1...2).contains(choices.count),
+                  Set(choices.keys).isSubset(of: ["keep_session", "exit_session"]), promptUniqueText(Array(choices.values)),
+                  choices.values.allSatisfy({ choice in buttons.contains(where: { promptTextEqual($0, choice) }) }),
+                  let origins = row["origins"] as? [String], (1...8).contains(origins.count), Set(origins).count == origins.count else { return nil }
+            let strings = [title] + texts + buttons
+            guard strings.allSatisfy({ promptTextEqual(normalizePromptText($0), $0) }),
+                  (texts + buttons).allSatisfy({ !$0.isEmpty }),
+                  strings.reduce(0, { $0 + $1.utf16.count }) <= 4096,
+                  buttons.allSatisfy({ $0.utf16.count <= 256 }),
+                  origins.allSatisfy({ origin in
+                      canonicalPromptOrigin(origin) != nil && (fixture ? fixtureOrigins.contains(origin) : origin.hasPrefix("https://"))
+                  }) else { return nil }
+            templates.append(PagePromptTemplate(id: id, version: version, fixtureOnly: fixture, kind: kind,
+                title: title, texts: texts, buttons: buttons, choices: choices, origins: origins))
+        }
+        return PagePromptCatalog(templates: templates)
+    }
+    static func load() -> PagePromptCatalog? {
+        guard let raw = readSettingsObject(ROOT_DIR + "/src/page-prompt-templates.json") else { return nil }
+        return parse(raw)
+    }
+}
+
+struct PagePromptRule: Identifiable, Equatable {
+    let id: String, enabled: Bool, origin: String, templateId: String, templateVersion: Int, semantic: String, button: String
+    var object: [String: Any] {
+        ["id": id, "enabled": enabled, "origin": origin, "templateId": templateId,
+         "templateVersion": templateVersion, "semantic": semantic, "button": button]
+    }
+    static func parse(_ raw: Any?, catalog: PagePromptCatalog) -> PagePromptRule? {
+        guard let row = raw as? [String: Any],
+              promptExactKeys(row, ["id", "enabled", "origin", "templateId", "templateVersion", "semantic", "button"]),
+              let id = row["id"] as? String, promptID(id), let enabled = jsonBool(row["enabled"]),
+              let origin = row["origin"] as? String, canonicalPromptOrigin(origin) != nil,
+              let templateId = row["templateId"] as? String, let version = promptVersion(row["templateVersion"]),
+              let semantic = row["semantic"] as? String, let button = row["button"] as? String,
+              let template = catalog.templates.first(where: { $0.id == templateId && $0.version == version }),
+              template.origins.contains(origin), template.choices[semantic].map({ promptTextEqual($0, button) }) == true else { return nil }
+        return PagePromptRule(id: id, enabled: enabled, origin: origin, templateId: templateId,
+                              templateVersion: version, semantic: semantic, button: button)
+    }
+}
+
+struct PagePromptSettingsState: Equatable {
+    var policy = "notify_ai", rules: [PagePromptRule] = []
+    var valid = true, reason: String? = nil
+    var object: [String: Any] { ["version": 1, "policy": policy, "rules": rules.map { $0.object }] }
+    var normalizedObject: [String: Any] { ["value": object, "valid": valid, "reason": reason as Any? ?? NSNull()] }
+    static func normalize(_ raw: Any?, catalog: PagePromptCatalog?) -> PagePromptSettingsState {
+        guard let catalog else { return PagePromptSettingsState(valid: false, reason: "catalog_unavailable") }
+        guard let raw else { return PagePromptSettingsState() }
+        guard let row = raw as? [String: Any], promptExactKeys(row, ["version", "policy", "rules"]),
+              jsonNum(row["version"]) == 1, let policy = row["policy"] as? String,
+              ["off", "notify_ai", "auto_safe"].contains(policy), let rows = row["rules"] as? [Any], rows.count <= 32 else {
+            return PagePromptSettingsState(valid: false, reason: "invalid_page_prompt_settings")
+        }
+        var rules: [PagePromptRule] = [], ids = Set<String>()
+        for row in rows {
+            guard let rule = PagePromptRule.parse(row, catalog: catalog), ids.insert(rule.id).inserted else {
+                return PagePromptSettingsState(valid: false, reason: "invalid_page_prompt_settings")
+            }
+            rules.append(rule)
+        }
+        return PagePromptSettingsState(policy: policy, rules: rules)
+    }
+}
+
+/// Used by both GUI surfaces. Every operation re-reads and merges one ID under the existing lock.
+func writePagePromptMutation(_ operation: [String: Any], file: String = SETTINGS_FILE) -> Bool {
+    return writeSettingsObject(file, [:], mutate: { values in
+        let catalog = PagePromptCatalog.load()
+        let current = PagePromptSettingsState.normalize(values["pagePrompt"], catalog: catalog)
+        guard current.valid, let catalog, let op = operation["op"] as? String else { return false }
+        var next = current.object
+        var rules = current.rules.map { $0.object }
+        if op == "policy" {
+            guard promptExactKeys(operation, ["op", "policy"]), let policy = operation["policy"] as? String,
+                  ["off", "notify_ai", "auto_safe"].contains(policy) else { return false }
+            next["policy"] = policy
+        } else if op == "add" {
+            guard promptExactKeys(operation, ["op", "rule"]), let rule = PagePromptRule.parse(operation["rule"], catalog: catalog),
+                  !current.rules.contains(where: { $0.id == rule.id }) else { return false }
+            rules.append(rule.object)
+        } else {
+            guard let id = operation["id"] as? String, promptID(id),
+                  let index = current.rules.firstIndex(where: { $0.id == id }) else { return false }
+            if op == "toggle" {
+                guard promptExactKeys(operation, ["op", "id", "enabled"]), let enabled = jsonBool(operation["enabled"]) else { return false }
+                rules[index]["enabled"] = enabled
+            } else if op == "delete" {
+                guard promptExactKeys(operation, ["op", "id"]) else { return false }
+                rules.remove(at: index)
+            } else { return false }
+        }
+        next["rules"] = rules
+        guard PagePromptSettingsState.normalize(next, catalog: catalog).valid else { return false }
+        values["pagePrompt"] = next
+        return true
+    })
+}
+
+/// Presence contains only bounded status, never observed prompt text or delivery/route tokens.
+struct PagePromptDeliveryStatus: Equatable {
+    let observer: String, route: String?, transport: String, model: String, reason: String?
+    let openCount: Int, updatedAt: Double
+    static let reasons: Set<String> = ["unbound_source", "reconnect_required", "channel_unavailable", "unsupported_host",
+        "binding_changed", "tool_start", "task_ended", "task_interrupted", "paused", "handoff", "conversation_waiting",
+        "observer_timeout", "observer_output_limit", "observer_result_unknown", "observer_child_failed", "observer_spawn_failed",
+        "dialog_probe_unknown", "target_changed", "target_unverified", "child_not_settled", "event_capacity", "probe_failed",
+        "invalid_probe", "policy_off", "unavailable"]
+    static func parse(_ raw: Any?) -> PagePromptDeliveryStatus? {
+        guard let row = raw as? [String: Any],
+              promptExactKeys(row, ["observer", "route", "transport", "model", "reason", "openCount", "updatedAt"]),
+              let observer = row["observer"] as? String, ["idle", "observing", "unavailable", "paused"].contains(observer),
+              let transport = row["transport"] as? String,
+              ["not_sent", "queued_busy", "sent_unconfirmed", "host_accepted", "rejected", "unknown", "unavailable"].contains(transport),
+              let model = row["model"] as? String, ["not_acknowledged", "acknowledged", "expired"].contains(model),
+              let count = jsonNum(row["openCount"]), count.isFinite, (0...64).contains(count), count.rounded() == count,
+              let at = jsonNum(row["updatedAt"]), at.isFinite, (0...9_007_199_254_740_991).contains(at), at.rounded() == at else { return nil }
+        let route = row["route"] as? String
+        guard (row["route"] is NSNull) || route.map({ ["claude_channel", "next_tool"].contains($0) }) == true else { return nil }
+        let rawReason = row["reason"] as? String
+        let reason = rawReason.map { reasons.contains($0) ? $0 : "unavailable" }
+        guard rawReason != nil || row["reason"] is NSNull else { return nil }
+        return PagePromptDeliveryStatus(observer: observer, route: route, transport: transport, model: model,
+                                        reason: reason, openCount: Int(count), updatedAt: at)
+    }
+    var routeLabel: String {
+        if route == "next_tool" { return L("下次工具回复补送（不是主动通知）", "Delivered with the next tool reply (not a proactive notification)") }
+        if route == "claude_channel" { return model == "acknowledged" ? L("Claude Channel · 模型已确认", "Claude Channel · confirmed by the model") : L("Claude Channel · 已声明，接收未验证", "Claude Channel · declared, receipt not verified") }
+        return L("主动通知路线不可用", "No proactive notification route available")
+    }
+    var transportLabel: String {
+        switch transport {
+        case "queued_busy": return L("会话忙碌，排队中", "Session busy, queued")
+        case "sent_unconfirmed": return L("已发送（传输记录）", "Sent (transport record)")
+        case "host_accepted": return L("传输已接受", "Accepted by the transport")
+        case "rejected": return L("发送被拒绝", "Sending was refused")
+        case "unknown": return L("传输回执未知", "Transport receipt unknown")
+        case "not_sent": return L("尚未发送", "Not sent yet")
+        default: return L("当前无法投递", "Cannot be delivered right now")
+        }
+    }
+    var modelLabel: String {
+        if model == "acknowledged" { return route == "next_tool" ? L("模型仅确认了工具回复补送", "The model confirmed only delivery with tool replies") : L("模型已确认此通知路线的接收", "The model confirmed receiving this notification route") }
+        return model == "expired" ? L("确认已过期", "Confirmation expired") : L("模型尚未确认接收", "Not yet confirmed by the model")
+    }
+    var observerLabel: String {
+        switch observer {
+        case "observing": return L("正在观察当前任务页面", "Watching the current task page")
+        case "paused": return L("观察已暂停", "Watching paused")
+        case "unavailable": return L("页面观察不可用", "Page watching unavailable")
+        default: return L("等待可观察的任务间隙", "Waiting for a gap in the task to watch")
+        }
+    }
+    var reasonLabel: String? {
+        guard let reason else { return nil }
+        switch reason {
+        case "reconnect_required": return L("此连接需要重新建立后才可声明 Channel。", "This connection must be re-established before it can declare a Channel.")
+        case "channel_unavailable": return L("当前连接尚未提供可用 Channel。", "This connection has not offered a usable Channel yet.")
+        case "unsupported_host": return L("此客户端暂不支持主动网页通知。", "This client cannot receive proactive page notifications.")
+        case "unbound_source": return L("尚未绑定到当前任务的实际连接。", "Not yet bound to the connection actually running this task.")
+        case "conversation_waiting": return L("会话正在等你回答。", "The session is waiting for your answer.")
+        case "paused", "policy_off": return L("网页观察已关闭或暂停。", "Page watching is off or paused.")
+        case "task_ended", "task_interrupted", "handoff": return L("任务已结束、停止或交由你处理。", "The task has ended, stopped or been handed to you.")
+        case "tool_start": return L("普通工具操作正在进行。", "A regular tool action is in progress.")
+        case "event_capacity": return L("待处理事件已达上限，自动处理已停用。", "Too many pending events; automatic handling is off.")
+        case "target_changed", "target_unverified", "binding_changed": return L("当前页面或连接需要重新验证。", "The current page or connection needs to be verified again.")
+        default: return L("当前无法取得可靠的观察或投递状态。", "No reliable watching or delivery status is available right now.")
+        }
+    }
 }
 
 /// Shared with settings.js and the other native writer. The symlink is created
@@ -329,18 +665,20 @@ func clearSettingsPauseTokens(_ file: String, _ observed: [String]) -> Bool {
 
 @discardableResult
 func writeSettingsObject(_ file: String, _ patch: [String: Any], when current: () -> Bool = { true },
-                         afterCommit: () -> Bool = { true }) -> Bool {
+                         afterCommit: () -> Bool = { true }, mutate: ((inout [String: Any]) -> Bool)? = nil) -> Bool {
     do { try FileManager.default.createDirectory(atPath: (file as NSString).deletingLastPathComponent, withIntermediateDirectories: true) }
     catch { return false }
     return withSettingsWriteLock(file) {
         if !current() { return true }
         var values: [String: Any] = [:]
-        if (try? FileManager.default.attributesOfItem(atPath: file)) != nil {
+        var entry = stat()
+        if lstat(file, &entry) == 0 {
             guard let data = FileManager.default.contents(atPath: file),
-                  let current = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
+                  let current = decodeSettingsObject(data) else { return false }
             values = current
-        }
+        } else if errno != ENOENT { return false }
         for (key, value) in patch { values[key] = value }
+        if let mutate, !mutate(&values) { return false }
         values["version"] = 1
         guard let data = try? JSONSerialization.data(withJSONObject: values, options: [.sortedKeys]) else { return false }
         do { try data.write(to: URL(fileURLWithPath: file), options: .atomic); return afterCommit() }
@@ -351,14 +689,18 @@ func writeSettingsObject(_ file: String, _ patch: [String: Any], when current: (
 /// The settings as src/settings.js reads them: a missing, mistyped or out-of-range value is the default.
 struct Settings: Equatable {
     var paused = false, agentDisplay = "away", idleSeconds = 1.5, tabIdleMinutes = 10.0, notify = true, activityLog = true
-    var inputMode = "auto", inputSpeed = 1.0
+    var inputMode = "auto", inputSpeed = 1.0, claudeFeed = true, uiLanguage = "auto"
+    var pagePrompt = PagePromptSettingsState()
     static let displays = ["away", "secondary", "main", "off"]
     static let inputModes = ["auto", "keys", "paste"]
     static let inputSpeeds: [Double] = [0.5, 0.75, 1, 1.5, 2, 3]
+    static let uiLanguages = ["auto", "en", "zh"]
     static func read() -> Settings {
         var s = Settings()
+        let raw = readSettingsObject(SETTINGS_FILE)
+        s.pagePrompt = PagePromptSettingsState.normalize(raw?["pagePrompt"], catalog: PagePromptCatalog.load())
         s.paused = !settingsPauseTokens(SETTINGS_FILE).isEmpty
-        guard let j = readJSON(SETTINGS_FILE) else { return s }
+        guard let j = raw else { return s }
         if !s.paused, let v = jsonBool(j["paused"]) { s.paused = v }
         if let v = j["agentDisplay"] as? String, displays.contains(v) { s.agentDisplay = v }
         if let v = jsonNum(j["idleSeconds"]), (0.5...10).contains(v) { s.idleSeconds = v }
@@ -367,23 +709,27 @@ struct Settings: Equatable {
         if let v = jsonNum(j["tabIdleMinutes"]), (0...1440).contains(v) { s.tabIdleMinutes = v }
         if let v = jsonBool(j["notify"]) { s.notify = v }
         if let v = jsonBool(j["activityLog"]) { s.activityLog = v }
+        if let v = jsonBool(j["claudeFeed"]) { s.claudeFeed = v }
+        if let v = j["uiLanguage"] as? String, uiLanguages.contains(v) { s.uiLanguage = v }
         return s
     }
     static func valid(_ key: String, _ value: Any) -> Bool {
         switch key {
-        case "paused", "notify", "activityLog": return jsonBool(value) != nil
+        case "paused", "notify", "activityLog", "claudeFeed": return jsonBool(value) != nil
         case "agentDisplay": return (value as? String).map { displays.contains($0) } ?? false
         case "idleSeconds": return jsonNum(value).map { (0.5...10).contains($0) } ?? false
         case "tabIdleMinutes": return jsonNum(value).map { (0...1440).contains($0) } ?? false
         case "inputMode": return (value as? String).map { inputModes.contains($0) } ?? false
         case "inputSpeed": return jsonNum(value).map { inputSpeeds.contains($0) } ?? false
+        case "uiLanguage": return (value as? String).map { uiLanguages.contains($0) } ?? false
+        case "pagePrompt": return PagePromptSettingsState.normalize(value, catalog: PagePromptCatalog.load()).valid
         default: return false
         }
     }
     /// Prepare on the caller thread: pause is immediately visible to workers;
     /// resume captures only the requests that already exist. Saving may wait.
     static func prepareWrite(_ key: String, _ value: Any) -> (() -> Bool)? {
-        guard valid(key, value) else { return nil }
+        guard key != "pagePrompt", valid(key, value) else { return nil }
         if key == "paused", jsonBool(value) == true {
             guard let token = requestSettingsPause(SETTINGS_FILE) else { return nil }
             return {
@@ -433,6 +779,7 @@ struct ServerInfo: Identifiable {
     var model: String? = nil
     var effort: String? = nil
     var cwd: String? = nil
+    var pagePrompt: PagePromptDeliveryStatus? = nil
 }
 /// A session's setup check (src/doctor.js runChecks, run in that session's own app).
 struct SetupChecks {
@@ -441,9 +788,9 @@ struct SetupChecks {
 func parseSetupChecks(_ v: Any?) -> SetupChecks? {
     guard let j = v as? [String: Any], let at = jsonNum(j["at"]), let cs = j["items"] as? [[String: Any]] else { return nil }
     return SetupChecks(at: at, app: j["app"] as? String, items: cs.map { c in
-        Check(id: c["id"] as? String ?? "", title: zhTitle(c["title"] as? String ?? ""), required: jsonBool(c["required"]) ?? true,
+        Check(id: c["id"] as? String ?? "", title: uiTitle(c["title"] as? String ?? ""), required: jsonBool(c["required"]) ?? true,
               ok: jsonBool(c["ok"]) ?? false, skipped: jsonBool(c["skipped"]) ?? false,
-              detail: zhPart(c["detail"] as? String) ?? "", fix: zhPart(c["fix"] as? String), settings: c["settings"] as? String)
+              detail: uiPart(c["detail"] as? String) ?? "", fix: uiPart(c["fix"] as? String), settings: c["settings"] as? String)
     })
 }
 
@@ -459,7 +806,7 @@ func liveServers(serverPids: Set<Int32>? = nil, psAt: Double = 0) -> [ServerInfo
         let started = jsonNum(j["startedAt"]) ?? 0
         let reused = serverPids.map { !$0.contains(pid) && started > 0 && started < psAt - 2000 } ?? false
         guard alive(pid), !reused else { try? FileManager.default.removeItem(atPath: path); continue }
-        out.append(ServerInfo(id: pid, who: j["who"] as? String ?? "AI 助手", color: Int(jsonNum(j["color"]) ?? 0),
+        out.append(ServerInfo(id: pid, who: uiWho(j["who"] as? String), color: Int(jsonNum(j["color"]) ?? 0),
             version: j["version"] as? String ?? "", startedAt: jsonNum(j["startedAt"]) ?? 0,
             busy: j["busy"] as? String, lastActionAt: jsonNum(j["lastActionAt"]),
             root: j["root"] as? String, srcHash: j["srcHash"] as? String,
@@ -472,7 +819,8 @@ func liveServers(serverPids: Set<Int32>? = nil, psAt: Double = 0) -> [ServerInfo
             conversationTitle: j["conversationTitle"] as? String, conversationProvider: j["conversationProvider"] as? String,
             conversationStatus: j["conversationStatus"] as? String,
             managedSession: j["managedSession"] as? Bool ?? false,
-            model: j["model"] as? String, effort: j["effort"] as? String, cwd: j["cwd"] as? String))
+            model: j["model"] as? String, effort: j["effort"] as? String, cwd: j["cwd"] as? String,
+            pagePrompt: PagePromptDeliveryStatus.parse(j["pagePrompt"])))
     }
     return out.sorted { $0.startedAt < $1.startedAt }
 }
@@ -563,20 +911,31 @@ struct Check: Identifiable {
     let id: String, title: String, required: Bool, ok: Bool, skipped: Bool
     let detail: String, fix: String?, settings: String?
 }
-/// doctor writes "中文\nEnglish" and titles "中文 / English": the panel shows the Chinese.
-func zhPart(_ s: String?) -> String? {
+/// doctor writes "中文\nEnglish" and titles "中文 / English": the panel shows the part in the UI language (I18N1; a text
+/// without the English part is shown as it is).
+func uiPart(_ s: String?) -> String? {
     guard let s = s, !s.isEmpty else { return nil }
-    return String(s.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? "")
+    let parts = s.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+    return String((uiEnglish() && parts.count > 1 ? parts[1] : parts.first) ?? "")
 }
-func zhTitle(_ s: String) -> String { s.components(separatedBy: " / ").first ?? s }
+func uiTitle(_ s: String) -> String {
+    let parts = s.components(separatedBy: " / ")
+    return uiEnglish() && parts.count > 1 ? parts.dropFirst().joined(separator: " / ") : parts.first ?? s
+}
+/// A session's label as the server writes it (src/index.js agentIdentity: "<client> · 主目录" for the home folder).
+func uiWho(_ who: String?) -> String {
+    guard let who else { return L("AI 助手", "AI assistant") }
+    let home = " · 主目录"   // i18n-exempt: the server's label, matched to translate it
+    return uiEnglish() && who.hasSuffix(home) ? String(who.dropLast(home.count)) + " · home folder" : who
+}
 /// The checks that are permissions the owner turns on (the rest: Chrome open, installed, the setup itself).
 let PERMISSION_CHECKS: Set<String> = ["automation", "apple_events_js", "accessibility", "screen_recording"]
 /// What to do, for someone who does not use a terminal: doctor's own text names commands for two of them.
 func fixText(_ c: Check, app: String?) -> String {
     switch c.id {
-    case "chrome_running": return "打开 Google Chrome，AI 才能用它。"
+    case "chrome_running": return L("打开 Google Chrome，AI 才能用它。", "Open Google Chrome so the AI can use it.")
     case "automation" where c.settings == nil:
-        return "AI 第一次用浏览器时，macOS 会问「“\(app ?? "这个程序")”想要控制“Google Chrome”」，点「允许」就行。"
+        return L("AI 第一次用浏览器时，macOS 会问「“\(app ?? "这个程序")”想要控制“Google Chrome”」，点「允许」就行。", "The first time the AI uses the browser, macOS asks whether “\(app ?? "this app")” may control “Google Chrome”. Click Allow.")
     default: return c.fix ?? c.detail
     }
 }
@@ -584,8 +943,8 @@ func fixText(_ c: Check, app: String?) -> String {
 /// A failed check's title says what is wrong ("在运行" read as a heading looks like good news).
 func failTitle(_ c: Check) -> String {
     switch c.id {
-    case "chrome_running": return "Google Chrome 没有打开"
-    case "chrome_installed": return "没有安装 Google Chrome"
+    case "chrome_running": return L("Google Chrome 没有打开", "Google Chrome is not open")
+    case "chrome_installed": return L("没有安装 Google Chrome", "Google Chrome is not installed")
     default: return c.title
     }
 }
@@ -610,44 +969,44 @@ func readActivity(limit: Int = 300) -> [ActivityItem] {
     var out: [ActivityItem] = []
     for (i, l) in lines.enumerated() {
         guard let j = (try? JSONSerialization.jsonObject(with: Data(l.utf8))) as? [String: Any], let t = jsonNum(j["t"]) else { continue }
-        out.append(ActivityItem(id: i, t: t, who: j["who"] as? String ?? "AI 助手", color: Int(jsonNum(j["color"]) ?? 0),
+        out.append(ActivityItem(id: i, t: t, who: uiWho(j["who"] as? String), color: Int(jsonNum(j["color"]) ?? 0),
             tool: j["tool"] as? String ?? "", host: j["host"] as? String, ok: jsonBool(j["ok"]) ?? false, code: j["code"] as? String))
     }
     return out.reversed()
 }
-let TOOL_LABEL = ["open_tab": "打开网页", "close_tab": "关闭标签", "read_page": "读取页面", "click": "点击", "type_text": "输入文字",
-                  "scroll": "滚动页面", "select_option": "选择选项", "answer_dialog": "回答网页弹窗", "wait_for_user": "等你处理",
-                  "click_at": "按位置点击", "press_key": "按键", "hover": "鼠标悬停", "screenshot": "截图", "auto_close": "自动关闭标签"]
+var TOOL_LABEL: [String: String] { ["open_tab": L("打开网页", "Open page"), "close_tab": L("关闭标签", "Close tab"), "read_page": L("读取页面", "Read page"), "click": L("点击", "Click"), "type_text": L("输入文字", "Type text"),
+                  "scroll": L("滚动页面", "Scroll page"), "select_option": L("选择选项", "Choose option"), "answer_dialog": L("回答网页弹窗", "Answer page dialog"), "wait_for_user": L("等你处理", "Wait for you"),
+                  "click_at": L("按位置点击", "Click at position"), "press_key": L("按键", "Press key"), "hover": L("鼠标悬停", "Hover"), "screenshot": L("截图", "Screenshot"), "auto_close": L("自动关闭标签", "Auto-close tab")] }
 /// Why MyChrome closed an agent tab by itself (src/tabs.js decideSweep reasons).
 func autoCloseText(_ code: String?) -> String {
     switch code ?? "" {
-    case "idle": return "很久没用"
-    case "session_end": return "开它的 AI 会话结束了"
-    case "owner_gone": return "开它的 AI 会话已经不在了"
-    default: return "AI 的标签"
+    case "idle": return L("很久没用", "Unused for a long time")
+    case "session_end": return L("开它的 AI 会话结束了", "The AI session that opened it ended")
+    case "owner_gone": return L("开它的 AI 会话已经不在了", "The AI session that opened it is gone")
+    default: return L("AI 的标签", "AI tab")
     }
 }
 /// Why a call did not work, in plain words (the codes of src/index.js BridgeError).
 func failureText(_ code: String?) -> String {
     switch code ?? "" {
-    case "user_cancelled": return "你按了两次 Esc，取消了"
-    case "cancelled": return "AI 那边中途取消了这次操作"
-    case "wait_timeout": return "等到时间了，你还没处理"
-    case "tab_gone": return "标签已经关掉了"
-    case "field_gone": return "要你填的框不见了"
-    case "paused_by_user": return "当时 AI 操作已暂停"
-    case "site_blocked": return "网站要你处理（验证码等）"
-    case "input_held", "user_busy": return "你一直在操作，没等到空闲"
-    case "input_stuck": return "有按键卡住了"
-    case "user_interrupted", "mouse_interrupted": return "你中途动了键盘鼠标"
-    case "secure_input": return "当时在输入密码，系统不允许操作"
-    case "screen_locked", "displays_asleep": return "屏幕锁着或在睡眠"
-    case "taken_over", "not_your_tab", "not_agent_tab": return "这个标签不归它用"
-    case "lock_timeout": return "排队太久，没轮到"
-    case "bad_url", "bad_args", "why_required": return "AI 给的参数不对"
-    case "unknown_tool": return "AI 调了不存在的功能"
-    case "not_on_top", "activate_failed", "window_covered", "target_covered", "not_key_window": return "没能把窗口切到前面"
-    default: return "没做成"
+    case "user_cancelled": return L("操作已停止：可能是用户停止，或接管已结束或无法确认", "Stopped: you may have stopped it, or the takeover ended or could not be confirmed")
+    case "cancelled": return L("AI 那边中途取消了这次操作", "The AI cancelled this action midway")
+    case "wait_timeout": return L("等到时间了，你还没处理", "Timed out before you handled it")
+    case "tab_gone": return L("标签已经关掉了", "The tab was already closed")
+    case "field_gone": return L("要你填的框不见了", "The field you were asked to fill disappeared")
+    case "paused_by_user": return L("当时 AI 操作已暂停", "AI operations were paused")
+    case "site_blocked": return L("网站要你处理（验证码等）", "The site needed you (CAPTCHA or similar)")
+    case "input_held", "user_busy": return L("你一直在操作，没等到空闲", "You kept working; no idle moment came")
+    case "input_stuck": return L("有按键卡住了", "A key was stuck")
+    case "user_interrupted", "mouse_interrupted": return L("你中途动了键盘鼠标", "You used the keyboard or mouse midway")
+    case "secure_input": return L("当时在输入密码，系统不允许操作", "A password was being typed; macOS did not allow input")
+    case "screen_locked", "displays_asleep": return L("屏幕锁着或在睡眠", "The screen was locked or asleep")
+    case "taken_over", "not_your_tab", "not_agent_tab": return L("这个标签不归它用", "This tab was not its to use")
+    case "lock_timeout": return L("排队太久，没轮到", "Queued too long; its turn never came")
+    case "bad_url", "bad_args", "why_required": return L("AI 给的参数不对", "The AI gave invalid parameters")
+    case "unknown_tool": return L("AI 调了不存在的功能", "The AI called a function that does not exist")
+    case "not_on_top", "activate_failed", "window_covered", "target_covered", "not_key_window": return L("没能把窗口切到前面", "Could not bring the window to the front")
+    default: return L("没做成", "Did not succeed")
     }
 }
 
@@ -709,9 +1068,12 @@ final class Model: ObservableObject {
     private var restartDeadSeenAt: Double?
     /// When the panel last asked the sessions to check again (nil: no request pending).
     @Published var checkRequestedAt: Double?
+    /// Every issued request starts the automatic missing-result retry window, even after one app answers.
+    private var lastCheckRequestedAt: Double?
     @Published var activity: [ActivityItem] = []
     @Published var confirmClear = false
     @Published var clearNote: String?
+    private var clearConfirmationGeneration = 0
     /// A rebuilt binary that ran, waiting for the habits recording to end before it takes over.
     private var pendingHandover: (exe: String, stamp: Double)?
     private var activityStamp: (Double, Int) = (-1, -1)
@@ -769,6 +1131,7 @@ final class Model: ObservableObject {
         tasks = t
         habits = readHabits()
         now = nowMs()
+        if onboarding.visible { onboarding.refreshLanguage() }   // I18N1: a changed Language setting reaches an open guide
         refreshPanelData()
         refreshConversation()
         refreshGotoResults()
@@ -805,7 +1168,7 @@ final class Model: ObservableObject {
     /// Use this installation's helper for both the source binary and the App bundle.
     func startRecording() {
         guard live, recorder == nil else { return }
-        guard let path = habitsPath() else { recordError = "现在设置为不使用习惯（CHROME_BRIDGE_HABITS=off），所以不录制。"; return }
+        guard let path = habitsPath() else { recordError = L("现在设置为不使用习惯（CHROME_BRIDGE_HABITS=off），所以不录制。", "Habits are turned off (CHROME_BRIDGE_HABITS=off), so nothing is recorded."); return }
         let exe = URL(fileURLWithPath: ROOT_DIR).appendingPathComponent("bin/cgevent")
         let p = Process()
         p.executableURL = exe
@@ -817,7 +1180,7 @@ final class Model: ObservableObject {
             let data = out.fileHandleForReading.readDataToEndOfFile()
             DispatchQueue.main.async { self?.recordingEnded(proc.terminationStatus, data) }
         }
-        do { try p.run() } catch { recordError = "录制没能开始：找不到 \(exe.path)"; return }
+        do { try p.run() } catch { recordError = L("录制没能开始：找不到 \(exe.path)", "Recording could not start: \(exe.path) was not found"); return }
         recorder = p
         cancelling = false
         recordError = nil
@@ -836,11 +1199,22 @@ final class Model: ObservableObject {
         recordingUntil = nil
         if let p = pendingHandover { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.handOver(to: p.exe, stamp: p.stamp) } }
         if status != 0 && !cancelling {
-            let msg = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["message"] as? String
-            recordError = msg ?? "录制没有完成（退出码 \(status)）。"
+            let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            recordError = habitsRecordError(reply?["error"] as? String, message: reply?["message"] as? String, status: status)
         }
         cancelling = false
         tick()
+    }
+
+    /// The helper's own words are Chinese (bin/cgevent habits record); in English the panel says it by the error code.
+    func habitsRecordError(_ code: String?, message: String?, status: Int32) -> String {
+        if !uiEnglish(), let message { return message }
+        switch code ?? "" {
+        case "no_input_monitor": return L("录制没能开始：系统没有允许监听键盘鼠标。", "Recording could not start: macOS has not allowed keyboard and mouse monitoring. In System Settings → Privacy & Security → Accessibility (or Input Monitoring), turn on the app that runs it.")
+        case "write_failed": return L("录制结果没能保存。", "The recording could not be saved.")
+        case "habits_off": return L("现在设置为不使用习惯（CHROME_BRIDGE_HABITS=off），所以不录制。", "Habits are turned off (CHROME_BRIDGE_HABITS=off), so nothing is recorded.")
+        default: return L("录制没有完成（退出码 \(status)）。", "Recording did not finish (exit code \(status)).")
+        }
     }
 
     /// The switch "按我的习惯操作": the `use` field of the summary (the helper reads it at every action).
@@ -892,7 +1266,7 @@ final class Model: ObservableObject {
         if let at = restartPressedAt, (job.map { $0.startedAt >= at - 5000 } ?? false) || now - at > 15_000 { restartPressedAt = nil }
         if let at = checkRequestedAt, checksByApp(sv).contains(where: { $0.at >= at }) || now - at > 30_000 { checkRequestedAt = nil }
         // A session with no result (it skipped its own check, the one it relied on is gone): ask (Codex r13 r4 A1).
-        if live, !settings.paused, checkRequestedAt == nil, sv.contains(where: { !$0.managedSession && $0.checks == nil && now - $0.startedAt > 20_000 }) { requestChecks(force: true) }
+        if live, !settings.paused, checkRequestedAt == nil, (lastCheckRequestedAt.map { now - $0 >= 30_000 } ?? true), sv.contains(where: { !$0.managedSession && $0.checks == nil && now - $0.startedAt > 20_000 }) { requestChecks(force: true) }
         let attrs = [ACTIVITY_FILE, ACTIVITY_OLD].map { try? FileManager.default.attributesOfItem(atPath: $0) }
         let stamp = (attrs.compactMap { ($0?[.modificationDate] as? Date)?.timeIntervalSince1970 }.max() ?? -1,
                      attrs.compactMap { ($0?[.size] as? NSNumber)?.intValue }.reduce(0, +))
@@ -922,7 +1296,7 @@ final class Model: ObservableObject {
     func set(_ key: String, _ value: Any) {
         guard live else { return }
         guard let commit = Settings.prepareWrite(key, value) else {
-            settingsError = "设置未能保存，原设置仍保留。请稍后再试。"
+            settingsError = L("设置未能保存，原设置仍保留。请稍后再试。", "The setting was not saved; the previous setting is kept. Please try again later.")
             return
         }
         settingsError = nil
@@ -933,13 +1307,27 @@ final class Model: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.settings = Settings.read()
-                self.settingsError = saved ? nil : "设置未能保存，原设置仍保留。请稍后再试。"
+                self.settingsError = saved ? nil : L("设置未能保存，原设置仍保留。请稍后再试。", "The setting was not saved; the previous setting is kept. Please try again later.")
                 if saved && key == "paused" {
                     self.checkRequestedAt = nil
                     if !self.settings.paused {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.requestChecks(force: true) }
                     }
                 }
+            }
+        }
+    }
+
+    func mutatePagePrompt(_ operation: [String: Any], completion: ((Bool) -> Void)? = nil) {
+        guard live else { completion?(false); return }
+        settingsError = nil
+        settingsWriteQueue.async { [weak self] in
+            let saved = writePagePromptMutation(operation)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { completion?(false); return }
+                self.settings = Settings.read()
+                self.settingsError = saved ? nil : L("网页弹窗设置未能保存。原设置已保留，请检查模板、规则或稍后重试。", "Page pop-up settings were not saved. The previous settings are kept; check the template and rules, or try again later.")
+                completion?(saved)
             }
         }
     }
@@ -967,7 +1355,7 @@ final class Model: ObservableObject {
         }
         nodes += ["/opt/homebrew/bin/node", "/usr/local/bin/node"]
         guard let node = nodes.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            restartError = "找不到 node，没法开始重启。"
+            restartError = L("找不到 node，没法开始重启。", "node was not found, so the restart could not start.")
             return
         }
         let p = Process()
@@ -976,7 +1364,7 @@ final class Model: ObservableObject {
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { restartError = "没能开始重启：\(node) 启动不了。"; return }
+        do { try p.run() } catch { restartError = L("没能开始重启：\(node) 启动不了。", "The restart could not start: \(node) did not launch."); return }
         restartError = nil
         restartPressedAt = nowMs()
     }
@@ -993,16 +1381,17 @@ final class Model: ObservableObject {
         let at = nowMs()
         try? String(Int(at)).write(toFile: CHECK_REQUEST, atomically: true, encoding: .utf8)
         checkRequestedAt = at
+        lastCheckRequestedAt = at
     }
 
     var appChecks: [SetupChecks] { checksByApp(servers) }
     /// The header's word for what is wrong: permissions first, then Chrome itself, then the setup.
     var setupProblem: String? {
         let failed = appChecks.flatMap { $0.items }.filter { !$0.ok && !$0.skipped && $0.required }
-        if failed.contains(where: { PERMISSION_CHECKS.contains($0.id) }) { return "有权限没打开" }
-        if failed.contains(where: { $0.id == "chrome_installed" }) { return "没有安装 Chrome" }
-        if failed.contains(where: { $0.id == "chrome_running" }) { return "Chrome 没有打开" }
-        return failed.isEmpty ? nil : "安装有问题"
+        if failed.contains(where: { PERMISSION_CHECKS.contains($0.id) }) { return L("有权限没打开", "A permission is off") }
+        if failed.contains(where: { $0.id == "chrome_installed" }) { return L("没有安装 Chrome", "Chrome is not installed") }
+        if failed.contains(where: { $0.id == "chrome_running" }) { return L("Chrome 没有打开", "Chrome is not open") }
+        return failed.isEmpty ? nil : L("安装有问题", "Setup problem")
     }
     var problems: Bool { setupProblem != nil }
 
@@ -1016,11 +1405,11 @@ final class Model: ObservableObject {
         let id = UUID().uuidString
         guard writeGotoRequest(pid: t.id, tab: tab, task: t, requestId: id) != nil,
               let generation = t.sessionGeneration else {
-            gotoNotes[t.id] = "这个提醒已更新，请选择当前任务再试。"
+            gotoNotes[t.id] = L("这个提醒已更新，请选择当前任务再试。", "This alert has changed. Choose the current task and try again.")
             return
         }
         gotoPending[t.id] = (id, generation, nowMs())
-        gotoNotes[t.id] = "正在定位页面…"
+        gotoNotes[t.id] = L("正在定位页面…", "Finding the page…")
     }
     func openChrome() {
         guard live, let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") else { return }
@@ -1031,9 +1420,14 @@ final class Model: ObservableObject {
     /// Two clicks, like deleting the habits: the first asks, the second removes both log files.
     func clearActivity() {
         guard live else { return }
+        clearConfirmationGeneration &+= 1
+        let generation = clearConfirmationGeneration
         if !confirmClear {
             confirmClear = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in self?.confirmClear = false }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                guard let self, self.clearConfirmationGeneration == generation else { return }
+                self.confirmClear = false
+            }
             return
         }
         confirmClear = false
@@ -1052,8 +1446,11 @@ final class Model: ObservableObject {
         guard locked else {
             // Still one click from clearing; the note goes by itself (Fable r13 r4 B5).
             confirmClear = true
-            clearNote = "记录正在整理，过几秒再点一次「再点一次，确认清空」。"
-            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.clearNote = nil; self?.confirmClear = false }
+            clearNote = L("记录正在整理，过几秒再点一次「再点一次，确认清空」。", "The log is being tidied up. In a few seconds, click “Click again to clear” again.")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+                guard let self, self.clearConfirmationGeneration == generation else { return }
+                self.clearNote = nil; self.confirmClear = false
+            }
             return
         }
         clearNote = nil
@@ -1121,12 +1518,12 @@ final class Model: ObservableObject {
         for s in servers where s.conversationPending > 0 {
             if let i = result.firstIndex(where: { $0.id == s.id }) {
                 if result[i].alert == nil {
-                    result[i].alert = "有 \(s.conversationPending) 个问题等你回复"
+                    result[i].alert = L("有 \(s.conversationPending) 个问题等你回复", "\(s.conversationPending) question(s) waiting for your reply")
                     result[i].alertToken = (s.conversationBinding ?? "") + (s.conversationRequestKey ?? "")
                 }
             } else {
                 result.append(AgentTask(id: s.id, who: s.who, task: s.conversationTitle ?? s.who, stepName: "", current: nil, total: nil, color: s.color, etaMs: nil, etaAt: nil,
-                      alert: "有 \(s.conversationPending) 个问题等你回复", alertToken: (s.conversationBinding ?? "") + (s.conversationRequestKey ?? "")))
+                      alert: L("有 \(s.conversationPending) 个问题等你回复", "\(s.conversationPending) question(s) waiting for your reply"), alertToken: (s.conversationBinding ?? "") + (s.conversationRequestKey ?? "")))
             }
         }
         return result
@@ -1136,10 +1533,10 @@ final class Model: ObservableObject {
     /// The plain-language line under the switch.
     var keepLine: String {
         switch mode {
-        case "off": return "已关闭，按系统设置自动息屏"
-        case "forever": return "一直保持，直到你在这里关闭"
-        case "task": return tasks.isEmpty ? "AI 开始并结束任务后，自动关闭屏幕常亮" : "任务结束后，自动关闭屏幕常亮"
-        default: return "剩余 " + minutesText(max(0, (until ?? now) - now)) + "，之后恢复系统息屏设置"
+        case "off": return L("已关闭，按系统设置自动息屏", "Off: the display sleeps as set in macOS")
+        case "forever": return L("一直保持，直到你在这里关闭", "Stays on until you turn it off here")
+        case "task": return tasks.isEmpty ? L("AI 开始并结束任务后，自动关闭屏幕常亮", "Turns off by itself after the AI starts and finishes a task") : L("任务结束后，自动关闭屏幕常亮", "Turns off by itself when the task ends")
+        default: return L("剩余 ", "Remaining: ") + minutesText(max(0, (until ?? now) - now)) + L("，之后恢复系统息屏设置", "; then your usual display sleep returns")
         }
     }
 }
@@ -1189,7 +1586,7 @@ struct SectionTitle: View {
 struct PillSwitch: View {
     let isOn: Bool
     var fill: LinearGradient = SUN
-    var label: (on: String, off: String) = ("关掉屏幕常亮", "打开屏幕常亮")
+    var label: (on: String, off: String) = (L("关掉屏幕常亮", "Stop keeping screen awake"), L("打开屏幕常亮", "Keep screen awake"))
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -1266,20 +1663,20 @@ struct TaskRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(hex(0xDC2626)))
                         .fixedSize(horizontal: false, vertical: true)
-                    if let go = onGoto { PlainButton(text: "带我去那个页面", action: go) }
+                    if let go = onGoto { PlainButton(text: L("带我去那个页面", "Take me to that page"), action: go) }
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(t.task.isEmpty ? "正在使用你的 Chrome" : t.task)
+                    Text(t.task.isEmpty ? L("正在使用你的 Chrome", "Using your Chrome") : t.task)
                         .font(.system(size: 14, weight: .semibold)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     Text(t.who).font(.system(size: 11)).foregroundStyle(SUBTLE).lineLimit(1)
                 }
                 if let cur = t.current, let n = t.total, n > 0 {
                     Bar(fraction: Double(max(0, cur - 1)) / Double(n), color: c)
-                    Text("正在进行第 \(cur) 步，共 \(n) 步").font(.system(size: 12, weight: .medium))
+                    Text(L("正在进行第 \(cur) 步，共 \(n) 步", "Step \(cur) of \(n)")).font(.system(size: 12, weight: .medium))
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         if !t.stepName.isEmpty { Text(t.stepName).foregroundStyle(SUBTLE).lineLimit(1) }
                         Spacer(minLength: 6)
-                        if let left = t.leftMs(at: now) { Text("预计还需 " + minutesText(left)).foregroundStyle(SUBTLE) }
+                        if let left = t.leftMs(at: now) { Text(L("预计还需 ", "Time left: about ") + minutesText(left)).foregroundStyle(SUBTLE) }
                     }
                     .font(.system(size: 11))
                 }
@@ -1366,45 +1763,55 @@ struct SettingRow<Trailing: View>: View {
 struct LockedNote: View {
     let env: String, value: String, who: String
     var body: some View {
-        Label("「\(who)」的 MCP 配置里固定为「\(value)」（\(env)），这里改不了；删掉配置里这一项后才能在这里改。", systemImage: "lock.fill")
+        Label(L("「\(who)」的 MCP 配置里固定为「\(value)」（\(env)），这里改不了；删掉配置里这一项后才能在这里改。", "Fixed to “\(value)” in the MCP configuration of “\(who)” (\(env)). Remove that entry from the configuration to change it here."), systemImage: "lock.fill")
             .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
     }
 }
 
-let DISPLAY_OPTIONS: [(key: String, label: String)] = [("away", "你没在用的屏幕"), ("secondary", "固定在副屏"), ("main", "固定在主屏"), ("off", "开在你的窗口里")]
-let DISPLAY_SUB = [
-    "away": "有两块屏幕时，AI 的窗口放在你鼠标不在的那块，不挡你；只有一块屏幕时，开在单独的窗口里。",
-    "secondary": "AI 的窗口总在副屏（没有副屏时在主屏）。",
-    "main": "AI 的窗口总在主屏。",
-    "off": "不单独开窗口：AI 的标签开在你当前的 Chrome 窗口里，在后台打开，不切换你正在看的标签。"
-]
-let IDLE_OPTIONS: [(key: String, label: String)] = [("1.5", "1.5 秒"), ("3", "3 秒"), ("5", "5 秒")]
-let TAB_OPTIONS: [(key: String, label: String)] = [("10", "10 分钟"), ("30", "30 分钟"), ("60", "1 小时"), ("0", "不自动关")]
+var DISPLAY_OPTIONS: [(key: String, label: String)] { [("away", L("你没在用的屏幕", "Display not in use")), ("secondary", L("固定在副屏", "Always secondary")), ("main", L("固定在主屏", "Always main")), ("off", L("开在你的窗口里", "In your window"))] }
+var DISPLAY_SUB: [String: String] { [
+    "away": L("有两块屏幕时，AI 的窗口放在你鼠标不在的那块，不挡你；只有一块屏幕时，开在单独的窗口里。", "With two displays, the AI's window goes on the one your pointer is not on, out of your way. With one display, it opens in a separate window."),
+    "secondary": L("AI 的窗口总在副屏（没有副屏时在主屏）。", "The AI's window is always on the secondary display (the main display when there is none)."),
+    "main": L("AI 的窗口总在主屏。", "The AI's window is always on the main display."),
+    "off": L("不单独开窗口：AI 的标签开在你当前的 Chrome 窗口里，在后台打开，不切换你正在看的标签。", "No separate window: the AI's tabs open in the background of your current Chrome window, without switching away from the tab you are viewing.")
+] }
+/// I18N1: an environment variable of this app that overrides the Language setting (uiLanguageChoice's order), or nil: then
+/// the picker shows the language it fixes and is disabled.
+func uiLanguageLock(environment: [String: String] = ProcessInfo.processInfo.environment) -> (key: String, variable: String, value: String)? {
+    let ui = (environment["CHROME_BRIDGE_UI_LANG"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if ui == "en" || ui == "zh" { return (ui, "CHROME_BRIDGE_UI_LANG", ui) }
+    if let legacy = environment["CHROME_BRIDGE_LANG"], !legacy.isEmpty { return (legacy.lowercased().hasPrefix("zh") ? "zh" : "en", "CHROME_BRIDGE_LANG", legacy) }
+    return nil
+}
+/// I18N1: SETTINGS.uiLanguage. Each language is named in its own words.
+var UI_LANGUAGE_OPTIONS: [(key: String, label: String)] { [("auto", L("跟随系统", "Follow system")), ("en", "English"), ("zh", "中文")] }   // i18n-exempt: a language's own name
+var IDLE_OPTIONS: [(key: String, label: String)] { [("1.5", L("1.5 秒", "1.5 s")), ("3", L("3 秒", "3 s")), ("5", L("5 秒", "5 s"))] }
+var TAB_OPTIONS: [(key: String, label: String)] { [("10", L("10 分钟", "10 min")), ("30", L("30 分钟", "30 min")), ("60", L("1 小时", "1 hour")), ("0", L("不自动关", "Never"))] }
 func numKey(_ x: Double) -> String { x == x.rounded() ? String(Int(x)) : oneDecimal(x) }
 func lockedText(_ key: String, _ v: Any) -> String {
     switch key {
     case "agentDisplay": return DISPLAY_OPTIONS.first { $0.key == v as? String }?.label ?? "\(v)"
-    case "idleSeconds": return "\(jsonNum(v).map(numKey) ?? "\(v)") 秒"
-    case "tabIdleMinutes": return jsonNum(v).map { $0 > 0 ? "\(numKey($0)) 分钟" : "不自动关" } ?? "\(v)"
-    case "notify": return jsonBool(v) == false ? "关" : "开"
+    case "idleSeconds": return L("\(jsonNum(v).map(numKey) ?? "\(v)") 秒", "\(jsonNum(v).map(numKey) ?? "\(v)") s")
+    case "tabIdleMinutes": return jsonNum(v).map { $0 > 0 ? L("\(numKey($0)) 分钟", "\(numKey($0)) min") : L("不自动关", "Never") } ?? "\(v)"
+    case "notify": return jsonBool(v) == false ? L("关", "Off") : L("开", "On")
     default: return "\(v)"
     }
 }
 func timeText(_ ms: Double, day: Bool = false) -> String {
     let f = DateFormatter()
-    f.locale = Locale(identifier: "zh_CN")
-    f.dateFormat = day ? "M月d日" : "HH:mm"
+    f.locale = Locale(identifier: uiEnglish() ? "en_US_POSIX" : "zh_CN")
+    f.dateFormat = day ? L("M月d日", "MMM d") : "HH:mm"
     return f.string(from: Date(timeIntervalSince1970: ms / 1000))
 }
 /// "18:20" today, "昨天 18:20", "10月12日 18:20" (sessions live for days: Fable r13 B9).
 func whenText(_ ms: Double, now: Double) -> String {
     let d = dayTitle(ms, now: now)
-    return d == "今天" ? timeText(ms) : d + " " + timeText(ms)
+    return d == L("今天", "Today") ? timeText(ms) : d + " " + timeText(ms)
 }
 func dayTitle(_ ms: Double, now: Double) -> String {
     let cal = Calendar.current, d = Date(timeIntervalSince1970: ms / 1000), n = Date(timeIntervalSince1970: now / 1000)
-    if cal.isDate(d, inSameDayAs: n) { return "今天" }
-    if let y = cal.date(byAdding: .day, value: -1, to: n), cal.isDate(d, inSameDayAs: y) { return "昨天" }
+    if cal.isDate(d, inSameDayAs: n) { return L("今天", "Today") }
+    if let y = cal.date(byAdding: .day, value: -1, to: n), cal.isDate(d, inSameDayAs: y) { return L("昨天", "Yesterday") }
     return timeText(ms, day: true)
 }
 
@@ -1448,13 +1855,13 @@ struct Panel: View {
     // MARK: header and page switch
 
     var headerLine: (String, Color) {
-        if model.needsYou { return ("需要你处理一下", ALERT) }
-        if model.settings.paused { return ("AI 操作已暂停", hex(0xEA6A0C)) }
-        if !model.tasks.isEmpty || model.servers.contains(where: { $0.busy != nil }) { return ("AI 正在操作", hex(0x3B7BFF)) }
+        if model.needsYou { return (L("需要你处理一下", "Needs your attention"), ALERT) }
+        if model.settings.paused { return (L("AI 操作已暂停", "AI operations paused"), hex(0xEA6A0C)) }
+        if !model.tasks.isEmpty || model.servers.contains(where: { $0.busy != nil }) { return (L("AI 正在操作", "AI is working"), hex(0x3B7BFF)) }
         if let p = model.setupProblem { return (p, ALERT) }
-        if !model.settings.paused, model.servers.contains(where: { !$0.managedSession }), model.appChecks.isEmpty { return ("正在检查权限", SUBTLE) }
-        if model.servers.isEmpty { return ("没有 AI 连接", SUBTLE) }
-        return ("一切就绪", hex(0x16A34A))
+        if !model.settings.paused, model.servers.contains(where: { !$0.managedSession }), model.appChecks.isEmpty { return (L("正在检查权限", "Checking permissions"), SUBTLE) }
+        if model.servers.isEmpty { return (L("没有 AI 连接", "No AI connection"), SUBTLE) }
+        return (L("一切就绪", "All set"), hex(0x16A34A))
     }
 
     var header: some View {
@@ -1463,7 +1870,7 @@ struct Panel: View {
                 .overlay(Image(systemName: "cursorarrow.rays").font(.system(size: 18, weight: .semibold)).foregroundStyle(.white))
                 .shadow(color: hex(0xA47BFF).opacity(0.35), radius: 6, y: 3)
             VStack(alignment: .leading, spacing: 2) {
-                Text("AI 浏览器助手").font(.system(size: 16, weight: .bold))
+                Text(L("AI 浏览器助手", "AI browser assistant")).font(.system(size: 16, weight: .bold))
                 HStack(spacing: 6) {
                     Text(headerLine.0).foregroundStyle(headerLine.1)
                     Text("·").foregroundStyle(SUBTLE)
@@ -1474,14 +1881,14 @@ struct Panel: View {
             Spacer()
             if model.holding {
                 Image(systemName: "sun.max.fill").font(.system(size: 14)).foregroundStyle(hex(0xF97316))
-                    .help("屏幕常亮已开启")
+                    .help(L("屏幕常亮已开启", "Keeping the screen awake"))
             }
         }
     }
 
     var tabs: some View {
         HStack(spacing: 4) {
-            ForEach([("status", "状态"), ("settings", "设置"), ("records", "记录")], id: \.0) { key, label in
+            ForEach([("status", L("状态", "Status")), ("settings", L("设置", "Settings")), ("records", L("记录", "Activity"))], id: \.0) { key, label in
                 let sel = model.page == key
                 Button { model.page = key; if key == "status" { model.requestChecks() } } label: {
                     HStack(spacing: 4) {
@@ -1513,7 +1920,7 @@ struct Panel: View {
 
     @ViewBuilder var statusPage: some View {
         Button { model.openConversations?(nil); close() } label: {
-            Label("打开会话中心", systemImage: "bubble.left.and.bubble.right")
+            Label(L("打开会话中心", "Open conversation center"), systemImage: "bubble.left.and.bubble.right")
                 .font(.system(size: 14, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 8)
         }.buttonStyle(.borderedProminent)
         Button { model.openOnboarding?(); close() } label: {
@@ -1522,15 +1929,15 @@ struct Panel: View {
         }.buttonStyle(.bordered)
         if model.settings.paused {
             Card {
-                SettingRow(icon: "pause.circle.fill", title: "AI 操作已暂停", sub: "AI 现在不能操作你的 Chrome，它会收到「已暂停」并等你恢复。", tint: hex(0xEA6A0C)) {
-                    PlainButton(text: "恢复") { model.set("paused", false) }
+                SettingRow(icon: "pause.circle.fill", title: L("AI 操作已暂停", "AI operations paused"), sub: L("AI 现在不能操作你的 Chrome，它会收到「已暂停」并等你恢复。", "The AI cannot operate your Chrome now. It is told “paused” and waits until you resume."), tint: hex(0xEA6A0C)) {
+                    PlainButton(text: L("恢复", "Resume")) { model.set("paused", false) }
                 }
             }
         }
-        if !model.tasks.isEmpty { section("AI 任务") { tasksBody } }
-        section("AI 会话") { sessionsBody }
-        section("准备情况") { checksBody }
-        section("屏幕常亮") { keepBody }
+        if !model.tasks.isEmpty { section(L("AI 任务", "AI tasks")) { tasksBody } }
+        section(L("AI 会话", "AI sessions")) { sessionsBody }
+        section(L("准备情况", "Readiness")) { checksBody }
+        section(L("屏幕常亮", "Keep screen awake")) { keepBody }
     }
 
     @ViewBuilder var tasksBody: some View {
@@ -1546,8 +1953,8 @@ struct Panel: View {
             HStack(spacing: 12) {
                 Image(systemName: "cup.and.saucer.fill").font(.system(size: 20)).foregroundStyle(SUBTLE).frame(width: 30)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("目前没有 AI 连接").font(.system(size: 14, weight: .semibold))
-                    Text("AI 助手第一次用你的浏览器时，会出现在这里。").font(.system(size: 11)).foregroundStyle(SUBTLE)
+                    Text(L("目前没有 AI 连接", "No AI connection yet")).font(.system(size: 14, weight: .semibold))
+                    Text(L("AI 助手第一次用你的浏览器时，会出现在这里。", "An AI assistant appears here the first time it uses your browser.")).font(.system(size: 11)).foregroundStyle(SUBTLE)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -1559,27 +1966,27 @@ struct Panel: View {
                 else { Circle().fill(whoColor(s.color).opacity(0.55)).frame(width: 9, height: 9).frame(width: 18, height: 18) }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(s.who).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                    Text(sessionLine(s)).font(.system(size: 11)).foregroundStyle(SUBTLE).lineLimit(1)
+                    Text(sessionLine(s)).font(.system(size: 11)).foregroundStyle(SUBTLE).lineLimit(1).help(sessionLine(s))   // I18N1: the longer English line may be cut
                 }
                 Spacer(minLength: 6)
                 if !s.managedSession && s.needsRestart == true && s.launcher != nil {
-                    Text("会自动更新").font(.system(size: 11, weight: .semibold)).foregroundStyle(SUBTLE)
+                    Text(L("会自动更新", "Updates itself")).font(.system(size: 11, weight: .semibold)).foregroundStyle(SUBTLE)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(SUBTLE.opacity(0.12)))
-                        .help("MyChrome 更新过。这个会话空下来（没有操作进行中）后会自己换成新版，不用重启，它开的标签也保留。")
+                        .help(L("MyChrome 更新过。这个会话空下来（没有操作进行中）后会自己换成新版，不用重启，它开的标签也保留。", "MyChrome was updated. When this session is idle (no action in progress), it switches to the new version by itself. No restart is needed, and its tabs stay open."))
                 } else if !s.managedSession && s.needsRestart == true {
-                    Text("需要重启").font(.system(size: 11, weight: .semibold)).foregroundStyle(ALERT)
+                    Text(L("需要重启", "Needs restart")).font(.system(size: 11, weight: .semibold)).foregroundStyle(ALERT)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(ALERT.opacity(0.1)))
-                        .help("这个会话开始时 MyChrome 还不会自动更新。点下面的「全部重启」，或者在这个会话里输入 /mcp reconnect chrome-bridge（不用关会话；它开的标签会被关掉）。之后的更新会自动换上。")
+                        .help(L("这个会话开始时 MyChrome 还不会自动更新。点下面的「全部重启」，或者在这个会话里输入 /mcp reconnect chrome-bridge（不用关会话；它开的标签会被关掉）。之后的更新会自动换上。", "This session started before MyChrome could update itself. Click Restart all below, or type /mcp reconnect chrome-bridge in this session (the session stays open; its tabs are closed). Later updates then apply automatically."))
                 } else if s.busy != nil {
-                    Text("正在操作").font(.system(size: 11, weight: .semibold)).foregroundStyle(hex(0x3B7BFF))
+                    Text(L("正在操作", "Working")).font(.system(size: 11, weight: .semibold)).foregroundStyle(hex(0x3B7BFF))
                 }
             }
         }
         if !model.legacy.isEmpty {
             if !model.servers.isEmpty { Divider() }
-            Label("另有 \(model.legacy.count) 个 AI 会话还在用旧版本 MyChrome：点下面的「全部重启」，才会用上新版本和这里的设置。",
+            Label(L("另有 \(model.legacy.count) 个 AI 会话还在用旧版本 MyChrome：点下面的「全部重启」，才会用上新版本和这里的设置。", "\(model.legacy.count) more AI session(s) still use an older MyChrome. Click Restart all below to use the new version and these settings."),
                   systemImage: "arrow.triangle.2.circlepath")
                 .font(.system(size: 11)).foregroundStyle(ALERT).fixedSize(horizontal: false, vertical: true)
         }
@@ -1595,11 +2002,11 @@ struct Panel: View {
             if model.restartRunning {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("正在重启，每个会话空下来时换一个…").font(.system(size: 12, weight: .medium))
+                    Text(L("正在重启，每个会话空下来时换一个…", "Restarting each session when it is idle…")).font(.system(size: 12, weight: .medium))
                 }
             } else if model.staleCount > 0 {
-                PlainButton(text: "全部重启（\(model.staleCount) 个会话）") { model.restartAll() }
-                Text("每个会话空下来、输入框也是空的时候，替它输入 /mcp reconnect chrome-bridge；后台会话用 claude respawn。对话都还在，它们开的标签会被关掉。")
+                PlainButton(text: L("全部重启（\(model.staleCount) 个会话）", "Restart all (\(model.staleCount) session(s))")) { model.restartAll() }
+                Text(L("每个会话空下来、输入框也是空的时候，替它输入 /mcp reconnect chrome-bridge；后台会话用 claude respawn。对话都还在，它们开的标签会被关掉。", "When a session is idle and its input box is empty, MyChrome types /mcp reconnect chrome-bridge for it; background sessions use claude respawn. Conversations are kept; the tabs they opened are closed."))
                     .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
             }
             if let e = model.restartError {
@@ -1607,14 +2014,15 @@ struct Panel: View {
             }
             if model.restartShown, let job = model.restartJob {
                 if let e = job.error {
-                    Text(e).font(.system(size: 11)).foregroundStyle(ALERT).fixedSize(horizontal: false, vertical: true)
+                    Text(uiEnglish() && e.unicodeScalars.contains(where: { $0.value >= 0x3000 })
+                         ? L("全部重启没能进行", "Restart all could not run. Run mychrome-mcp restart-all in a terminal to see why.") : e).font(.system(size: 11)).foregroundStyle(ALERT).fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(job.items) { i in
                     HStack(alignment: .top, spacing: 8) {
                         Image(systemName: restartIcon(i.state)).font(.system(size: 12)).foregroundStyle(restartColor(i.state)).frame(width: 16)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(i.name).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                            Text(i.note).font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
+                            Text(restartNoteText(state: i.state, how: i.how, note: i.note)).font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
@@ -1639,10 +2047,10 @@ struct Panel: View {
     }
 
     func sessionLine(_ s: ServerInfo) -> String {
-        var parts = ["连接于 " + (s.startedAt > 0 ? whenText(s.startedAt, now: model.now) : "?")]
-        if let b = s.busy { parts.append("正在" + (TOOL_LABEL[b] ?? "操作")) }
-        else if let a = s.lastActionAt { parts.append("上次操作 " + whenText(a, now: model.now)) }
-        else { parts.append("还没操作过") }
+        var parts = [L("连接于 ", "Since ") + (s.startedAt > 0 ? whenText(s.startedAt, now: model.now) : "?")]
+        if let b = s.busy { parts.append(L("正在", "Now: ") + (TOOL_LABEL[b] ?? L("操作", "working"))) }
+        else if let a = s.lastActionAt { parts.append(L("上次操作 ", "last: ") + whenText(a, now: model.now)) }
+        else { parts.append(L("还没操作过", "No actions yet")) }
         return parts.joined(separator: " · ")
     }
 
@@ -1650,41 +2058,41 @@ struct Panel: View {
     @ViewBuilder var checksBody: some View {
         let apps = model.appChecks
         if model.settings.paused {
-            Text("AI 操作已暂停，暂停期间不检查；恢复后会自动再查一次。").font(.system(size: 12)).foregroundStyle(SUBTLE)
+            Text(L("AI 操作已暂停，暂停期间不检查；恢复后会自动再查一次。", "AI operations are paused, so no checks run. They run again automatically when you resume.")).font(.system(size: 12)).foregroundStyle(SUBTLE)
                 .fixedSize(horizontal: false, vertical: true)
         } else if apps.isEmpty {
-            Text(model.servers.contains(where: { !$0.managedSession }) ? "正在检查权限…" : "浏览器连接启用后，会在这里检查权限。")
+            Text(model.servers.contains(where: { !$0.managedSession }) ? L("正在检查权限…", "Checking permissions…") : L("浏览器连接启用后，会在这里检查权限。", "Permissions are checked here once a browser connection is active."))
                 .font(.system(size: 12)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
         }
         ForEach(Array(apps.enumerated()), id: \.offset) { i, a in
             if i > 0 { Divider() }
             let failed = a.items.filter { !$0.ok && !$0.skipped }
-            let app = a.app ?? "运行 AI 的程序"
+            let app = a.app ?? L("运行 AI 的程序", "the app running the AI")
             if failed.isEmpty {
-                SettingRow(icon: "checkmark.seal.fill", title: apps.count > 1 ? "「\(app)」：权限都已打开" : "权限都已打开",
-                           sub: "\(a.items.count) 项检查都通过（检查的是「\(app)」，AI 助手在这个程序里运行）", tint: hex(0x16A34A)) { EmptyView() }
+                SettingRow(icon: "checkmark.seal.fill", title: apps.count > 1 ? L("「\(app)」：权限都已打开", "“\(app)”: all permissions on") : L("权限都已打开", "All permissions on"),
+                           sub: L("\(a.items.count) 项检查都通过（检查的是「\(app)」，AI 助手在这个程序里运行）", "All \(a.items.count) checks passed (checked for “\(app)”, the app the AI assistant runs in)"), tint: hex(0x16A34A)) { EmptyView() }
             } else {
-                if apps.count > 1 { Text("「\(app)」里的 AI 会话").font(.system(size: 11, weight: .semibold)).foregroundStyle(SUBTLE) }
+                if apps.count > 1 { Text(L("「\(app)」里的 AI 会话", "AI sessions in “\(app)”")).font(.system(size: 11, weight: .semibold)).foregroundStyle(SUBTLE) }
                 ForEach(failed) { c in
                     VStack(alignment: .leading, spacing: 6) {
                         Label(failTitle(c), systemImage: c.required ? "xmark.octagon.fill" : "exclamationmark.triangle.fill")
                             .font(.system(size: 13, weight: .semibold)).foregroundStyle(c.required ? ALERT : hex(0xEA6A0C))
                         Text(fixText(c, app: a.app)).font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
-                        if c.id == "chrome_running" { PlainButton(text: "打开 Chrome") { model.openChrome() } }
-                        else if let u = c.settings { PlainButton(text: "打开系统设置") { model.openSettingsPane(u) } }
+                        if c.id == "chrome_running" { PlainButton(text: L("打开 Chrome", "Open Chrome")) { model.openChrome() } }
+                        else if let u = c.settings { PlainButton(text: L("打开系统设置", "Open System Settings")) { model.openSettingsPane(u) } }
                     }
                 }
                 if failed.contains(where: { PERMISSION_CHECKS.contains($0.id) }) {
-                    Text("要给「\(app)」打开：AI 助手在哪个程序里运行，就给哪个程序。")
+                    Text(L("要给「\(app)」打开：AI 助手在哪个程序里运行，就给哪个程序。", "Turn these on for “\(app)”: permissions go to the app the AI assistant runs in."))
                         .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         HStack {
-            if let at = apps.map({ $0.at }).max() { Text("检查于 " + whenText(at, now: model.now)).font(.system(size: 11)).foregroundStyle(SUBTLE) }
+            if let at = apps.map({ $0.at }).max() { Text(L("检查于 ", "Checked: ") + whenText(at, now: model.now)).font(.system(size: 11)).foregroundStyle(SUBTLE) }
             Spacer()
             if model.servers.contains(where: { !$0.managedSession }) && !model.settings.paused {
-                PlainButton(text: model.checkRequestedAt != nil ? "正在检查…" : "重新检查") { model.requestChecks(force: true) }
+                PlainButton(text: model.checkRequestedAt != nil ? L("正在检查…", "Checking…") : L("重新检查", "Check again")) { model.requestChecks(force: true) }
             }
         }
     }
@@ -1696,7 +2104,7 @@ struct Panel: View {
                 .foregroundStyle(model.on ? hex(0xF97316) : SUBTLE)
                 .frame(width: 30)
             VStack(alignment: .leading, spacing: 2) {
-                Text("保持屏幕常亮").font(.system(size: 14, weight: .semibold))
+                Text(L("保持屏幕常亮", "Keep screen awake")).font(.system(size: 14, weight: .semibold))
                 Text(model.keepLine).font(.system(size: 11))
                     .foregroundStyle(SUBTLE)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1706,7 +2114,7 @@ struct Panel: View {
         }
         if model.on {
             VStack(alignment: .leading, spacing: 6) {
-                Text("保持多久").font(.system(size: 11, weight: .medium)).foregroundStyle(SUBTLE)
+                Text(L("保持多久", "For how long")).font(.system(size: 11, weight: .medium)).foregroundStyle(SUBTLE)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
                     ForEach(DURATIONS) { d in
                         let sel = model.mode == d.key
@@ -1730,59 +2138,76 @@ struct Panel: View {
 
     @ViewBuilder var settingsPage: some View {
         let s = model.settings
-        section("暂停") {
-            SettingRow(icon: s.paused ? "pause.circle.fill" : "play.circle", title: "暂停 AI 操作",
-                       sub: s.paused ? "已暂停：AI 不能操作你的 Chrome，只能看到它自己开的标签；它会收到「已暂停」并等你恢复。" : "需要安心用电脑时打开：AI 不会操作你的浏览器，也不会自动关标签。",
+        section(L("暂停", "Pause")) {
+            SettingRow(icon: s.paused ? "pause.circle.fill" : "play.circle", title: L("暂停 AI 操作", "Pause AI operations"),
+                       sub: s.paused ? L("已暂停：AI 不能操作你的 Chrome，只能看到它自己开的标签；它会收到「已暂停」并等你恢复。", "Paused: the AI cannot operate your Chrome and sees only the tabs it opened. It is told “paused” and waits until you resume.") : L("需要安心用电脑时打开：AI 不会操作你的浏览器，也不会自动关标签。", "Turn on when you want the computer to yourself: the AI does not operate your browser or close tabs automatically."),
                        tint: s.paused ? hex(0xEA6A0C) : SUBTLE) {
-                PillSwitch(isOn: s.paused, fill: SUN, label: ("恢复 AI 操作", "暂停 AI 操作")) { model.set("paused", !s.paused) }
+                PillSwitch(isOn: s.paused, fill: SUN, label: (L("恢复 AI 操作", "Resume AI operations"), L("暂停 AI 操作", "Pause AI operations"))) { model.set("paused", !s.paused) }
             }
             if s.paused && !model.legacy.isEmpty {
-                Text("有 \(model.legacy.count) 个旧版本的 AI 会话不认这个开关，重启这些会话后才会一起暂停。")
+                Text(L("有 \(model.legacy.count) 个旧版本的 AI 会话不认这个开关，重启这些会话后才会一起暂停。", "\(model.legacy.count) AI session(s) on an older version ignore this switch; they pause too only after they restart."))
                     .font(.system(size: 11)).foregroundStyle(ALERT).fixedSize(horizontal: false, vertical: true)
             }
         }
-        section("AI 的窗口放在哪") {
+        section(L("AI 的窗口放在哪", "Where the AI's window goes")) {
             let lock = model.lockedValue("agentDisplay")
             let cur = (lock?.value as? String) ?? s.agentDisplay
             Choices(options: DISPLAY_OPTIONS, selected: cur, columns: 2, disabled: lock != nil) { model.set("agentDisplay", $0) }
             Text(DISPLAY_SUB[cur] ?? "").font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
             if let l = lock { LockedNote(env: SETTING_ENV["agentDisplay"]!, value: lockedText("agentDisplay", l.value), who: l.who) }
         }
-        section("接管键盘鼠标前，等你停手") {
+        section(L("接管键盘鼠标前，等你停手", "Wait for you to pause before taking over")) {
             let lock = model.lockedValue("idleSeconds")
             Choices(options: IDLE_OPTIONS, selected: numKey(lock.flatMap { jsonNum($0.value) } ?? s.idleSeconds), disabled: lock != nil) { model.set("idleSeconds", Double($0) ?? 1.5) }
-            Text("AI 要用键盘鼠标时，先等你停手这么久再接管；你在打字时它会等，不会抢着操作。只动鼠标不算在操作。")
+            Text(L("AI 要用键盘鼠标时，先等你停手这么久再接管；你在打字时它会等，不会抢着操作。只动鼠标不算在操作。", "Before using the keyboard and mouse, the AI waits until you have paused this long. While you type, it waits and never grabs control. Moving the mouse alone does not count."))
                 .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
             if let l = lock { LockedNote(env: SETTING_ENV["idleSeconds"]!, value: lockedText("idleSeconds", l.value), who: l.who) }
         }
-        section("AI 开的标签，多久没用就关掉") {
+        section(L("AI 开的标签，多久没用就关掉", "Close AI tabs after they are unused for")) {
             let lock = model.lockedValue("tabIdleMinutes")
             Choices(options: TAB_OPTIONS, selected: numKey(lock.flatMap { jsonNum($0.value) } ?? s.tabIdleMinutes), columns: 4, disabled: lock != nil) {
                 model.set("tabIdleMinutes", Double($0) ?? 10)
             }
-            Text("只关 AI 自己开的标签；你自己开的、或你接手用过的标签从来不关。AI 会话结束时，它开的标签也会关掉。")
+            Text(L("只关 AI 自己开的标签；你自己开的、或你接手用过的标签从来不关。AI 会话结束时，它开的标签也会关掉。", "Only tabs the AI opened are closed; tabs you opened or took over are never closed. When an AI session ends, its tabs close too."))
                 .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
             if let l = lock { LockedNote(env: SETTING_ENV["tabIdleMinutes"]!, value: lockedText("tabIdleMinutes", l.value), who: l.who) }
         }
-        section("通知与记录") {
+        section(L("通知与记录", "Notifications and activity")) {
             let lock = model.lockedValue("notify")
             let notifyOn = lock.flatMap { jsonBool($0.value) } ?? s.notify
-            SettingRow(icon: notifyOn ? "bell.fill" : "bell.slash", title: "系统通知",
-                       sub: "网站要你处理（如验证码）、AI 好像卡住了、或 AI 操作时拦下了你的按键，会弹通知告诉你。", tint: notifyOn ? hex(0x3B7BFF) : SUBTLE) {
-                PillSwitch(isOn: notifyOn, fill: AURORA, label: ("关闭系统通知", "打开系统通知")) { model.set("notify", !notifyOn) }
+            SettingRow(icon: notifyOn ? "bell.fill" : "bell.slash", title: L("系统通知", "System notifications"),
+                       sub: L("网站要你处理（如验证码）、AI 好像卡住了、或 AI 操作时拦下了你的按键，会弹通知告诉你。", "You get a notification when a site needs you (such as a CAPTCHA), the AI seems stuck, or your keys were held back during an AI action."), tint: notifyOn ? hex(0x3B7BFF) : SUBTLE) {
+                PillSwitch(isOn: notifyOn, fill: AURORA, label: (L("关闭系统通知", "Turn off system notifications"), L("打开系统通知", "Turn on system notifications"))) { model.set("notify", !notifyOn) }
                     .disabled(lock != nil).opacity(lock != nil ? 0.5 : 1)
             }
             if let l = lock { LockedNote(env: SETTING_ENV["notify"]!, value: lockedText("notify", l.value), who: l.who) }
             Divider()
-            SettingRow(icon: s.activityLog ? "list.bullet.rectangle.fill" : "list.bullet.rectangle", title: "记录 AI 的操作",
-                       sub: "在「记录」页查看。只记时间、网站名和操作类型，不记输入的内容；只存在这台电脑上。",
+            SettingRow(icon: s.activityLog ? "list.bullet.rectangle.fill" : "list.bullet.rectangle", title: L("记录 AI 的操作", "Log AI actions"),
+                       sub: L("在「记录」页查看。只记时间、网站名和操作类型，不记输入的内容；只存在这台电脑上。", "See the Activity page. Only the time, site name and action type are logged, never what was typed. The log stays on this Mac."),
                        tint: s.activityLog ? hex(0x3B7BFF) : SUBTLE) {
-                PillSwitch(isOn: s.activityLog, fill: AURORA, label: ("不再记录", "开始记录")) { model.set("activityLog", !s.activityLog) }
+                PillSwitch(isOn: s.activityLog, fill: AURORA, label: (L("不再记录", "Stop logging"), L("开始记录", "Start logging"))) { model.set("activityLog", !s.activityLog) }
             }
         }
-        section("我的操作习惯") { habitsBody }
+        section(L("界面语言", "Language")) {
+            let lock = uiLanguageLock()
+            Choices(options: UI_LANGUAGE_OPTIONS, selected: lock?.key ?? s.uiLanguage, columns: 3, disabled: lock != nil) { model.set("uiLanguage", $0) }
+            if let lock {
+                Label(L("由这个 App 的环境变量 \(lock.variable)=\(lock.value) 固定，这里改不了；去掉这个变量后才能在这里改。",
+                        "Fixed by this app's environment variable \(lock.variable)=\(lock.value); remove it to change the language here."), systemImage: "lock.fill")
+                    .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
+            }
+            if let l = model.lockedValue("uiLanguage"), let v = l.value as? String, v == "en" || v == "zh" {
+                Label(L("「\(l.who)」的 MCP 配置用 CHROME_BRIDGE_UI_LANG 固定为 \(v)：那个会话的通知和接管面板用这个语言。",
+                        "The MCP configuration of “\(l.who)” sets CHROME_BRIDGE_UI_LANG to \(v): that session's notifications and takeover card use it."), systemImage: "info.circle")
+                    .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
+            }
+            Text(L("菜单栏面板、会话中心、接管提示和系统通知使用的语言。跟随系统：Mac 的首选语言是中文时用中文，否则用英文。", "The language of this panel, the conversation center, the takeover card and system notifications. Follow system uses Chinese when your Mac's preferred language is Chinese, otherwise English."))
+                .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
+        }
+        section(L("网页弹窗", "Page pop-ups")) { PagePromptSettingsView(model: model) }
+        section(L("我的操作习惯", "My operation habits")) { habitsBody }
         if !model.legacy.isEmpty {
-            Text("这些设置改了马上生效，但只对新版本的 AI 会话有效；另有 \(model.legacy.count) 个旧会话要重启后才会用上。")
+            Text(L("这些设置改了马上生效，但只对新版本的 AI 会话有效；另有 \(model.legacy.count) 个旧会话要重启后才会用上。", "Changes apply at once, but only to AI sessions on the new version; \(model.legacy.count) older session(s) use them after a restart."))
                 .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1793,11 +2218,11 @@ struct Panel: View {
         let items = model.activity
         let today = items.filter { Calendar.current.isDate(Date(timeIntervalSince1970: $0.t / 1000), inSameDayAs: Date(timeIntervalSince1970: model.now / 1000)) }
         VStack(alignment: .leading, spacing: 8) {
-            SectionTitle(text: today.isEmpty ? "最近的操作" : "今天 \(today.count) 次操作" + (today.contains { !$0.ok } ? "，\(today.filter { !$0.ok }.count) 次没做成" : ""))
+            SectionTitle(text: today.isEmpty ? L("最近的操作", "Recent actions") : L("今天 \(today.count) 次操作", "Today: \(today.count) action(s)") + (today.contains { !$0.ok } ? L("，\(today.filter { !$0.ok }.count) 次没做成", ", \(today.filter { !$0.ok }.count) did not succeed") : ""))
             Card {
                 if items.isEmpty {
-                    SettingRow(icon: "list.bullet.rectangle", title: "还没有记录",
-                               sub: model.settings.activityLog ? "AI 用你的浏览器做的每一步都会记在这里。" : "记录已关闭，可以在「设置」里打开。") { EmptyView() }
+                    SettingRow(icon: "list.bullet.rectangle", title: L("还没有记录", "Nothing logged yet"),
+                               sub: model.settings.activityLog ? L("AI 用你的浏览器做的每一步都会记在这里。", "Every step the AI takes in your browser is logged here.") : L("记录已关闭，可以在「设置」里打开。", "Logging is off. Turn it on in Settings.")) { EmptyView() }
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(items.prefix(150).enumerated()), id: \.element.id) { i, a in
@@ -1813,10 +2238,10 @@ struct Panel: View {
             }
         }
         HStack {
-            Text("只记网站名和操作类型，不记输入的内容。").font(.system(size: 11)).foregroundStyle(SUBTLE)
+            Text(L("只记网站名和操作类型，不记输入的内容。", "Only site names and action types are logged, never what was typed.")).font(.system(size: 11)).foregroundStyle(SUBTLE)
             Spacer()
             if !items.isEmpty {
-                PlainButton(text: model.confirmClear ? "再点一次，确认清空" : "清空记录", destructive: true) { model.clearActivity() }
+                PlainButton(text: model.confirmClear ? L("再点一次，确认清空", "Click again to clear") : L("清空记录", "Clear log"), destructive: true) { model.clearActivity() }
             }
         }
         if let n = model.clearNote { Text(n).font(.system(size: 11)).foregroundStyle(hex(0xEA6A0C)) }
@@ -1830,50 +2255,50 @@ struct Panel: View {
                 LiveDot(color: ALERT)
                     .frame(width: 30)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("正在录制 · 还剩 " + clockText(left)).font(.system(size: 14, weight: .semibold)).monospacedDigit()
-                    Text("正常用电脑就行：只记节奏，不记按了什么、不看屏幕")
+                    Text(L("正在录制 · 还剩 ", "Recording · left: ") + clockText(left)).font(.system(size: 14, weight: .semibold)).monospacedDigit()
+                    Text(L("正常用电脑就行：只记节奏，不记按了什么、不看屏幕", "Use your Mac as usual: only rhythm is recorded, never which keys or the screen"))
                         .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Bar(fraction: 1 - left / (RECORD_SECONDS * 1000), color: ALERT)
             HStack {
                 Spacer()
-                PlainButton(text: "取消录制（不保存）") { model.cancelRecording() }
+                PlainButton(text: L("取消录制（不保存）", "Cancel recording (nothing saved)")) { model.cancelRecording() }
             }
         } else if let h = model.habits {
             HStack(spacing: 12) {
                 Image(systemName: h.use ? "hand.point.up.left.fill" : "hand.point.up.left")
                     .font(.system(size: 18)).foregroundStyle(h.use ? hex(0x8B5CF6) : SUBTLE).frame(width: 30)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("按我的习惯操作").font(.system(size: 14, weight: .semibold))
-                    Text(h.use ? "AI 打字、移动鼠标的快慢照你的来" : "已关闭：AI 按默认的快慢操作")
+                    Text(L("按我的习惯操作", "Use my habits")).font(.system(size: 14, weight: .semibold))
+                    Text(h.use ? L("AI 打字、移动鼠标的快慢照你的来", "The AI types and moves the mouse at your pace") : L("已关闭：AI 按默认的快慢操作", "Off: the AI uses the default pace"))
                         .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                PillSwitch(isOn: h.use, fill: AURORA, label: ("不按我的习惯操作", "按我的习惯操作")) { model.setUse(!h.use) }
+                PillSwitch(isOn: h.use, fill: AURORA, label: (L("不按我的习惯操作", "Stop using my habits"), L("按我的习惯操作", "Use my habits"))) { model.setUse(!h.use) }
             }
             VStack(alignment: .leading, spacing: 5) {
-                Fact(icon: "calendar", text: "录制于 " + dateText(h.recordedAt))
-                Fact(icon: "keyboard", text: h.interKeyMs.map { "打字间隔：一般 \(Int($0.rounded())) 毫秒（中位数）" } ?? "打字：录到的太少，用默认节奏")
-                Fact(icon: "computermouse", text: h.speedX.map { "鼠标速度：默认的 \(oneDecimal($0)) 倍" } ?? "鼠标：录到的太少，用默认速度")
-                if h.missing > 0 { Fact(icon: "info.circle", text: "录到的太少的项目，仍用默认值") }
+                Fact(icon: "calendar", text: L("录制于 ", "Recorded: ") + dateText(h.recordedAt))
+                Fact(icon: "keyboard", text: h.interKeyMs.map { L("打字间隔：一般 \(Int($0.rounded())) 毫秒（中位数）", "Typing interval: typically \(Int($0.rounded())) ms (median)") } ?? L("打字：录到的太少，用默认节奏", "Typing: too little recorded; default rhythm used"))
+                Fact(icon: "computermouse", text: h.speedX.map { L("鼠标速度：默认的 \(oneDecimal($0)) 倍", "Mouse speed: \(oneDecimal($0))× the default") } ?? L("鼠标：录到的太少，用默认速度", "Mouse: too little recorded; default speed used"))
+                if h.missing > 0 { Fact(icon: "info.circle", text: L("录到的太少的项目，仍用默认值", "Items with too little data keep the default values")) }
             }
             HStack {
-                PlainButton(text: "重新录制 3 分钟") { model.startRecording() }
+                PlainButton(text: L("重新录制 3 分钟", "Record 3 minutes again")) { model.startRecording() }
                 Spacer()
-                PlainButton(text: model.confirmDelete ? "再点一次，确认删除" : "删除习惯数据", destructive: true) { model.deleteHabits() }
+                PlainButton(text: model.confirmDelete ? L("再点一次，确认删除", "Click again to delete") : L("删除习惯数据", "Delete habit data"), destructive: true) { model.deleteHabits() }
             }
         } else {
             HStack(spacing: 12) {
                 Image(systemName: "hand.point.up.left").font(.system(size: 18)).foregroundStyle(SUBTLE).frame(width: 30)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("还没有录制").font(.system(size: 14, weight: .semibold))
-                    Text("录 3 分钟你平时用电脑的样子，之后 AI 打字、移动鼠标就照你的快慢来。只记节奏，不记按了什么、不看屏幕。")
+                    Text(L("还没有录制", "Not recorded yet")).font(.system(size: 14, weight: .semibold))
+                    Text(L("录 3 分钟你平时用电脑的样子，之后 AI 打字、移动鼠标就照你的快慢来。只记节奏，不记按了什么、不看屏幕。", "Record 3 minutes of your usual computer use; the AI then types and moves the mouse at your pace. Only rhythm is recorded, never which keys or the screen."))
                         .font(.system(size: 11)).foregroundStyle(SUBTLE).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Button { model.startRecording() } label: {
-                Label("录制 3 分钟", systemImage: "record.circle")
+                Label(L("录制 3 分钟", "Record 3 minutes"), systemImage: "record.circle")
                     .font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
                     .frame(maxWidth: .infinity).padding(.vertical, 8)
                     .background(Capsule().fill(AURORA))
@@ -1886,18 +2311,18 @@ struct Panel: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         if model.habitsOff {
-            Text("现在设置为不使用习惯（CHROME_BRIDGE_HABITS=off）。").font(.system(size: 11)).foregroundStyle(SUBTLE)
+            Text(L("现在设置为不使用习惯（CHROME_BRIDGE_HABITS=off）。", "Habits are turned off (CHROME_BRIDGE_HABITS=off).")).font(.system(size: 11)).foregroundStyle(SUBTLE)
         }
     }
 
     var footer: some View {
         HStack(spacing: 6) {
-            Text("停止操作：连按两次").font(.system(size: 12, weight: .medium))
+            Text(L("停止操作：连按两次", "To stop: press twice")).font(.system(size: 12, weight: .medium))
             Keycap(text: "Esc")
             Spacer()
-            Button("退出应用") { close(); model.quit() }
+            Button(L("退出应用", "Quit")) { close(); model.quit() }
                 .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(SUBTLE)
-                .help("关掉菜单栏里的这个小图标，屏幕常亮也会关闭；不影响正在进行的 AI 任务")
+                .help(L("关掉菜单栏里的这个小图标，屏幕常亮也会关闭；不影响正在进行的 AI 任务", "Closes this menu bar icon and stops keeping the screen awake; AI tasks in progress are not affected"))
         }
     }
 }
@@ -1915,7 +2340,7 @@ struct ActivityRow: View {
                 }
                 Text(a.tool == "auto_close" ? autoCloseText(a.code) + " · " + a.who : a.who).font(.system(size: 10.5)).foregroundStyle(SUBTLE).lineLimit(1)
                 if !a.ok {
-                    Text("没做成：" + failureText(a.code)).font(.system(size: 10.5, weight: .medium)).foregroundStyle(ALERT)
+                    Text(L("没做成：", "Did not succeed: ") + failureText(a.code)).font(.system(size: 10.5, weight: .medium)).foregroundStyle(ALERT)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -1954,7 +2379,7 @@ final class Controller: NSObject, NSWindowDelegate, NSApplicationDelegate {
         item.behavior = []
         item.button?.target = self
         item.button?.action = #selector(toggle)
-        item.button?.toolTip = "AI 浏览器助手（MyChrome）"
+        item.button?.toolTip = L("AI 浏览器助手（MyChrome）", "AI browser assistant (MyChrome)")
         let host = NSHostingController(rootView: Panel(model: model, close: { [weak self] in self?.popover.performClose(nil) }))
         host.sizingOptions = .preferredContentSize
         popover.contentViewController = host
@@ -2049,7 +2474,7 @@ final class Controller: NSObject, NSWindowDelegate, NSApplicationDelegate {
         let busy = !model.tasks.isEmpty || model.servers.contains { $0.busy != nil }
         let name = model.needsYou ? "exclamationmark.triangle.fill" : model.settings.paused ? "pause.circle.fill"
             : model.holding ? "sun.max.fill" : (busy ? "cursorarrow.motionlines" : "cursorarrow.rays")
-        let img = NSImage(systemSymbolName: name, accessibilityDescription: "AI 浏览器助手")?
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: L("AI 浏览器助手", "AI browser assistant"))?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .medium))
         img?.isTemplate = true
         if item.button?.image?.name() != name { img?.setName(name); item.button?.image = img }
@@ -2084,9 +2509,30 @@ enum CBMenu {
             let st = Settings.read()
             let o: [String: Any] = ["paused": st.paused, "agentDisplay": st.agentDisplay, "idleSeconds": st.idleSeconds,
                                     "tabIdleMinutes": st.tabIdleMinutes, "notify": st.notify, "activityLog": st.activityLog,
-                                    "inputMode": st.inputMode, "inputSpeed": st.inputSpeed]
+                                    "inputMode": st.inputMode, "inputSpeed": st.inputSpeed, "claudeFeed": st.claudeFeed,
+                                    "uiLanguage": st.uiLanguage,
+                                    "pagePrompt": st.pagePrompt.object]
             if let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]) { print(String(decoding: d, as: UTF8.self)) }
             exit(0)
+        }
+        // Pure fixture/read interface; catalog comes from this bundle's source root.
+        if let i = argv.firstIndex(of: "--validate-page-prompt") {
+            guard i + 1 < argv.count, let data = argv[i + 1].data(using: .utf8),
+                  let request = decodeSettingsObject(data) else { exit(2) }
+            let catalog = request.keys.contains("catalog") ? PagePromptCatalog.parse(request["catalog"]) : PagePromptCatalog.load()
+            var result = PagePromptSettingsState.normalize(request["settings"], catalog: catalog).normalizedObject
+            if let origin = request["origin"] as? String { result["origin"] = canonicalPromptOrigin(origin) as Any? ?? NSNull() }
+            if let text = request["text"] as? String { result["text"] = normalizePromptText(text) }
+            if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) { print(String(decoding: data, as: UTF8.self)) }
+            exit(0)
+        }
+        if let i = argv.firstIndex(of: "--page-prompt-mutation") {
+            guard i + 1 < argv.count, let data = argv[i + 1].data(using: .utf8),
+                  let operation = decodeSettingsObject(data),
+                  writePagePromptMutation(operation) else {
+                print("{\"ok\":false,\"error\":\"page_prompt_not_saved\"}"); exit(2)
+            }
+            print("{\"ok\":true}"); exit(0)
         }
         if let i = argv.firstIndex(of: "--write-setting"), i + 2 < argv.count {
             let raw = argv[i + 2]
@@ -2197,27 +2643,27 @@ enum Snapshot {
         if argv.contains("--demo") {
             let now = nowMs()
             m.tasks = [
-                AgentTask(id: 1, who: "Claude Code · demo", task: "在 example.com 后台导出本月订单", stepName: "核对筛选条件",
+                AgentTask(id: 1, who: "Claude Code · demo", task: L("在 example.com 后台导出本月订单", "Export this month's orders from the example.com dashboard"), stepName: L("核对筛选条件", "Check the filters"),
                           current: 9, total: 14, color: 0, etaMs: 7 * 60_000, etaAt: now),
-                AgentTask(id: 2, who: "Codex · demo", task: "填写 example.org 活动报名表", stepName: "检查必填项",
+                AgentTask(id: 2, who: "Codex · demo", task: L("填写 example.org 活动报名表", "Fill in the example.org event sign-up form"), stepName: L("检查必填项", "Check required fields"),
                           current: 3, total: 3, color: 1, etaMs: 40_000, etaAt: now,
-                          alert: argv.contains("--alert") ? "需要你处理：www.google.com reCAPTCHA 人机验证（验证码）" : nil,
+                          alert: argv.contains("--alert") ? L("需要你处理：www.google.com reCAPTCHA 人机验证（验证码）", "Needs you: www.google.com is showing a reCAPTCHA check") : nil,
                           alertTab: argv.contains("--alert") ? 2 : nil)
             ]
             if m.mode == "off" { m.mode = "task" }
             // Sessions, the setup check and the activity log: samples for the picture, not anyone's data.
             let ok = { (id: String, t: String) in Check(id: id, title: t, required: true, ok: true, skipped: false, detail: "", fix: nil, settings: nil) }
-            var items = [ok("macos", "macOS"), ok("node", "Node.js"), ok("helpers", "助手程序"), ok("chrome_installed", "Google Chrome 已安装"),
-                         ok("chrome_running", "Google Chrome 在运行"), ok("automation", "自动化：控制 Chrome"), ok("apple_events_js", "Chrome：允许 Apple 事件中的 JavaScript"),
-                         ok("accessibility", "辅助功能：真实鼠标键盘"), ok("screen_recording", "屏幕录制：截图识字")]
+            var items = [ok("macos", "macOS"), ok("node", "Node.js"), ok("helpers", L("助手程序", "Helpers")), ok("chrome_installed", L("Google Chrome 已安装", "Google Chrome installed")),
+                         ok("chrome_running", L("Google Chrome 在运行", "Google Chrome running")), ok("automation", L("自动化：控制 Chrome", "Automation: control Chrome")), ok("apple_events_js", L("Chrome：允许 Apple 事件中的 JavaScript", "Chrome: Allow JavaScript from Apple Events")),
+                         ok("accessibility", L("辅助功能：真实鼠标键盘", "Accessibility: real mouse and keyboard")), ok("screen_recording", L("屏幕录制：截图识字", "Screen Recording: screenshots and text recognition"))]
             if argv.contains("--fail") {
-                items[7] = Check(id: "accessibility", title: "辅助功能：真实鼠标键盘", required: true, ok: false, skipped: false,
-                                 detail: "「kitty」没有打开。", fix: "打开「系统设置 → 隐私与安全性 → 辅助功能」，把「kitty」的开关打开。",
+                items[7] = Check(id: "accessibility", title: L("辅助功能：真实鼠标键盘", "Accessibility: real mouse and keyboard"), required: true, ok: false, skipped: false,
+                                 detail: L("「kitty」没有打开。", "“kitty” is not turned on."), fix: L("打开「系统设置 → 隐私与安全性 → 辅助功能」，把「kitty」的开关打开。", "Open System Settings → Privacy & Security → Accessibility and turn on “kitty”."),
                                  settings: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
             }
             if argv.contains("--no-chrome") {
-                items[4] = Check(id: "chrome_running", title: "Google Chrome 在运行", required: true, ok: false, skipped: false,
-                                 detail: "Google Chrome 没有在运行。", fix: "打开 Google Chrome（或运行 mychrome-mcp doctor --open-chrome 让本检查替你打开）。", settings: nil)
+                items[4] = Check(id: "chrome_running", title: L("Google Chrome 在运行", "Google Chrome running"), required: true, ok: false, skipped: false,
+                                 detail: L("Google Chrome 没有在运行。", "Google Chrome is not running."), fix: L("打开 Google Chrome（或运行 mychrome-mcp doctor --open-chrome 让本检查替你打开）。", "Open Google Chrome (or run mychrome-mcp doctor --open-chrome to let this check open it)."), settings: nil)
             }
             m.servers = [
                 ServerInfo(id: 1, who: "Claude Code · demo", color: 0, version: "demo", startedAt: now - 52 * 60_000, busy: "click",
@@ -2225,16 +2671,17 @@ enum Snapshot {
                            checks: SetupChecks(at: now - 2 * 60_000, app: "kitty", items: items), needsRestart: false),
                 ServerInfo(id: 2, who: "Codex · demo", color: 1, version: "demo", startedAt: now - 27 * 3600_000, busy: nil,
                            lastActionAt: now - 4 * 60_000, root: nil, srcHash: nil, envLocked: [:], needsRestart: true),
-                ServerInfo(id: 5, who: "Claude · 主目录", color: 2, version: "demo", startedAt: now - 3 * 3600_000, busy: nil,
+                ServerInfo(id: 5, who: L("Claude · 主目录", "Claude · home folder"), color: 2, version: "demo", startedAt: now - 3 * 3600_000, busy: nil,
                            lastActionAt: now - 9 * 60_000, root: nil, srcHash: nil, envLocked: [:], needsRestart: true, launcher: 6)
             ]
             m.legacy = argv.contains("--legacy") ? [3, 4] : []
             if argv.contains("--restart") {
                 m.restartJob = RestartJob(pid: 0, startedAt: now - 4 * 60_000, at: now - 20_000, finished: true, died: false, items: [
-                    RestartItem(id: 1, name: "demo · 更新商品页面", state: "done", note: "已重启，用上新版了"),
-                    RestartItem(id: 2, name: "demo · 整理任务", state: "done", note: "已重启，用上新版了"),
-                    RestartItem(id: 3, name: "SSH 连接 remote-mac", state: "skipped", note: "等了 30 分钟还是没机会（输入框里有没发出去的字，等它清空），没动它"),
-                    RestartItem(id: 4, name: "demo · 写周报", state: "failed", note: "发了 /mcp reconnect chrome-bridge，但 MyChrome 没换（这个会话的 Claude Code 可能太旧）：在里面输入 /mcp 手动 Reconnect，或者关掉重开")])
+                    // restart.js's own notes (its outcomes, as data), so the picture goes through restartNoteText as the panel does
+                    RestartItem(id: 1, name: L("demo · 更新商品页面", "demo · update product page"), state: "done", note: "已重启，用上新版了", how: "kitty"),   // i18n-exempt: restart.js output sample
+                    RestartItem(id: 2, name: L("demo · 整理任务", "demo · tidy up tasks"), state: "done", note: "会话已经关了", how: "kitty"),   // i18n-exempt: restart.js output sample
+                    RestartItem(id: 3, name: L("SSH 连接 remote-mac", "SSH connection remote-mac"), state: "skipped", note: "替你输入时有人在用电脑（或画面变了），没有按回车，也没删任何字：那个会话的输入框里留着 /mcp reconnect chrome-bridge，要重启就按回车，不要就删掉", how: "tmux"),   // i18n-exempt: restart.js output sample
+                    RestartItem(id: 4, name: L("demo · 写周报", "demo · write weekly report"), state: "failed", note: "发了 /mcp reconnect chrome-bridge，但 MyChrome 没换（这个会话的 Claude Code 可能太旧）：如果那里开着 /mcp 菜单，按 Esc 关掉，再选 chrome-bridge → Reconnect，或者关掉重开", how: "kitty")])   // i18n-exempt: restart.js output sample
             }
             let hosts = ["mail.example.com", "shop.example.org", "example.com"]
             let tools = ["open_tab", "read_page", "click", "type_text", "scroll", "click", "read_page", "select_option", "click", "close_tab"]
@@ -2269,13 +2716,15 @@ enum Snapshot {
         host.cacheDisplay(in: host.bounds, to: rep)
         guard let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
         try? png.write(to: URL(fileURLWithPath: path))
+        let languageLock = uiLanguageLock()
         var hb: [String: Any] = ["state": m.habitsState]
         if let h = m.habits {
             hb["use"] = h.use
             hb["interKeyMs"] = h.interKeyMs.map { Int($0.rounded()) } ?? NSNull()
             hb["speedX"] = h.speedX.map { ($0 * 10).rounded() / 10 } ?? NSNull()
         }
-        let o: [String: Any] = ["ok": true, "path": path, "w": Int(host.bounds.width), "h": Int(host.bounds.height), "habits": hb]
+        let o: [String: Any] = ["ok": true, "path": path, "w": Int(host.bounds.width), "h": Int(host.bounds.height), "habits": hb,
+                                "uiLanguage": ["selected": languageLock?.key ?? m.settings.uiLanguage, "fixedBy": languageLock?.variable ?? NSNull(), "english": uiEnglish()]]
         if let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]) { print(String(decoding: d, as: UTF8.self)) }
     }
 }

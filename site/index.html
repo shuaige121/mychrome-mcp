@@ -1,104 +1,51 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>MyChrome — Keep browsing. Bring in AI when you need a hand.</title>
-    <meta
-      name="description"
-      content="Keep using your Chrome. Bring in AI on the same page, take over when needed, then ask it to continue. Choose input mode, pace and optional personal rhythm sampling."
-    />
-    <meta name="theme-color" content="#f7f6f2" />
-    <link rel="canonical" href="https://shuaige121.github.io/mychrome-mcp/" />
-    <link
-      rel="alternate"
-      hreflang="en"
-      href="https://shuaige121.github.io/mychrome-mcp/"
-    />
-    <link
-      rel="alternate"
-      hreflang="zh-CN"
-      href="https://shuaige121.github.io/mychrome-mcp/zh/"
-    />
-    <link
-      rel="alternate"
-      hreflang="x-default"
-      href="https://shuaige121.github.io/mychrome-mcp/"
-    />
-    <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="MyChrome" />
-    <meta
-      property="og:title"
-      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
-    />
-    <meta
-      property="og:description"
-      content="Keep using your Chrome. Bring in AI on the same page, take over when needed, then ask it to continue. Choose input mode, pace and optional personal rhythm sampling."
-    />
-    <meta
-      property="og:url"
-      content="https://shuaige121.github.io/mychrome-mcp/"
-    />
-    <meta property="og:locale" content="en_US" />
+<!DOCTYPE html><html lang="en"><head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>MyChrome — Your logged-in Chrome, with AI</title>
+    <meta name="description" content="Let Codex or Claude Code use your own Google Chrome on macOS, with real mouse and keyboard input, user handoff and adjustable pace.">
+    <meta name="theme-color" content="#f7f6f2">
+    <link rel="canonical" href="https://shuaige121.github.io/mychrome-mcp/">
+    <link rel="alternate" hreflang="en" href="https://shuaige121.github.io/mychrome-mcp/">
+    <link rel="alternate" hreflang="zh-CN" href="https://shuaige121.github.io/mychrome-mcp/zh/">
+    <link rel="alternate" hreflang="x-default" href="https://shuaige121.github.io/mychrome-mcp/">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="MyChrome">
+    <meta property="og:title" content="MyChrome — Your logged-in Chrome, with AI">
+    <meta property="og:description" content="Let Codex or Claude Code use your own Google Chrome on macOS, with real mouse and keyboard input, user handoff and adjustable pace.">
+    <meta property="og:url" content="https://shuaige121.github.io/mychrome-mcp/">
+    <meta property="og:locale" content="en_US">
 
-    <meta name="twitter:card" content="summary_large_image" />
-    <link rel="stylesheet" href="./styles.css" />
-    <script src="./site.js" defer></script>
-    <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@type": "SoftwareApplication",
-        "name": "MyChrome",
-        "description": "Local MCP server and native macOS app for AI help in your existing Chrome, with shared-page handoffs, adjustable input pace and optional personal rhythm sampling.",
-        "applicationCategory": "UtilitiesApplication",
-        "operatingSystem": "macOS 13 or later (Apple Silicon)",
-        "softwareRequirements": "Google Chrome in /Applications; Node.js 24+ recommended, or 20.19+/22.13+; Git; Xcode Command Line Tools; local stdio MCP client",
-        "license": "https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE",
-        "url": "https://shuaige121.github.io/mychrome-mcp/",
-        "downloadUrl": "https://github.com/shuaige121/mychrome-mcp",
-        "author": {
-          "@type": "Person",
-          "name": "Leonard Chow"
-        },
-        "offers": {
-          "@type": "Offer",
-          "price": "0",
-          "priceCurrency": "USD",
-          "description": "MIT-licensed source. AI client model access may have separate costs."
-        },
-        "softwareVersion": "0.13.0",
-        "image": "https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
-      }
-    </script>
-    <meta
-      property="og:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
-    />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta
-      property="og:image:alt"
-      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
-    />
-    <meta
-      name="twitter:image"
-      content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.13.0"
-    />
-    <meta
-      name="twitter:image:alt"
-      content="MyChrome — Keep browsing. Bring in AI when you need a hand."
-    />
-  </head>
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./site.js" defer=""></script>
+
+    <meta property="og:image" content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.14.0">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="MyChrome — Keep browsing. Bring AI in when you need it.">
+    <meta name="twitter:image" content="https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.14.0">
+    <meta name="twitter:image:alt" content="MyChrome — Keep browsing. Bring AI in when you need it.">
+  <meta name="twitter:title" content="MyChrome — Your logged-in Chrome, with AI"><meta name="twitter:description" content="Let Codex or Claude Code use your own Google Chrome on macOS, with real mouse and keyboard input, user handoff and adjustable pace."><meta property="og:locale:alternate" content="zh_CN"><script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "@id": "https://shuaige121.github.io/mychrome-mcp/#mychrome",
+  "name": "MyChrome",
+  "description": "MyChrome is a local MCP server with a native macOS app. It lets Codex, Claude Code and other local stdio MCP clients work in the Google Chrome you already use, with your existing tabs, signed-in accounts and real mouse and keyboard.",
+  "operatingSystem": "macOS 13 or later (Apple Silicon)",
+  "softwareRequirements": "Google Chrome in /Applications; native arm64 Node.js 24+ recommended, 20.19+ or 22.13+ supported; Git; Xcode Command Line Tools; local stdio MCP client",
+  "license": "https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE",
+  "url": "https://shuaige121.github.io/mychrome-mcp/",
+  "downloadUrl": "https://github.com/shuaige121/mychrome-mcp",
+  "image": "https://shuaige121.github.io/mychrome-mcp/assets/social-card.png?v=0.14.0"
+}
+</script></head>
   <body class="home-page">
     <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header wrap">
-      <a class="wordmark" href="./" aria-label="MyChrome home"
-        >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
-      >
+      <a class="wordmark" href="./" aria-label="MyChrome home">MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a>
       <nav aria-label="Main navigation">
-        <a href="getting-started.html">Get started</a><a href="faq.html">FAQ</a
-        ><a href="https://github.com/shuaige121/mychrome-mcp">GitHub</a
-        ><a class="language" href="zh/" lang="zh-CN">中文</a>
+        <a href="getting-started.html">Get started</a><a href="faq.html">FAQ</a><a href="https://github.com/shuaige121/mychrome-mcp">GitHub</a><a class="language" href="zh/" lang="zh-CN">中文</a>
       </nav>
     </header>
     <main id="main">
@@ -106,153 +53,123 @@
         <div class="hero-copy">
           <p class="eyebrow">YOUR CHROME. YOUR PACE.</p>
           <h1>
-            Keep browsing.<br /><em>Bring in AI</em><br />when you need a hand.
+            Keep browsing.<br><em>Bring in AI</em><br>when you need a hand.
           </h1>
-          <p class="intro">
-            Let AI help on the page you're already using. Take over for a
-            password or verification code, then tell it to continue the task.
-            Set the typing and mouse pace to suit you.
-          </p>
+          <p class="intro">MyChrome is a local MCP server with a native macOS app. It lets Codex, Claude Code and other local stdio MCP clients work in the Google Chrome you already use, with your existing tabs, signed-in accounts and real mouse and keyboard.</p><p class="audience-note">For Mac users whose task needs their own Chrome login, existing tabs or a page shared with their assistant.</p>
           <div class="actions">
-            <a class="button primary" href="getting-started.html"
-              >Connect my Chrome <span aria-hidden="true">↗</span></a
-            ><a class="text-link" href="#film"
-              >Watch the 38-second film <span aria-hidden="true">↓</span></a
-            >
+            <a class="button primary" href="getting-started.html">Get started <span aria-hidden="true">↗</span></a><a class="text-link" href="#how-it-works">How it works <span aria-hidden="true">↓</span></a>
           </div>
           <p class="requirements">
-            Apple Silicon · macOS 13+ · Google Chrome<br />Source install ·
-            Node.js + Xcode Command Line Tools
+            Apple Silicon · macOS 13+ · Google Chrome<br>Codex, Claude Code
+            or another local MCP client · Install from source
           </p>
         </div>
-        <aside
-          class="handoff-story"
-          aria-label="Working together on the same page"
-        >
-          <p class="story-heading">Right where you're already working.</p>
+        <figure class="hero-media" data-motion="">
+          <picture>
+            <source srcset="./assets/takeover-card-en.png" media="(prefers-reduced-motion: reduce)">
+            <img src="./assets/takeover-card-en.gif" data-still="./assets/takeover-card-en.png" width="640" height="705" alt="MyChrome's takeover card titled 'AI is using your computer'. It shows the agent 'Claude · demo', the sample task 'Reply to the supplier', step 3 of 7, a checklist that advances from 'Hold keyboard and mouse' to 'Type 54 characters' and 'Done', the time left, speed controls and 'Press Esc twice to stop'.">
+          </picture>
+          <figcaption>
+            <span>The takeover card shown while your assistant uses the mouse and
+              keyboard. Rendered from MyChrome's own code with a sample task;
+              not a screen recording.</span><button type="button" class="motion-toggle" hidden="">
+              Pause animation
+            </button>
+          </figcaption>
+        </figure>
+      </section>
+      <section class="section wrap how-section" id="how-it-works" aria-labelledby="how-title">
+        <div class="section-heading">
+          <p class="eyebrow">HOW IT WORKS</p>
+          <h2 id="how-title">Same Chrome. Same task. Taking turns.</h2>
+          <p>
+            Your assistant joins the page you are already on. MyChrome tells it
+            to wait for your explicit instruction after a handoff. Continuation
+            follows the assistant’s instructions; MyChrome does not enforce a
+            cross-client continuation gate.
+          </p>
+        </div>
+        <div class="handoff-story" aria-label="Working together on the same page">
           <ol>
             <li>
               <span class="story-number" aria-hidden="true">01</span>
               <div>
-                <h2>Browse as usual</h2>
-                <p>Keep your tabs, signed-in account and work in progress.</p>
+                <h3>Browse as usual</h3>
+                <p>Keep your tabs, signed-in accounts and work in progress.</p>
               </div>
             </li>
             <li>
               <span class="story-number" aria-hidden="true">02</span>
               <div>
-                <h2>Bring in AI when you need it</h2>
-                <p>It reads the current page and works toward your goal.</p>
+                <h3>Ask for a hand</h3>
+                <p>Name the page and outcome. The assistant reads the page first, acts within your authorization and checks the result.</p>
               </div>
             </li>
             <li>
               <span class="story-number" aria-hidden="true">03</span>
               <div>
-                <h2>Take over when it's your turn</h2>
-                <p>Handle passwords, verification codes and personal checks.</p>
+                <h3>Take your turn</h3>
+                <p>
+                  Passwords, verification codes and personal checks come back
+                  to you.
+                </p>
               </div>
             </li>
             <li>
               <span class="story-number" aria-hidden="true">04</span>
               <div>
-                <h2>Say “continue” and carry on</h2>
-                <p>Your next instruction lets AI pick up the same task.</p>
+                <h3>Say “continue”</h3>
+                <p>
+                  The assistant rereads the page and carries on with the same
+                  task.
+                </p>
               </div>
             </li>
           </ol>
-          <p class="story-footer">Same Chrome. Same task.</p>
-        </aside>
+        </div>
       </section>
       <section class="context-strip">
         <div class="wrap">
           <p>Your pages. Your way of working.</p>
-          <span>Native macOS app · Existing Chrome · Local MCP</span>
+          <span>Native macOS app · Your existing Chrome · Local MCP · No extension
+            or debugging port</span>
         </div>
-      </section>
-      <section
-        class="section wrap film-section"
-        id="film"
-        aria-labelledby="film-title"
-      >
-        <div class="section-heading">
-          <p class="eyebrow">38 SECONDS IN YOUR CHROME</p>
-          <h2 id="film-title">A helping hand. On your page.</h2>
-        </div>
-        <figure class="film-figure">
-          <video
-            id="overview-video"
-            controls
-            preload="none"
-            playsinline
-            width="1920"
-            height="1080"
-            poster="./assets/mychrome-overview-poster.webp?v=0.12.1"
-            aria-label="MyChrome 38-second product overview"
-            aria-describedby="film-caption"
-          >
-            <source
-              src="./assets/mychrome-overview.mp4?v=0.12.1"
-              type="video/mp4"
-            />
-            <track
-              kind="subtitles"
-              src="./assets/mychrome-overview.en.vtt?v=0.12.1"
-              srclang="en"
-              label="English"
-              default
-            />
-            <p>If your browser cannot play the film, use the MP4 link below.</p>
-          </video>
-          <figcaption id="film-caption">
-            <p>
-              38 seconds · Product UI rendering and animation reconstruction
-              with sample content. No real posts were made.
-            </p>
-            <div class="film-links">
-              <a href="./assets/mychrome-overview.mp4?v=0.12.1" download
-                >Download MP4</a
-              ><a href="./assets/mychrome-overview.gif?v=0.12.1"
-                >Open 22-second GIF</a
-              >
-            </div>
-          </figcaption>
-        </figure>
-      </section>
+      </section><section class="section wrap routing-section" id="when-to-use"><div class="section-heading"><h2>When to use MyChrome vs. other browser tools</h2></div><div class="next-list"><article><h3>Public pages and APIs</h3><p>Use an API or web fetch first for public information.</p></article>
+<article><h3>JavaScript pages without a login</h3><p>Use headless Playwright first when the page does not need your signed-in session.</p></article>
+<article><h3>Your own Chrome, login or shared page</h3><p>Use MyChrome when the task needs your existing tabs, signed-in accounts or a page you and your assistant are working on together.</p></article>
+<article><h3>Sites that block automation</h3><p>Website compatibility depends on the site, account permissions and current page. At a CAPTCHA or bot check, MyChrome stops and hands over; it does not solve it. On access denial or rate limits, the assistant should stop and report.</p></article></div></section>
       <section class="section wrap habits-section" id="your-pace">
         <div class="habits-grid">
           <div class="section-heading">
             <p class="eyebrow">YOUR WAY OF WORKING</p>
-            <h2>A helping hand.<br />At your pace.</h2>
+            <h2>A helping hand.<br>At your pace.</h2>
             <p>
-              Choose typing or pasting and set the operating speed. You can also
-              sample your own typing and mouse rhythm to shape later input.
+              Choose how text is entered and how fast the assistant moves. You
+              can also sample your own typing and mouse rhythm to shape later
+              input.
             </p>
-            <a class="text-link" href="getting-started.html#personal-rhythm"
-              >Set your input habits ↗</a
-            >
+            <a class="text-link" href="getting-started.html#personal-rhythm">Set your input habits ↗</a>
           </div>
           <div class="habit-features">
             <article>
               <p class="feature-value">0.5×–3×</p>
-              <h3>Choose the operating speed</h3>
+              <h3>Choose the speed</h3>
               <p>
-                Your pace applies to keyboard and pointer operations. Select
-                Follow task, Type key by key or Paste.
+                Your speed applies to typing, pointer movement and scrolling.
+                Input can follow the task, go key by key, or paste.
               </p>
             </article>
             <article>
               <p class="feature-label">
-                Optional personal rhythm sampling <span>Experimental</span>
+                Optional rhythm sampling <span>Experimental</span>
               </p>
-              <h3>Use your typing and mouse rhythm</h3>
+              <h3>Use your own typing and mouse rhythm</h3>
               <p>
-                Record for 3 minutes. Statistics with enough samples shape later
-                input. You can turn their use off or delete the sample.
+                Record for three minutes. Timing statistics with enough samples
+                shape later input; the rest keep their defaults. Switch it off,
+                resample or delete it at any time.
               </p>
-              <p class="privacy-note">
-                Only a local statistical summary is saved, without typed
-                content, raw pointer paths or screenshots.
-              </p>
+              <p class="privacy-note">Only a local statistical summary is stored: no keys, typed text, screen coordinates, window or app names, or screenshots; raw events are never written to disk. It is not a behavioural clone and does not guarantee a site will accept automation.</p>
             </article>
           </div>
         </div>
@@ -264,8 +181,8 @@
           <p class="eyebrow">YOU CAN ASK</p>
           <h2>Start with what you're already doing.</h2>
           <p>
-            These are example requests you can give your AI. Open your own page,
-            explain the outcome, and let it help from there.
+            Example requests you can give your assistant. Open your own page,
+            describe the outcome, and let it help from there.
           </p>
         </div>
         <div class="task-list">
@@ -273,57 +190,62 @@
             <span class="step-number">01</span>
             <div>
               <h3>Update your LinkedIn page</h3>
-              <p>Work in your current page using the details you provide.</p>
+              <p>Work on your open page with the details you provide.</p>
               <p class="example">
-                “Use MyChrome to review my LinkedIn page. Update my About and
-                experience sections with these details, then check the changes.”
+                “Use MyChrome on the LinkedIn page I have open. Update my About
+                and experience sections with these details, then show me what
+                changed.”
               </p>
             </div>
           </article>
           <article class="task-row">
             <span class="step-number">02</span>
             <div>
-              <h3>See who's reached out on Facebook</h3>
+              <h3>See who needs a reply</h3>
               <p>
-                Check your messages and notifications for what needs a response.
+                Check your messages and notifications for anything waiting on
+                you.
               </p>
               <p class="example">
-                “Check whether anyone has contacted me on Facebook. List the
-                messages I should reply to and tell me where you need my help.”
+                “Check my Facebook notifications and messages for people trying
+                to reach me. List who needs a response and tell me where you
+                need my help.”
               </p>
             </div>
           </article>
           <article class="task-row">
             <span class="step-number">03</span>
             <div>
-              <h3>Publish your article where you choose</h3>
+              <h3>Publish an article you wrote</h3>
               <p>
-                Facebook, Xiaohongshu, Reddit or LinkedIn—you specify the
-                destination accounts and publishing scope.
+                Facebook, Xiaohongshu, Reddit or LinkedIn: you choose the
+                accounts and what gets published.
               </p>
               <p class="example">
-                “Publish this article I've written to the accounts I specify.
-                Fill in what each page requires and check each published
-                result.”
+                “Publish this finished article to the accounts I specify. Fill
+                in what each page requires, then report each result and its
+                link.”
               </p>
             </div>
           </article>
         </div>
         <p class="section-note">
-          These are task ideas, not a claim that every workflow on these sites
-          has been verified. What works depends on the website, account
-          permissions and current page.
+          These are task ideas, not verified case studies for these sites. What
+          works depends on the website, your account permissions and the
+          current page.
         </p>
       </section>
       <section class="control-section">
         <div class="wrap control-grid">
           <div>
-            <p class="eyebrow">HAND IT OVER. TAKE IT BACK.</p>
-            <h2>You and AI.<br />Taking turns.</h2>
+            <p class="eyebrow">YOU STAY IN CONTROL</p>
+            <h2>You and AI.<br>Taking turns.</h2>
             <p>
-              AI uses your Mac's real pointer and keyboard. When a step needs
-              you, control comes back. Complete it, then explicitly say
-              “continue” in your AI conversation to carry on.
+              The assistant uses your Mac's real pointer and keyboard, and a
+              takeover card shows the task, each step and the time left. Your
+              ordinary input is held back while it works. At a CAPTCHA or bot
+              check, MyChrome stops and hands the page to you; it does not try
+              to solve it.
             </p>
           </div>
           <div class="control-details">
@@ -331,14 +253,8 @@
               <kbd>esc</kbd><span>+</span><kbd>esc</kbd>
             </div>
             <h3>Want control back? Press Esc twice.</h3>
-            <p>
-              Ordinary input is intercepted during takeover. Double Esc stops
-              the current agent; global pause prevents further input across
-              agents. Stopping does not undo actions already sent.
-            </p>
-            <a class="text-link" href="getting-started.html#your-controls"
-              >Explore the controls ↗</a
-            >
+            <p>Press Esc twice within 0.8 seconds to stop the current agent and regain the mouse and keyboard. Another takeover needs a new instruction. MyChrome’s pause control blocks further input from every connection. Stopping does not undo actions already sent.</p>
+            <a class="text-link" href="getting-started.html#your-controls">Explore the controls ↗</a>
           </div>
         </div>
       </section>
@@ -346,26 +262,16 @@
         <div class="section-heading">
           <p class="eyebrow">BRING YOUR ASSISTANT</p>
           <h2>Your assistant, connected.</h2>
-          <p>
-            Codex and Claude Code can both use the browser tools. Native
-            conversation features depend on the client. The getting-started
-            guide supports English and Chinese; the main workspace currently
-            uses Chinese labels.
-          </p>
+          <p>Codex and Claude Code can use the browser tools and start separate conversations from MyChrome with a model and supported reasoning effort. Other local stdio MCP clients can connect with the printed paths.</p>
         </div>
-        <div
-          class="table-scroll"
-          role="region"
-          tabindex="0"
-          aria-label="Client compatibility"
-        >
+        <div class="table-scroll" role="region" tabindex="0" aria-label="Client compatibility">
           <table>
             <thead>
               <tr>
                 <th scope="col">Capability</th>
                 <th scope="col">Codex</th>
                 <th scope="col">Claude Code</th>
-                <th scope="col">Other stdio MCP clients</th>
+
               </tr>
             </thead>
             <tbody>
@@ -373,22 +279,46 @@
                 <th scope="row">Read and operate Chrome</th>
                 <td>Supported</td>
                 <td>Supported</td>
-                <td>Local stdio support required</td>
+
               </tr>
               <tr>
-                <th scope="row">Live text and replies in MyChrome</th>
-                <td>Supported integration + associated thread</td>
-                <td>Not available</td>
-                <td>No adapter provided</td>
+                <th scope="row">New conversation from MyChrome</th>
+                <td>Supported</td>
+                <td>Supported</td>
+
+              </tr>
+              <tr>
+                <th scope="row">Existing conversation shown in MyChrome</th>
+                <td>With a supported integration and an associated thread</td>
+                <td>
+                  Read-only live view of your terminal session, available in 0.15.0
+                </td>
+
               </tr>
             </tbody>
           </table>
         </div>
         <p class="section-note">
           MyChrome runs on the Mac whose Chrome it controls. Your AI client
-          provides model access and its own account; its charges or subscription
-          may apply.
+          provides model access under its own account; its charges or
+          subscription may apply. In 0.15.0, MyChrome's windows
+          and notifications follow your Mac's language (English or Chinese),
+          with a Language setting under Settings in the menu bar panel.
         </p>
+      </section>
+      <section class="section wrap next-section" id="next-release" aria-labelledby="next-title">
+        <div class="section-heading">
+          <p class="eyebrow">NEW IN 0.15.0</p>
+          <h2 id="next-title">New in 0.15.0.</h2>
+          <p>
+            Released on 2026-11-07.
+          </p>
+        </div>
+        <div class="next-list"><article><h3>Claude Code conversation mirror</h3><p>In 0.15.0, a terminal Claude Code session connected to MyChrome appears as a read-only mirror of your prompts and Claude’s reply text from connection time. During takeover, the sidebar shows Claude’s reply text. Thinking, tool calls and tool results are not shown. You reply in the terminal; MyChrome never types into it. Mirror text stays in memory and is not written to logs or files. It is on by default; set <code>CHROME_BRIDGE_CLAUDE_FEED=0</code> in the MCP server’s environment and reconnect the MCP client to turn it off.</p></article>
+<article><h3>Focus handling</h3><p>In 0.15.0, MyChrome brings Google Chrome forward before acting when it is not in front. It uses the pointer landing point and checks the page’s keyboard focus before every key. If it still cannot act, it returns quickly and says what was in front and whether anything was sent.</p></article>
+<article><h3>A bounded wait for text recognition</h3><p>In 0.15.0, if text recognition is slow, a screenshot returns about 8 seconds after recognition starts, with the image and a note that the text was not ready. Background warm-up checks for ongoing input before starting and defers when it finds any.</p></article>
+<article><h3>Use the page you already have open</h3><p>In 0.15.0, when you ask the assistant to work on a page you already have open or in your own Google Chrome, MyChrome’s instructions direct it to that exact tab ahead of other browser tools. Reconnect the MCP client to receive the new instructions.</p></article>
+<article><h3>MyChrome in your language</h3><p>In 0.15.0, MyChrome’s windows and notifications follow your Mac’s language (English or Chinese), with a Language setting under Settings in the menu bar panel. The takeover card and sidebar also follow that language. You can set <code>CHROME_BRIDGE_UI_LANG=en|zh</code>; agent-facing tool text does not change.</p></article></div>
       </section>
       <section class="install-section" id="get-started">
         <div class="wrap install-grid">
@@ -396,25 +326,22 @@
             <p class="eyebrow">START IN YOUR CHROME</p>
             <h2>Bring AI into the work at hand.</h2>
             <p>
-              Apple Silicon · macOS 13+ · Google Chrome. Node.js 24+
-              recommended; 20.19+ and 22.13+ also supported. Git and Xcode
-              Command Line Tools required.
+              Apple Silicon · macOS 13+ · Google Chrome in /Applications.
+              Node.js 24+ recommended; 20.19+ and 22.13+ also supported. Git
+              and Xcode Command Line Tools required.
             </p>
-            <a class="text-link" href="getting-started.html"
-              >Full setup and permissions guide ↗</a
-            >
+            <a class="text-link" href="getting-started.html">Full setup and permissions guide ↗</a>
           </div>
           <div class="install-code">
             <div class="code-heading">
-              <span>RUN IN TERMINAL</span
-              ><button data-copy="install-command" hidden>Copy</button>
+              <span>RUN IN TERMINAL</span><button data-copy="install-command" hidden="">Copy</button>
             </div>
             <pre><code id="install-command">git clone https://github.com/shuaige121/mychrome-mcp.git
 cd mychrome-mcp
 bash scripts/setup.sh</code></pre>
             <p role="status" class="copy-status" aria-live="polite"></p>
             <p class="install-note">
-              Install from source · MIT open source · No npm release
+              Install from source · MIT open source · Not published to npm
             </p>
           </div>
         </div>
@@ -422,30 +349,14 @@ bash scripts/setup.sh</code></pre>
     </main>
     <footer class="site-footer wrap">
       <div>
-        <a class="wordmark" href="./"
-          >MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a
-        >
+        <a class="wordmark" href="./">MyChrome<span class="wordmark-dot" aria-hidden="true">.</span></a>
         <p>Your Chrome. A hand when you need one.</p>
       </div>
       <div class="footer-links">
-        <a
-          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md"
-          >Support</a
-        ><a
-          href="https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md"
-          >Security</a
-        ><a
-          href="https://github.com/shuaige121/mychrome-mcp/blob/main/CONTRIBUTING.md"
-          >Contribute</a
-        ><a href="./llms.txt">llms.txt</a
-        ><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE"
-          >MIT License</a
-        >
+        <a href="https://github.com/shuaige121/mychrome-mcp/blob/main/SUPPORT.md">Support</a><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/SECURITY.md">Security</a><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/CONTRIBUTING.md">Contribute</a><a href="./llms.txt">llms.txt</a><a href="https://github.com/shuaige121/mychrome-mcp/blob/main/LICENSE">MIT License</a>
       </div>
-      <p class="legal">
-        © 2026 Leonard Chow. Independent project. Not affiliated with or
-        endorsed by Google. Chrome is a trademark of Google LLC.
-      </p>
+      <p class="legal">Copyright Leonard Chow. MyChrome is an independent project, not affiliated with or endorsed by Google. Chrome is a trademark of Google LLC.</p>
     </footer>
-  </body>
-</html>
+
+
+</body></html>

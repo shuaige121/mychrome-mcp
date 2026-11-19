@@ -121,3 +121,31 @@ for (const kind of ['click', 'move']) test(`known zero-input ${kind} failure kee
   h.state.view = [{ role: 'heading', name: 'Different course' }];
   await assert.rejects(h.c.post(h.session, h.ctx, 'key', { op: 'key' }), { code: 'page_changed' });
 });
+
+for (const points of [1, 3, null, '0']) test(`attempted or uncertain move (${JSON.stringify(points)}) does not re-arm the fingerprint`, async () => {
+  const h = harness();
+  const original = Object.assign(Error('Post-move refusal'), { code: 'guard_cursor_moved', reply: { postedInput: 0, points } });
+  h.session.request = async () => { throw original; };
+  await assert.rejects(h.c.pointerTo(h.session, { x: 10, y: 20 }, {}, h.ctx), error => error === original && error.noRetry === true);
+  assert.equal(h.call.routineInputStarted, true);
+  assert.deepEqual(h.state.sent, ['move']);
+  h.state.view = [{ role: 'dialog', name: 'Menu opened by motion' }];
+  h.session.request = async () => ({ ok: true });
+  await h.c.post(h.session, h.ctx, 'key', { op: 'key' });
+});
+
+test('unknown move failure prevents retry even without an action ledger', async () => {
+  const h = harness(), original = Object.assign(Error('Missing move receipt'), { code: 'guard_cursor_moved' });
+  h.session.request = async () => { throw original; };
+  await assert.rejects(h.c.pointerTo(h.session, { x: 10, y: 20 }, {}), error => error === original && error.noRetry === true);
+  assert.equal(h.call.routineInputStarted, true);
+});
+
+test('a confirmed skipped move retains the first-input fingerprint requirement', async () => {
+  const h = harness();
+  h.session.request = async () => ({ ok: true, skippedMove: true, points: 0 });
+  await h.c.pointerTo(h.session, { x: 10, y: 20 }, {});
+  assert.equal(h.call.routineInputStarted, false);
+  h.state.view = [{ role: 'heading', name: 'Different course' }];
+  await assert.rejects(h.c.post(h.session, h.ctx, 'key', { op: 'key' }), { code: 'page_changed' });
+});

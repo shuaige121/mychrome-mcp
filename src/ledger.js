@@ -10,6 +10,8 @@
  * States (owner = this server process)
  *   ready        mine and live; the markers of my last read_page are usable (or not read yet)
  *   stale        mine and live, but its URL changed after my last read_page: markers expired
+ *   uncertain    new tab with incomplete original navigation evidence; continue in this tab,
+ *                keep automatic-close protection, and resolve only with the original observer
  *   taken_over   mine, but the user may have taken it over (registry flag): do not operate it
  *   closed       I closed it (close_tab confirmed)                              terminal
  *   gone         it disappeared from Chrome (or from the registry)               terminal
@@ -19,15 +21,16 @@
  *
  * Transitions (nextTabState): row = state before, column = event; · = unchanged
  *
- *                open   popup  navigated  read   takeover    close   missing  foreign      owner_dead
- *   (none)       ready  ready  ·          ·      ·           ·       ·        other_agent  ·
- *   ready        ready  ready  stale¹     ready  taken_over  closed  gone     ·            ·
- *   stale        ready  ready  stale      ready  taken_over  closed  gone     ·            ·
- *   taken_over   ready  ready  ·          ·      taken_over² ·       gone     ·            ·
- *   closed       ready  ready  ·          ·      ·           ·       ·        ·            ·
- *   gone         ready  ready  ·          ·      ·           ·       ·        ·            ·
- *   other_agent  ·      ·      ·          ·      ·           ·       gone     ·            orphan
- *   orphan       ·      ·      ·          ·      ·           ·       gone     ·            ·
+ *                open   popup  navigated  read       uncertain  verified  takeover    close   missing  foreign      owner_dead
+ *   (none)       ready  ready  ·          ·          ·          ·         ·           ·       ·        other_agent  ·
+ *   ready        ready  ready  stale¹     ready      uncertain  ·         taken_over  closed  gone     ·            ·
+ *   stale        ready  ready  stale      ready      uncertain  ·         taken_over  closed  gone     ·            ·
+ *   uncertain    ready  ready  uncertain  uncertain  ·          ready     taken_over  ·       gone     ·            ·
+ *   taken_over   ready  ready  ·          ·          ·          ·         taken_over² ·       gone     ·            ·
+ *   closed       ready  ready  ·          ·          ·          ·         ·           ·       ·        ·            ·
+ *   gone         ready  ready  ·          ·          ·          ·         ·           ·       ·        ·            ·
+ *   other_agent  ·      ·      ·          ·          ·          ·         ·           ·       gone     ·            orphan
+ *   orphan       ·      ·      ·          ·          ·          ·         ·           ·       gone     ·            ·
  *
  *   open   open_tab registered it to me; popup: my own click opened it and it was registered
  *          to me (`from` = the tab clicked). Both start the entry afresh (Chrome may reuse an id).
@@ -38,6 +41,9 @@
  *          ¹ stale only when that differs from the URL I last saw (my read_page, else open/popup).
  *   read   read_page read it: its markers are fresh. Taken over stays taken over (sticky, as the
  *          registry flag is).
+ *   uncertain  new open lacks complete attribution; it does not establish user takeover.
+ *   verified   the original observer has supplied complete evidence for the same native target;
+ *          readiness recovers, while the registry's automatic-close protection remains.
  *   takeover  the registry flag is set (moved window, URL not the agent's, user viewing or
  *          interrupting: src/tabs.js checkTakeover). close_tab refuses such a tab, so close never
  *          moves it. What the agent is told to do depends on why (nextAction): dragged away or the
@@ -53,10 +59,10 @@
  */
 import { sameUrl } from './tabs.js';
 
-export const STATES = ['ready', 'stale', 'taken_over', 'closed', 'gone', 'other_agent', 'orphan'];
-export const EVENTS = ['open', 'popup', 'navigated', 'read', 'takeover', 'close', 'missing', 'foreign', 'owner_dead'];
-const MINE = new Set(['ready', 'stale', 'taken_over', 'closed', 'gone']);
-const LIVE = new Set(['ready', 'stale']);
+export const STATES = ['ready', 'stale', 'uncertain', 'taken_over', 'closed', 'gone', 'other_agent', 'orphan'];
+export const EVENTS = ['open', 'popup', 'navigated', 'read', 'uncertain', 'verified', 'takeover', 'close', 'missing', 'foreign', 'owner_dead'];
+const MINE = new Set(['ready', 'stale', 'uncertain', 'taken_over', 'closed', 'gone']);
+const LIVE = new Set(['ready', 'stale', 'uncertain']);
 const TERMINAL = new Set(['closed', 'gone']);
 /** Takeover reasons that mean "the user has it now" (takeoverKind 'leave'). */
 const LEAVE = new Set(['moved_window', 'user_viewing']);
@@ -78,22 +84,27 @@ export function nextTabState(entry, ev) {
       return { tabId: Number(ev.tabId ?? entry?.tabId), state: 'ready', url: ev.url ?? null, title: ev.title ?? null,
         base: ev.url ?? null, from: ev.type === 'popup' ? (ev.from ?? null) : null, why: null, owner: null, at };
     case 'navigated':
-      if ((s !== 'ready' && s !== 'stale') || ev.url == null) return entry;
+      if (!LIVE.has(s) || ev.url == null) return entry;
       if (s === 'ready' && !sameUrl(ev.url, entry.base)) return to('stale', { url: ev.url });
       return sameUrl(ev.url, entry.url) ? entry : { ...entry, url: ev.url };
     case 'read': {
-      if (s !== 'ready' && s !== 'stale') return entry;
+      if (!LIVE.has(s)) return entry;
       const url = ev.url ?? entry.url;
+      if (s === 'uncertain') return to('uncertain', { url, title: ev.title ?? entry.title });
       if (s === 'ready' && sameUrl(url, entry.base) && sameUrl(url, entry.url) && (ev.title == null || ev.title === entry.title)) return entry;
       return to('ready', { url, base: url, title: ev.title ?? entry.title });
     }
+    case 'uncertain':
+      return s === 'ready' || s === 'stale' ? to('uncertain', { why: 'navigation_unverified' }) : entry;
+    case 'verified':
+      return s === 'uncertain' ? to('ready', { why: null, url: ev.url ?? entry.url, base: ev.url ?? entry.url }) : entry;
     case 'takeover': {
       // A tab handed to the user (wait_for_user) and taken over again after that wait ended:
       // the newer reason wins over the old help (²). seenAt: when that evidence was observed.
       const h = entry && entry.helped;
       const newer = h && h.until != null && typeof ev.seenAt === 'number' && ev.seenAt > h.until && LEAVE.has(ev.why);
       if (s === 'taken_over') return newer ? to('taken_over', { why: ev.why, helped: null }) : entry;
-      if (s !== 'ready' && s !== 'stale') return entry;
+      if (!LIVE.has(s)) return entry;
       return to('taken_over', { why: ev.why ?? null, ...(newer ? { helped: null } : {}) });
     }
     case 'close':
@@ -162,7 +173,7 @@ export class TabLedger {
   }
   /** Mine, in list order: live ones first (by tab id), then taken over, then closed / gone. */
   entries() {
-    const rank = { ready: 0, stale: 0, taken_over: 1, closed: 2, gone: 2 };
+    const rank = { ready: 0, stale: 0, uncertain: 0, taken_over: 1, closed: 2, gone: 2 };
     return [...this.tabs.values()].sort((a, b) => (rank[a.state] - rank[b.state]) || (a.tabId - b.tabId));
   }
   /** The ones the agent can still use. */
@@ -204,6 +215,7 @@ export function takeoverKind(e) {
 /** One-line next step for a tab of mine that is not ready (null: nothing to do). */
 export function nextAction(e) {
   switch (e.state) {
+    case 'uncertain': return `加载归属观察不完整：先 read_page(tab=${e.tabId}) 核对当前页面，在这个标签继续已授权任务；不会自动关闭`;
     case 'stale': return `网址在你上次 read_page 之后变了，编号已失效：先 read_page(tab=${e.tabId})`;
     case 'taken_over': {
       const why = TAKEOVER_WHY[e.why] || '原因不明';
@@ -237,7 +249,7 @@ export function classifyRecord(rec, { myPid, isAlive }) {
 
 /** The section of list_tabs with this session's tabs (lines; titles and URLs from `entries`). */
 export function mineSection(entries, { pid = null } = {}) {
-  const head = `你（这个会话${pid != null ? `，进程 ${pid}` : ''}）的标签`;
+  const head = `你（这个连接${pid != null ? `，进程 ${pid}` : ''}；主会话与子 agent 共用）的标签`;
   if (!entries.length) return [`${head}：没有。open_tab 打开的、和你在自己标签里点击弹出的新标签会列在这里。`];
   const out = [`${head}（${entries.length} 个）：`];
   for (const e of entries) {
@@ -253,7 +265,7 @@ export function mineSection(entries, { pid = null } = {}) {
 /** One tab in a footer or a recovery line, at most `width` characters. */
 export function shortItem(e, width = 80) {
   const TK = { helped: '·用户处理过，等继续后读页', check: '·先 read_page 确认', leave: '·别再操作' };
-  const note = e.state === 'stale' ? '·先 read_page' : e.state === 'taken_over' ? TK[takeoverKind(e)] : e.state === 'gone' ? '·已不在' : '';
+  const note = e.state === 'stale' ? '·先 read_page' : e.state === 'uncertain' ? '·原标签继续，保护关闭' : e.state === 'taken_over' ? TK[takeoverKind(e)] : e.state === 'gone' ? '·已不在' : '';
   const from = e.from != null && e.state === 'ready' ? `（tab=${e.from} 点出）` : '';
   const head = `tab=${e.tabId} ${e.state}${note}${from}`;
   if (TERMINAL.has(e.state)) return head;

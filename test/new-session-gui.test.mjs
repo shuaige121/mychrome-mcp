@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -28,7 +28,11 @@ const fixture = `import fs from 'node:fs';
 if (process.argv[1].includes('early-exit')) process.exit(1);
 let input=''; for await (const chunk of process.stdin) input+=chunk;
 const request=JSON.parse(input);
-if (request.mode==='hang') { fs.writeFileSync(request.pidFile, String(process.pid)); setInterval(()=>{}, 50); }
+if (request.mode==='hang') {
+  fs.writeFileSync(request.pidFile, ''); // the file exists but is empty until the pid lands
+  if (!request.pidNever) { await new Promise(r=>setTimeout(r, request.pidDelayMs||0)); fs.writeFileSync(request.pidFile, String(process.pid)); }
+  setInterval(()=>{}, 50);
+}
 else if (request.mode==='oversized') console.log(JSON.stringify({ok:true, text:'x'.repeat(300000)}));
 else if (request.mode==='invalid') console.log('not JSON');
 else console.log(JSON.stringify({ok:true, request, argv:process.argv.slice(2)}));
@@ -40,6 +44,7 @@ for (const root of [fixtureRoot, earlyRoot]) {
 }
 const swift = path.join(directory, 'probe.swift'), binary = path.join(directory, 'probe');
 writeFileSync(swift, `import Foundation
+func L(_ zh: String, _ en: String) -> String { zh }   // I18N1: the production two-language pair (src/onboarding-ui.swift), Chinese here
 let ROOT_DIR = "/synthetic/source"
 ${core}
 struct ServerInfo {
@@ -214,12 +219,28 @@ case "launcher-json", "launcher-oversized", "launcher-invalid", "launcher-early-
         let echoed = response?["request"] as! [String: Any]
         precondition(NSDictionary(dictionary: echoed).isEqual(to: request), "Prompt must arrive on stdin, with exact bytes and no shell evaluation")
     } else { precondition(response?["ok"] as? Bool == false && response?["delivery"] as? String == "unknown") }
-case "launcher-cancel", "launcher-timeout":
+case "launcher-cancel", "launcher-timeout", "launcher-pid-unparseable":
     let task = SessionLaunchProcess(); var response: [String: Any]?
     let pidFile = directory + "/" + scenario + ".pid"
-    task.start(node: node, root: fixtureRoot, request: ["mode": "hang", "pidFile": pidFile], timeout: scenario == "launcher-timeout" ? 0.2 : 3) { response = $0 }
-    spin(until: { FileManager.default.fileExists(atPath: pidFile) })
-    let pid = Int32(try String(contentsOfFile: pidFile, encoding: .utf8))!
+    let never = scenario == "launcher-pid-unparseable"
+    // The fixture creates the pid file empty, then writes the pid 150ms later, so a reader that
+    // trusts file existence always sees empty content first. The timeout scenario therefore needs a
+    // launcher timeout well above that delay plus node start-up.
+    task.start(node: node, root: fixtureRoot, request: ["mode": "hang", "pidFile": pidFile, "pidDelayMs": 150, "pidNever": never],
+               timeout: scenario == "launcher-timeout" ? 1.5 : 5) { response = $0 }
+    var parsedPid: Int32?
+    let pidDeadline = Date().addingTimeInterval(never ? 0.5 : 3)
+    spin(until: {
+        if parsedPid == nil, let text = try? String(contentsOfFile: pidFile, encoding: .utf8) {
+            parsedPid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return parsedPid != nil || Date() > pidDeadline
+    })
+    guard let pid = parsedPid else {
+        task.cancel()
+        FileHandle.standardError.write(Data("pid file \\(pidFile) never held a parseable Int32 before the deadline\\n".utf8))
+        exit(2)
+    }
     if scenario == "launcher-cancel" { task.cancel() }
     spin(until: { response != nil })
     precondition(response?["code"] as? String == (scenario == "launcher-cancel" ? "cancelled" : "timeout"))
@@ -229,6 +250,11 @@ default: fatalError("Unknown scenario")
 print("ok")
 `);
 execFileSync('/usr/bin/swiftc', [swift, '-o', binary], { timeout: 60_000, stdio: 'pipe' });
+test('native new-session behavior: unparseable pid file fails with a controlled exit and message', () => {
+  const r = spawnSync(binary, ['launcher-pid-unparseable', process.execPath, fixtureRoot, earlyRoot, directory], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(r.status, 2, `controlled non-zero exit, got ${r.status}/${r.signal}`);
+  assert.ok(r.stderr.includes(`pid file ${path.join(directory, 'launcher-pid-unparseable.pid')} never held a parseable Int32`), r.stderr);
+});
 for (const scenario of ['model-effort-switch', 'unknown-default-effort', 'provider-and-directory', 'directory-preserves-selection', 'catalog-failure-retry', 'single-empty-create',
   'failure-preserves-draft', 'uncertain-same-request', 'created-worker-ended', 'close-and-exit', 'exact-created-identity', 'worker-process-identity',
   'launcher-json', 'launcher-oversized', 'launcher-invalid', 'launcher-early-exit', 'launcher-cancel', 'launcher-timeout']) {

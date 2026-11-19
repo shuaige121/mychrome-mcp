@@ -232,6 +232,7 @@ function assertClosedAfterRecording(W) {
 console.log('promo-record-v02: setup (real read_page on jsdom)');
 
 await t('the real read_page output is what the takes parse: httpbin markers, the one link, the CAPTCHA stop', async () => {
+  assert.doesNotMatch(FORM_READ, /=== 可点击元素索引/, 'use actual inline output, never reconstruct the old index');
   assert.deepEqual(P.r1Targets(FORM_READ), { medium: 8, topping: 11, note: 17 });
   assert.equal(P.r2Target(FORM_READ), 17);
   assert.match(FORM_READ, /^\[18\] button \| Submit order$/m);
@@ -249,6 +250,29 @@ await t('the real read_page output is what the takes parse: httpbin markers, the
   assert.equal((FIXTURE_HTML.match(/<a\b/g) || []).length, 1);
   assert.match(FIXTURE_HTML, /<a href="https:\/\/www\.google\.com\/recaptcha\/api2\/demo">Open the sign-up demo<\/a>/);
   assert.doesNotMatch(FIXTURE_HTML, /<(script|form|iframe|input|button)\b/i);
+});
+
+await t('inline controls separated by prose retain unique IDs; repeated or ambiguous targets are refused', async () => {
+  const html = '<p>Choose a size <input type="radio" aria-label="Medium"></p>' +
+    '<p>Then a topping <input type="checkbox" aria-label="Extra Cheese"></p>' +
+    '<p>Delivery notes <textarea aria-label="Delivery instructions"></textarea></p>';
+  const read = await realRead(html, P.URLS.form);
+  assert.deepEqual(P.r1Targets(read), { medium: 1, topping: 2, note: 3 });
+  assert.deepEqual(P.parseIndex(read).map(entry => entry.marker), [1, 2, 3]);
+  for (const [extra, missing] of [
+    ['<input type="radio" aria-label="Medium">', /size "Medium".*found 2/],
+    ['<input type="checkbox" aria-label="Extra Cheese">', /topping "Extra Cheese".*found 2/],
+    ['<textarea aria-label="Another note"></textarea>', /delivery-instructions box.*found 2/],
+  ]) {
+    assert.deepEqual(P.r1Targets(read + '\n' + extra), { medium: 1, topping: 2, note: 3 },
+      'raw HTML is not a control description');
+    const ambiguous = await realRead(html + extra, P.URLS.form);
+    assert.throws(() => P.r1Targets(ambiguous), missing);
+  }
+  assert.throws(() => P.parseIndex(read + '\n[1] label | Another target'), /repeated marker \[1\]/);
+  const sensitive = await realRead('<input type="text" aria-label="Medium"><input type="email" aria-label="Extra Cheese">' +
+    '<button>Submit order</button>', P.URLS.form);
+  assert.throws(() => P.r1Targets(sensitive), /size "Medium".*found 0/);
 });
 
 await t('env set before src/index.js loads: task/plan gap 3 s, habits off, takeover max 18 s; the script imports no project module at load', async () => {

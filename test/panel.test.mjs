@@ -223,6 +223,10 @@ await check('visible feed updates in place without inferring any completed step 
   assert.doesNotMatch(JSON.stringify(st), /Still checking|Existing visible/, 'helper status must not copy conversation content');
   const next = await s.send({ op: 'veil', veil: { label: 'Reading' } });
   assert.equal(next.panel.feedCount, 2, 'reading gaps must retain the visible feed');
+  await s.send({ op: 'panel', feedEntries: [], feedStatus: 'unavailable', feedReason: 'unsupported_client' });
+  assert.equal((await s.send({ op: 'status' })).panel.feedReason, 'unsupported_client');
+  await s.send({ op: 'panel', feedEntries: [], feedStatus: 'connected', feedReason: null });
+  assert.equal((await s.send({ op: 'status' })).panel.feedReason, '', 'a new connection clears the old capability reason');
   const e = await s.end();
   assert.deepEqual(e.panel.stages, [], 'releasing input cannot mark any question complete');
 });

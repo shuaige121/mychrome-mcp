@@ -263,9 +263,10 @@ try {
   const third = await carriedWorker(carry);
   await third.initialize('Claude');
   await eventually(async () => (await third.presence())?.conversationProvider === 'Claude', 'verified Claude provider');
-  const unsupported = await third.gui('snapshot');
-  assert.equal(unsupported.snapshot.reason, 'unsupported_client');
-  assert.equal(unsupported.snapshot.threadId, null);
+  // CC-LIVE: no CLAUDECODE / session id in this worker's environment: an honest reason, no carried Codex thread.
+  const unavailable = await third.gui('snapshot');
+  assert.equal(unavailable.snapshot.reason, 'transcript_unavailable');
+  assert.equal(unavailable.snapshot.threadId, null);
   assert.equal(connections, beforeClaude);
   const discarded = await third.handover();
   assert.equal(discarded.guiBinding, undefined);

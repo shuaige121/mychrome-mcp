@@ -25,8 +25,10 @@ async function open(t, { begin = true, takeover = true } = {}) {
   return s;
 }
 
-test('cancel releases only this held session and leaves cleanup available', async t => {
+test('cancel releases this session, refuses scene restoration and keeps resource cleanup available', async t => {
   const s = await open(t);
+  const cursor = (await s.request({ op: 'status' }, { raw: true })).cursor;
+  assert.ok(cursor && Number.isFinite(cursor.x) && Number.isFinite(cursor.y));
   const cancelled = await s.request({ op: 'cancel' }, { raw: true });
   assert.equal(cancelled.ok, true);
   assert.equal(cancelled.cancelled, true);
@@ -37,8 +39,11 @@ test('cancel releases only this held session and leaves cleanup available', asyn
   const refused = await s.request({ op: 'key', name: 'return' }, { raw: true });
   assert.equal(refused.error, 'aborted');
   assert.deepEqual(refused.posted, []);
-  assert.equal((await s.request({ op: 'warp', to: { x: 10, y: 20 } }, { raw: true })).ok, true);
-  assert.equal((await s.request({ op: 'handBack', pid: 99 }, { raw: true })).ok, true);
+  const warp = await s.request({ op: 'warp', to: { x: cursor.x + 10, y: cursor.y + 20 } }, { raw: true });
+  assert.equal(warp.ok, false); assert.equal(warp.error, 'aborted'); assert.deepEqual(warp.posted, []);
+  assert.deepEqual((await s.request({ op: 'status' }, { raw: true })).cursor, cursor, 'CGWarp produces no event: also verify the pointer did not move');
+  const handBack = await s.request({ op: 'handBack', pid: 99 }, { raw: true });
+  assert.equal(handBack.ok, false); assert.equal(handBack.error, 'aborted'); assert.deepEqual(handBack.posted, []);
   assert.equal((await s.close()).reason, 'end');
 });
 

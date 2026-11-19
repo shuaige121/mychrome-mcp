@@ -27,8 +27,8 @@ struct SessionModelChoice: Identifiable {
 }
 
 func sessionEffortName(_ value: String) -> String {
-    ["none": "不额外思考", "minimal": "最少", "low": "低", "medium": "中", "high": "高",
-     "xhigh": "更高", "max": "最高", "default": "默认", "auto": "自动"][value] ?? value
+    ["none": L("不额外思考", "No extra reasoning"), "minimal": L("最少", "Minimal"), "low": L("低", "Low"), "medium": L("中", "Medium"), "high": L("高", "High"),
+     "xhigh": L("更高", "Higher"), "max": L("最高", "Highest"), "default": L("默认", "Default"), "auto": L("自动", "Automatic")][value] ?? value
 }
 
 struct SessionCreationReceipt: Equatable {
@@ -45,18 +45,18 @@ struct SessionCreationReceipt: Equatable {
 
 func sessionLaunchMessage(_ code: String, catalog: Bool = false) -> String {
     switch code {
-    case "client_missing": return "未找到这个 AI 客户端。请先安装并登录，再重试。"
-    case "auth_required", "not_authenticated", "login_required", "unauthorized": return "这个客户端需要登录。请在客户端完成登录后重试。"
-    case "invalid_directory": return "这个工作目录不可用，请重新选择文件夹。"
-    case "model_unavailable", "effort_unavailable": return "所选模型或思考强度已不可用，请重新读取模型后再试。"
-    case "models_unavailable", "catalog_unavailable": return "暂时无法读取可用模型。请确认客户端已登录，然后重试。"
-    case "node_unavailable": return "未找到可用的 Node.js。请在入门引导中检查安装。"
-    case "invalid_prompt", "too_large": return "首条任务过长或含有无效字符，请缩短后再试。"
+    case "client_missing": return L("未找到这个 AI 客户端。请先安装并登录，再重试。", "This AI client was not found. Install it and sign in, then retry.")
+    case "auth_required", "not_authenticated", "login_required", "unauthorized": return L("这个客户端需要登录。请在客户端完成登录后重试。", "This client needs you to sign in. Sign in within the client, then retry.")
+    case "invalid_directory": return L("这个工作目录不可用，请重新选择文件夹。", "This working folder is unavailable. Choose a folder again.")
+    case "model_unavailable", "effort_unavailable": return L("所选模型或思考强度已不可用，请重新读取模型后再试。", "The chosen model or reasoning effort is no longer available. Reload the models and try again.")
+    case "models_unavailable", "catalog_unavailable": return L("暂时无法读取可用模型。请确认客户端已登录，然后重试。", "The available models cannot be read right now. Make sure the client is signed in, then retry.")
+    case "node_unavailable": return L("未找到可用的 Node.js。请在入门引导中检查安装。", "No usable Node.js was found. Check the installation in Getting started.")
+    case "invalid_prompt", "too_large": return L("首条任务过长或含有无效字符，请缩短后再试。", "The first task is too long or contains invalid characters. Shorten it and try again.")
     case "launch_pending", "timeout", "invalid_response", "connection_lost":
-        return catalog ? "读取模型未完成，请重试。" : "尚未确认创建结果。请点击「检查创建结果」核对同一次请求。"
-    case "session_ended": return "刚创建的会话已结束。草稿仍保留，可以重新创建。"
-    case "unsafe_session_path": return "会话保存位置暂不可用。请检查 MyChrome 的本地安装后重试。"
-    default: return catalog ? "无法读取可用模型，请确认客户端已安装并登录后重试。" : "对话未能创建，输入内容已保留。请重试。"
+        return catalog ? L("读取模型未完成，请重试。", "Reading the models did not finish. Please retry.") : L("尚未确认创建结果。请点击「检查创建结果」核对同一次请求。", "The result is not confirmed yet. Click Check result to verify the same request.")
+    case "session_ended": return L("刚创建的会话已结束。草稿仍保留，可以重新创建。", "The session you just created has ended. Your draft is kept; you can create it again.")
+    case "unsafe_session_path": return L("会话保存位置暂不可用。请检查 MyChrome 的本地安装后重试。", "The session storage location is unavailable. Check the local MyChrome installation, then retry.")
+    default: return catalog ? L("无法读取可用模型，请确认客户端已安装并登录后重试。", "The available models could not be read. Make sure the client is installed and signed in, then retry.") : L("对话未能创建，输入内容已保留。请重试。", "The conversation was not created. What you entered is kept. Please retry.")
     }
 }
 
@@ -252,7 +252,7 @@ func createdSession(_ receipt: SessionCreationReceipt, among servers: [ServerInf
         $0.conversationThread == receipt.threadId && $0.conversationBinding == receipt.bindingId }
 }
 func sessionDirectoryName(_ directory: String, home: String = NSHomeDirectory()) -> String {
-    directory == home ? "主目录" : (directory as NSString).lastPathComponent
+    directory == home ? L("主目录", "Home folder") : (directory as NSString).lastPathComponent
 }
 func sessionDirectoryPath(_ directory: String, home: String = NSHomeDirectory()) -> String {
     directory == home ? "~" : directory.hasPrefix(home + "/") ? "~" + directory.dropFirst(home.count) : directory
@@ -268,7 +268,7 @@ extension Model {
     func connectCreatedSession(_ receipt: SessionCreationReceipt) {
         let current = namedConversations(liveServers())
         guard let server = createdSession(receipt, among: current) else {
-            newSession.createError = "对话已创建，连接尚未就绪。请点击「打开已创建的对话」重试。"; return
+            newSession.createError = L("对话已创建，连接尚未就绪。请点击「打开已创建的对话」重试。", "The conversation was created, but its connection is not ready yet. Click Open created conversation to retry."); return
         }
         let shouldSend = seedCreatedSessionDraft(server, prompt: newSession.prompt)
         if chosenServer.map(conversationKey) != conversationKey(server) { selectedConversation = nil }
@@ -286,26 +286,26 @@ struct NewSessionSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("新对话").font(.title2.bold())
-                Text("选择 AI、模型和工作目录，然后在这里聊天。").font(.callout).foregroundStyle(.secondary)
+                Text(L("新对话", "New conversation")).font(.title2.bold())
+                Text(L("选择 AI、模型和工作目录，然后在这里聊天。", "Choose an AI, a model and a working folder, then chat here.")).font(.callout).foregroundStyle(.secondary)
             }
-            Picker("AI 客户端", selection: Binding(get: { state.provider }, set: state.chooseProvider)) {
+            Picker(L("AI 客户端", "AI client"), selection: Binding(get: { state.provider }, set: state.chooseProvider)) {
                 ForEach(SessionProvider.allCases) { provider in Text(provider.title).tag(provider) }
             }.pickerStyle(.segmented).labelsHidden().disabled(!state.canEdit)
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("模型").font(.headline)
-                    if state.loading { ProgressView().controlSize(.small); Text("正在读取…").font(.caption).foregroundStyle(.secondary) }
+                    Text(L("模型", "Model")).font(.headline)
+                    if state.loading { ProgressView().controlSize(.small); Text(L("正在读取…", "Reading…")).font(.caption).foregroundStyle(.secondary) }
                     Spacer()
-                    Button("重新读取") { state.loadCatalog() }.disabled(state.loading || !state.canEdit)
+                    Button(L("重新读取", "Reload")) { state.loadCatalog() }.disabled(state.loading || !state.canEdit)
                 }
                 if !state.models.isEmpty {
-                    Picker("模型", selection: Binding(get: { state.modelId ?? "" }, set: state.chooseModel)) {
-                        ForEach(state.models) { choice in Text(choice.name + (choice.isDefault ? "（默认）" : "")).tag(choice.id) }
+                    Picker(L("模型", "Model"), selection: Binding(get: { state.modelId ?? "" }, set: state.chooseModel)) {
+                        ForEach(state.models) { choice in Text(choice.name + (choice.isDefault ? L("（默认）", " (default)") : "")).tag(choice.id) }
                     }.labelsHidden().frame(maxWidth: .infinity, alignment: .leading).disabled(state.loading || !state.canEdit)
                     if let choice = state.selectedModel, !choice.efforts.isEmpty {
-                        Picker("思考强度", selection: Binding<String?>(get: { state.effort }, set: state.chooseEffort)) {
-                            Text("跟随客户端设置").tag(nil as String?)
+                        Picker(L("思考强度", "Reasoning effort"), selection: Binding<String?>(get: { state.effort }, set: state.chooseEffort)) {
+                            Text(L("跟随客户端设置", "Client setting")).tag(nil as String?)
                             ForEach(choice.efforts, id: \.self) { Text(sessionEffortName($0)).tag(Optional($0)) }
                         }.disabled(state.loading || !state.canEdit)
                     }
@@ -313,37 +313,37 @@ struct NewSessionSheet: View {
                 if let error = state.catalogError { Text(error).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             }
             VStack(alignment: .leading, spacing: 8) {
-                Text("工作目录").font(.headline)
+                Text(L("工作目录", "Working folder")).font(.headline)
                 HStack {
                     Label(sessionDirectoryName(state.cwd), systemImage: "folder").lineLimit(1)
                     Spacer()
-                    Button("选择文件夹…", action: chooseDirectory).disabled(!state.canEdit)
+                    Button(L("选择文件夹…", "Choose folder…"), action: chooseDirectory).disabled(!state.canEdit)
                 }
                 Text(sessionDirectoryPath(state.cwd)).font(.caption).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
             }
             VStack(alignment: .leading, spacing: 8) {
-                Text("第一条任务（可选）").font(.headline)
+                Text(L("第一条任务（可选）", "First task (optional)")).font(.headline)
                 TextEditor(text: Binding(get: { state.prompt }, set: state.setPrompt))
                     .font(.system(size: 14)).frame(height: 100).padding(6)
                     .background(Color(nsColor: .textBackgroundColor))
                     .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.25)))
-                    .disabled(!state.canEdit).accessibilityLabel("第一条任务（可选）")
-                Text("可以先创建空对话，稍后再输入。关闭此表单会保留草稿，直到退出 MyChrome。")
+                    .disabled(!state.canEdit).accessibilityLabel(L("第一条任务（可选）", "First task (optional)"))
+                Text(L("可以先创建空对话，稍后再输入。关闭此表单会保留草稿，直到退出 MyChrome。", "You can create an empty conversation and type later. Closing this form keeps your draft until you quit MyChrome."))
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let error = state.createError { Text(error).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
             Divider()
             HStack {
-                Button(state.receipt != nil || state.uncertain ? "稍后查看" : "取消") {
+                Button(state.receipt != nil || state.uncertain ? L("稍后查看", "Check later") : L("取消", "Cancel")) {
                     state.dismiss(); model.newSessionPresented = false
                 }.keyboardShortcut(.cancelAction).disabled(state.creating)
                 Spacer()
-                if state.creating { ProgressView().controlSize(.small); Text("正在创建…").font(.callout).foregroundStyle(.secondary) }
+                if state.creating { ProgressView().controlSize(.small); Text(L("正在创建…", "Creating…")).font(.callout).foregroundStyle(.secondary) }
                 if state.receipt != nil {
-                    Button("打开已创建的对话") { state.checkCreation { model.connectCreatedSession($0) } }
+                    Button(L("打开已创建的对话", "Open created conversation")) { state.checkCreation { model.connectCreatedSession($0) } }
                         .buttonStyle(.borderedProminent).disabled(state.creating)
                 } else {
-                    Button(state.uncertain ? "检查创建结果" : "创建对话") { state.create { model.connectCreatedSession($0) } }
+                    Button(state.uncertain ? L("检查创建结果", "Check result") : L("创建对话", "Create conversation")) { state.create { model.connectCreatedSession($0) } }
                         .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!state.canCreate)
                 }
             }
@@ -352,7 +352,7 @@ struct NewSessionSheet: View {
     }
     func chooseDirectory() {
         let panel = NSOpenPanel()
-        panel.title = "选择工作目录"; panel.prompt = "选择此文件夹"
+        panel.title = L("选择工作目录", "Choose a working folder"); panel.prompt = L("选择此文件夹", "Choose this folder")
         panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.directoryURL = URL(fileURLWithPath: state.cwd)
         panel.begin { result in

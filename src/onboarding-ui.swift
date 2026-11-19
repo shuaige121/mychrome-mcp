@@ -2,14 +2,55 @@ import SwiftUI
 import AppKit
 import Combine
 
+// MARK: - I18N1: one language for the whole native UI
+
+/// An explicit choice, or nil for "follow the Mac": CHROME_BRIDGE_UI_LANG (en | zh; auto or anything else is no choice),
+/// then the older CHROME_BRIDGE_LANG (any value: zh* is Chinese, the rest English), then the settings file's
+/// `uiLanguage` (en | zh, src/settings.js; auto is no choice). The same order as src/index.js uiEnglish().
+func uiLanguageChoice(environment: [String: String], setting: String?) -> Bool? {
+    let ui = (environment["CHROME_BRIDGE_UI_LANG"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if ui == "en" || ui == "zh" { return ui == "en" }
+    if let legacy = environment["CHROME_BRIDGE_LANG"], !legacy.isEmpty { return !legacy.lowercased().hasPrefix("zh") }
+    if setting == "en" || setting == "zh" { return setting == "en" }
+    return nil
+}
+/// English unless the explicit choice says Chinese or, with none, the Mac's first preferred language is zh*.
+func uiLanguageEnglish(environment: [String: String], setting: String?, languages: [String]) -> Bool {
+    uiLanguageChoice(environment: environment, setting: setting) ?? !(languages.first ?? "en").lowercased().hasPrefix("zh")
+}
+/// `uiLanguage` as the settings file holds it (the panel's Settings.read() validates the same key for its picker).
+func uiLanguageSetting(path: String = envPath("CHROME_BRIDGE_SETTINGS", SUPPORT_DIR + "/settings.json")) -> String? {
+    guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+          (attributes[.size] as? NSNumber)?.intValue ?? Int.max <= 1 << 20,
+          let data = FileManager.default.contents(atPath: path),
+          let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+    return object["uiLanguage"] as? String
+}
+private var uiEnglishCache: (english: Bool, at: Double)?
+/// The UI language, resolved again at most once a second: a change of `uiLanguage` (the panel's picker writes the settings
+/// file) shows at the next render, without a restart and without the views knowing about it.
+func uiEnglish() -> Bool {
+    let now = Date().timeIntervalSince1970
+    if let cached = uiEnglishCache, now - cached.at >= 0, now - cached.at < 1 { return cached.english }
+    let english = uiLanguageEnglish(environment: ProcessInfo.processInfo.environment, setting: uiLanguageSetting(),
+                                    languages: Locale.preferredLanguages)
+    uiEnglishCache = (english, now)
+    return english
+}
+/// Every user-visible string of the native UI goes through this pair (test/ui-strings.test.mjs enforces it).
+func L(_ zh: String, _ en: String) -> String { uiEnglish() ? en : zh }
+/// Dates and times in the UI language (the Mac's own format when the UI is Chinese, as before).
+func uiDateStyle(date: Date.FormatStyle.DateStyle, time: Date.FormatStyle.TimeStyle) -> Date.FormatStyle {
+    Date.FormatStyle(date: date, time: time, locale: uiEnglish() ? Locale(identifier: "en_US") : .autoupdatingCurrent)
+}
+
 // MARK: - Small independent preference and read-only setup commands
 
 func onboardingEnglish(environment: [String: String] = ProcessInfo.processInfo.environment,
-                       languages: [String] = Locale.preferredLanguages) -> Bool {
-    if let language = environment["CHROME_BRIDGE_LANG"], !language.isEmpty { return !language.lowercased().hasPrefix("zh") }
-    return !(languages.first ?? "en").lowercased().hasPrefix("zh")
+                       languages: [String] = Locale.preferredLanguages, setting: String? = uiLanguageSetting()) -> Bool {
+    uiLanguageEnglish(environment: environment, setting: setting, languages: languages)
 }
-func onboardingText(_ zh: String, _ en: String) -> String { onboardingEnglish() ? en : zh }
+func onboardingText(_ zh: String, _ en: String) -> String { L(zh, en) }
 
 struct OnboardingPreferenceStore {
     let path: String
@@ -167,15 +208,31 @@ final class OnboardingModel: ObservableObject {
     }
     func t(_ zh: String, _ en: String) -> String { english ? en : zh }
     var shouldAutoPresent: Bool { !presentedThisSession && store.shouldAutoPresent }
-    func present(node: String?) {
+    /// I18N1: the explicit language choice last seen (nil: none), so a later change of the global choice reaches the guide.
+    private var observedChoice: Bool?, observed = false
+    func present(node: String?, environment: [String: String] = ProcessInfo.processInfo.environment, setting: String? = uiLanguageSetting()) {
         visible = true
+        let choice = uiLanguageChoice(environment: environment, setting: setting)
+        observedChoice = choice; observed = true
+        // An explicit choice (variable or the panel's Language setting) applies every time the guide opens; the guide's own
+        // remembered language (its picker) applies only when there is none.
+        if let choice { english = choice }
+        else if !presentedThisSession, let language = store.stored?["language"] as? String { english = language == "en" }
         if !presentedThisSession {
-            if ProcessInfo.processInfo.environment["CHROME_BRIDGE_LANG"]?.isEmpty ?? true,
-               let language = store.stored?["language"] as? String { english = language == "en" }
             presentedThisSession = true
             persistenceFailed = !store.save(dismissal: "presented", english: english)
         }
         if instructions.isEmpty { request(node: node, check: false) }
+    }
+    /// While the guide is open (the panel calls this every second): a changed global choice applies at once; back to
+    /// "follow system", the guide shows its remembered language, else the Mac's.
+    func refreshLanguage(environment: [String: String] = ProcessInfo.processInfo.environment, setting: String? = uiLanguageSetting(),
+                         languages: [String] = Locale.preferredLanguages) {
+        let choice = uiLanguageChoice(environment: environment, setting: setting)
+        defer { observedChoice = choice; observed = true }
+        guard observed, choice != observedChoice else { return }
+        if let choice { english = choice }
+        else { english = (store.stored?["language"] as? String).map { $0 == "en" } ?? uiLanguageEnglish(environment: environment, setting: nil, languages: languages) }
     }
     func dismiss(reviewed: Bool = false) {
         visible = false; generation += 1; diagnostic?.cancel(); diagnostic = nil; checking = false; loading = false
@@ -233,7 +290,7 @@ struct OnboardingView: View {
                     Text(state.t("在你当前的 Chrome 页面继续任务，按你的节奏操作。", "Continue on your current Chrome page, at your pace.")).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Picker("Language", selection: $state.english) { Text("中文").tag(false); Text("English").tag(true) }
+                Picker("Language", selection: $state.english) { Text("中文").tag(false); Text("English").tag(true) }   // i18n-exempt: a language's own name
                     .labelsHidden().frame(width: 105)
             }.padding(24)
             HStack(spacing: 10) {
@@ -321,14 +378,14 @@ struct OnboardingView: View {
                 .foregroundStyle(model.servers.isEmpty ? Color.secondary : Color.accentColor)
             command("codexCommand", label: "Codex CLI", group: "connection")
             if let note = state.command("codexNote", group: "connection") {
-                Text(state.english ? note : "在 ~/.codex/config.toml 找到已有的 [mcp_servers.mychrome] 条目，按下方配置更新，不要重复添加同名段落。仅运行注册命令不会设置所需的 900 秒工具超时。")
+                Text(state.english ? note : "在 ~/.codex/config.toml 找到已有的 [mcp_servers.mychrome] 条目，按下方配置更新，不要重复添加同名段落。仅运行注册命令不会设置所需的 900 秒工具超时。")   // i18n-exempt: the English text is setup.js codexNote
                     .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
             }
             command("codexConfig", label: state.t("Codex 配置（含工具超时）", "Codex configuration (with tool timeout)"), group: "connection")
             Text(state.t("Codex：浏览器 MCP 工具可用。GUI 实时文字与直接回复还要求受支持的宿主，并关联到具体对话。", "Codex: browser MCP tools are supported. Live text and direct replies in the GUI also require a supported host and an explicitly linked conversation.")).font(.callout).foregroundStyle(.secondary)
             command("claudeCommand", label: "Claude Code", group: "connection")
             command("claudeDesktopConfig", label: "Claude Desktop", group: "connection")
-            Text(state.t("Claude：浏览器工具和网页接手可用；当前不支持在此 GUI 显示实时对话或直接回复 Claude 终端会话。", "Claude: browser tools and page handoff are supported. Live conversation text and direct replies to Claude terminal sessions are currently unsupported in this GUI.")).font(.callout).foregroundStyle(.secondary)
+            Text(state.t("Claude：浏览器工具和网页接手可用；终端里的 Claude Code 会话会在此 GUI 显示为只读镜像（你的提问和它的回复文字），回复请回到终端。", "Claude: browser tools and page handoff are available. A Claude Code terminal session appears in this GUI as a read-only mirror (your prompts and its reply text); reply in the terminal.")).font(.callout).foregroundStyle(.secondary)
             Text(state.t("保存后重新连接客户端的 MCP，确认 MyChrome 工具出现，再回到原有 AI 对话继续你的任务。", "After saving, reconnect MCP in your client and confirm that MyChrome tools appear, then return to your existing AI conversation to continue your task.")).font(.callout)
             Button(state.t("重新读取安装说明", "Reload setup instructions")) { state.request(node: node, check: false) }.disabled(state.loading)
         }

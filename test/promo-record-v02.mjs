@@ -63,19 +63,21 @@ export const T = {
 
 /* ------------------------------------------------------------ read_page output */
 
-/** read_page's element index ("=== 可点击元素索引"): "[12] label | Medium" → {marker: 12, tag: 'label', label: 'Medium', rest: ''}. */
+/** Complete control descriptions in read_page full output, inline or in an older index.
+ * Ordinary prose and bare markers are not targets; repeated IDs fail closed. */
 export function parseIndex(text) {
-  const s = String(text || '');
-  const i = s.indexOf('=== 可点击元素索引');
-  if (i < 0) return [];
-  const out = [];
-  for (const raw of s.slice(i).split('\n').slice(1)) {
+  const out = [], seen = new Set();
+  for (const raw of String(text || '').split('\n')) {
     const line = raw.trim();
-    if (!line) { if (out.length) break; continue; }
-    const m = /^\[(\d+)\]\s+(\S+)(?:\s+\|\s+(.*))?$/.exec(line);
+    const m = /^\[(\d+)\]\s+(\S+)\s+\|\s+(.*)$/.exec(line);
     if (!m) continue;
+    const marker = Number(m[1]);
+    if (!Number.isSafeInteger(marker) || marker < 1 || seen.has(marker)) {
+      throw new Error(`invalid or repeated marker [${m[1]}] in read_page; nothing was done`);
+    }
+    seen.add(marker);
     const parts = (m[3] || '').split(' | ');
-    out.push({ marker: Number(m[1]), tag: m[2], label: (parts[0] || '').trim(), rest: parts.slice(1).join(' | ').trim() });
+    out.push({ marker, tag: m[2], label: (parts[0] || '').trim(), rest: parts.slice(1).join(' | ').trim() });
   }
   return out;
 }

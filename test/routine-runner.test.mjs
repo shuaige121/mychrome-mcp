@@ -56,7 +56,7 @@ test('one call executes every mechanical step with fresh markers and one cleanup
   const steps = [
     step('click', 0, { args: { marker: 999, text: 'RECORDED_SECRET', unknown: 'drop' } }),
     step('hover', 1),
-    step('type_text', 2, { target: { ...target('Search'), tag: 'input', role: 'textbox' }, args: { textParam: 'input_1', submit: true, input_mode: 'keys', text: 'OLD_VALUE' } }),
+    step('type_text', 2, { target: { ...target('Search'), tag: 'input', role: 'textbox' }, args: { textParam: 'input_1', submit: true, replace: true, input_mode: 'keys', text: 'OLD_VALUE' } }),
     step('select_option', 3, { target: { ...target('Region'), tag: 'select', role: 'combobox' }, args: { valueParam: 'option_1', option: 'OLD_OPTION' } }),
     step('press_key', 4, { args: { key: 'enter', times: 2 } }),
     step('scroll', 5, { target: undefined, args: { direction: 'down', amount: 0.5 } })
@@ -71,6 +71,7 @@ test('one call executes every mechanical step with fresh markers and one cleanup
   assert.deepEqual(h.actions[4].args, { tab: 17, key: 'enter', times: 2 });
   assert.deepEqual(h.actions[5].args, { tab: 17, direction: 'down', amount: 0.5 });
   assert.equal(h.actions[2].args.text, 'NEW_PRIVATE_VALUE');
+  assert.equal(h.actions[2].args.replace, true);
   assert.equal(h.actions[2].args.input_mode, 'keys', 'recorded mode is the fallback when GUI mode is auto; gui-input-settings tests cover explicit GUI precedence');
   assert.equal(h.actions[3].args.option, 'SG');
   assert.equal(h.begins, 1);

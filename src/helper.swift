@@ -256,6 +256,23 @@ func currentMouse() -> CGPoint {
     return CGPoint(x: 0, y: 0)
 }
 
+/// Report restoration only after the OS accepts it and the cursor position is read back.
+/// Injected adapters keep failure tests off the real desktop.
+func restorePointer(to point: CGPoint,
+                    warp: (CGPoint) -> CGError = CGWarpMouseCursorPosition,
+                    associate: () -> CGError = { CGAssociateMouseAndMouseCursorPosition(1) },
+                    read: () -> CGPoint? = { CGEvent(source: nil)?.location }) -> [String: Any] {
+    let moved = warp(point), associated = associate(), actual = read()
+    let verified = moved == .success && associated == .success && actual.map {
+        $0.x.isFinite && $0.y.isFinite && hypot($0.x - point.x, $0.y - point.y) <= 1
+    } == true
+    var result: [String: Any] = ["ok": verified, "verified": verified,
+        "warped": actual.map { pointJSON($0) as Any } ?? NSNull()]
+    if let actual = actual { result["x"] = actual.x; result["y"] = actual.y }
+    if !verified { result["error"] = "pointer_restore_unconfirmed" }
+    return result
+}
+
 /// The one-shot CLI commands post through here: tagged CLI_TAG, so the habit recorder (and anything
 /// else that listens) can tell these from the user's own input.
 func post(_ event: CGEvent?) {
@@ -854,13 +871,33 @@ struct VeilTheme {
     var dotOff: CGColor { text.copy(alpha: 0.25) ?? text }
 }
 
+// I18N1 user-facing: begin (test/ui-strings.test.mjs: every Chinese literal below has its English counterpart)
+/// I18N1: the takeover card's language, in the order of the panel (src/onboarding-ui.swift uiLanguageChoice) and the server
+/// (src/index.js uiEnglish): CHROME_BRIDGE_UI_LANG en|zh, then the older CHROME_BRIDGE_LANG (zh* or not), then the settings
+/// file's `uiLanguage` en|zh, then the Mac's first preferred language. Like the speed preference, a dry run reads the
+/// settings file only when CHROME_BRIDGE_SETTINGS isolates it.
+func veilLanguageZh(environment: [String: String], setting: String?, languages: [String]) -> Bool {
+    let ui = (environment["CHROME_BRIDGE_UI_LANG"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if ui == "en" || ui == "zh" { return ui == "zh" }
+    if let l = environment["CHROME_BRIDGE_LANG"], !l.isEmpty { return l.lowercased().hasPrefix("zh") }
+    if setting == "en" || setting == "zh" { return setting == "zh" }
+    return (languages.first ?? "").lowercased().hasPrefix("zh")
+}
+func veilLanguageSetting(dry: Bool) -> String? {
+    if dry && ProcessInfo.processInfo.environment["CHROME_BRIDGE_SETTINGS"]?.isEmpty != false { return nil }
+    guard let data = FileManager.default.contents(atPath: panelSpeedSettingsPath()), data.count <= 1 << 20,
+          let values = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+    return values["uiLanguage"] as? String
+}
+
 struct VeilCopy {
     let zh: Bool
-    /// CHROME_BRIDGE_LANG=en|zh overrides the system language (recording the English promo on a Chinese Mac).
-    static var system: VeilCopy {
-        if let l = ProcessInfo.processInfo.environment["CHROME_BRIDGE_LANG"], !l.isEmpty { return VeilCopy(zh: l.hasPrefix("zh")) }
-        return VeilCopy(zh: (Locale.preferredLanguages.first ?? "").hasPrefix("zh"))
-    }
+    /// Resolved once per helper (every action is a new helper).
+    static let system: VeilCopy = {
+        let environment = ProcessInfo.processInfo.environment
+        return VeilCopy(zh: veilLanguageZh(environment: environment, setting: veilLanguageSetting(dry: environment["CGEVENT_DRYRUN"] == "1"),
+                                           languages: Locale.preferredLanguages))
+    }()
     var title: String { zh ? "AI 正在操作电脑" : "AI is using your computer" }
     /// The cancel hint, split around its Esc keycap.
     var hint: (String, String) { zh ? ("连按两次", "停止操作") : ("Press", "twice to stop") }
@@ -1410,7 +1447,7 @@ final class PanelModel {
     let step: String
     let action: String
     let stages: [PanelStage]
-    let charsTotal: Int
+    var charsTotal: Int
     let showCount: Bool
     /// The agent's live notes (what it is about to do and why), oldest first, at most three.
     let notes: [String]
@@ -1419,11 +1456,12 @@ final class PanelModel {
     let feedMode: Bool
     var feedEntries: [String]
     var feedStatus: String
+    var feedReason: String
     let perChar: Bool         // the type stage goes key by key: time from the characters left
     var charsDone = 0
     var speed = 1.0
     var speedSaveState = "idle"
-    /// Between two actions of a long job (index.js task hold): the agent is working out the next step.
+    /// Between two actions of a long job. No model-reasoning state is known.
     var waiting = false
     /// The other agents' tasks waiting for the mouse, first in line first (index.js lock queue).
     var queue: [String] = []
@@ -1453,6 +1491,7 @@ final class PanelModel {
         notes = Array((d["notes"] as? [String] ?? []).suffix(3))
         feedEntries = Array((d["feedEntries"] as? [String] ?? []).suffix(16)).map { String($0.suffix(8000)) }
         feedStatus = d["feedStatus"] as? String ?? "unavailable"
+        feedReason = d["feedReason"] as? String ?? ""
         showCount = d["showCount"] as? Bool ?? true
         perChar = d["perChar"] as? Bool ?? false
         queue = (d["queue"] as? [Any] ?? []).map { panelText($0, zh: zh) }.filter { !$0.isEmpty }
@@ -1524,6 +1563,12 @@ final class PanelModel {
         changed()
     }
 
+    func confirmChars(_ n: Int, total: Int) {
+        charsTotal = total
+        charsDone = n
+        changed()
+    }
+
     func setSpeed(_ s: Double) { tick(); speed = s; changed() }
     func setSpeedSaveState(_ state: String) { speedSaveState = state; changed() }
 
@@ -1562,7 +1607,7 @@ final class PanelModel {
         ["stages": stages.map { ["key": $0.key, "state": $0.state.rawValue, "detail": detail($0)] as [String: Any] },
          "speed": speed, "speedSaveState": speedSaveState, "etaMs": Int(etaMs().rounded()), "fraction": r2(fraction()), "chars": [charsDone, charsTotal],
          "who": who, "task": task, "step": step, "action": action, "waiting": waiting, "notes": notes, "queue": queue,
-         "feedMode": feedMode, "feedCount": feedEntries.count, "feedStatus": feedStatus]
+         "feedMode": feedMode, "feedCount": feedEntries.count, "feedStatus": feedStatus, "feedReason": feedReason]
     }
 }
 
@@ -1736,7 +1781,7 @@ final class VeilPanel {
     }
 
     func buildFeed(_ m: PanelModel) {
-        let key = (m.who, m.task, m.feedStatus, m.feedEntries, m.queue + ["speed:" + m.speedSaveState])
+        let key = (m.who, m.task, m.feedStatus + ":" + m.feedReason, m.feedEntries, m.queue + ["speed:" + m.speedSaveState])
         if let b = built, b.0 == key.0, b.1 == key.1, b.2 == key.2, b.3 == key.3, b.4 == key.4 { return }
         built = key
         for l in icons + labels + details + noteLayers { l.removeFromSuperlayer() }
@@ -1746,9 +1791,7 @@ final class VeilPanel {
         eta.isHidden = true
         pace.isHidden = true
         stepL.isHidden = true
-        let empty = m.feedStatus == "connected"
-            ? (zh ? "等待当前会话的可见进度…" : "Waiting for visible progress from this conversation…")
-            : (zh ? "当前会话的进度流尚未连接" : "This conversation's progress stream is not connected")
+        let empty = veilFeedStatusText(status: m.feedStatus, reason: m.feedReason, zh: zh)
         let body = feedImage(m.feedEntries.isEmpty ? empty : m.feedEntries.joined(separator: "\n\n"))
         let P = VeilPanel.pad, W = VeilPanel.width
         let hasTask = !m.task.isEmpty
@@ -1916,7 +1959,7 @@ final class VeilPanel {
             fillW = w
         }
         let cy = eta.frame.midY
-        let e = m.waiting && !m.failed ? (zh ? "正在想下一步" : "Working out the next step")
+        let e = m.waiting && !m.failed ? (zh ? "等待下一步操作" : "Waiting for the next action")
             : panelEtaText(m.etaMs(), finished: m.finished, failed: m.failed, zh: zh)
         if e != etaText {
             etaText = e
@@ -1971,6 +2014,28 @@ final class VeilPanel {
     }
 }
 
+/// A source capability is distinct from a temporary connection failure. None
+/// of these labels asserts anything about the model's private reasoning.
+func veilFeedStatusText(status: String, reason: String, zh: Bool) -> String {
+    if reason == "browser_only" {
+        return zh ? "这个连接只使用浏览器工具；以下操作状态独立显示" : "This connection uses browser tools only; action status is separate"
+    }
+    if reason == "feed_off" {
+        return zh ? "对话镜像已在设置中关闭" : "The conversation mirror is turned off in settings"
+    }
+    if reason == "unbound_thread" {
+        return zh ? "尚未关联当前对话" : "No conversation is associated"
+    }
+    if status == "connected" {
+        return zh ? "等待当前会话的可见进度…" : "Waiting for visible progress from this conversation…"
+    }
+    if status == "connecting" {
+        return zh ? "正在连接当前会话的文字进度…" : "Connecting to this conversation's text progress…"
+    }
+    return zh ? "文字进度不可用；以下操作状态独立显示" : "Text progress is unavailable; action status is separate"
+}
+// I18N1 user-facing: end
+
 /// One screen's veil window and its layers (local coordinates: AppKit, origin at the screen's bottom-left).
 final class VeilScreen {
     let screen: NSScreen
@@ -1982,6 +2047,7 @@ final class VeilScreen {
     let frost: NSVisualEffectView
     let capsule: NSVisualEffectView
     let root = CALayer()
+    let foreground = CALayer()
     let tint = CAShapeLayer()
     let ring = CALayer()
     var strips: [CALayer] = [], grads: [CALayer] = [], masks: [CALayer] = []
@@ -2031,11 +2097,11 @@ final class VeilScreen {
 
         capsule = NSVisualEffectView(frame: .zero)
         capsule.material = .hudWindow
+        capsule.appearance = NSAppearance(named: theme.dark ? .darkAqua : .aqua)
         capsule.blendingMode = .behindWindow
         capsule.state = .active
         capsule.wantsLayer = true
         capsule.isHidden = true
-        content.addSubview(capsule)
         capsule.layer?.opacity = 0
 
         let host = NSView(frame: bounds)
@@ -2043,6 +2109,16 @@ final class VeilScreen {
         host.wantsLayer = true
         host.autoresizingMask = [.width, .height]
         content.addSubview(host)
+
+        // The complete HUD sits above dimming and the window ring. Previously
+        // its plate was below that host while its text was above: a card that
+        // crossed the hole edge was visibly cut in half by the tint/ring.
+        content.addSubview(capsule)
+        let foregroundHost = NSView(frame: bounds)
+        foregroundHost.layer = foreground
+        foregroundHost.wantsLayer = true
+        foregroundHost.autoresizingMask = [.width, .height]
+        content.addSubview(foregroundHost)
 
         tint.frame = bounds
         tint.fillRule = .evenOdd
@@ -2075,7 +2151,7 @@ final class VeilScreen {
         }
 
         block.opacity = 0
-        root.addSublayer(block)
+        foreground.addSublayer(block)
         for l in [title, sub] {
             l.contentsScale = scale
             block.addSublayer(l)
@@ -2088,19 +2164,19 @@ final class VeilScreen {
             let r = CALayer()
             r.borderColor = theme.halo
             r.opacity = 0
-            root.addSublayer(r)
+            foreground.addSublayer(r)
             ripples.append(r)
         }
         home.borderColor = theme.neutral
         home.borderWidth = 2
         home.opacity = 0
-        root.addSublayer(home)
+        foreground.addSublayer(home)
 
         halo.contents = assets.halo?.image
         halo.contentsScale = scale
         halo.bounds = CGRect(origin: .zero, size: assets.halo?.size ?? .zero)
         halo.opacity = 0
-        root.addSublayer(halo)
+        foreground.addSublayer(halo)
     }
 
     func local(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x - frame.minX, y: p.y - frame.minY) }
@@ -2245,6 +2321,8 @@ final class VeilScreen {
         }
         capsule.isHidden = true
         hasCapsule = false
+        block.backgroundColor = nil
+        block.cornerRadius = 0
         put(block, bs, c)
         title.isHidden = false
         title.contents = assets.title?.image
@@ -2282,9 +2360,12 @@ final class VeilScreen {
             return layoutCapsule(label: label, target: target, step: step)
         }
         let t = target ?? CGPoint(x: (hole ?? u).midX, y: (hole ?? u).midY)
+        let insideWindow = (hole ?? u).intersection(u).insetBy(dx: 16, dy: 16)
+        let area = !insideWindow.isNull && insideWindow.width >= w && insideWindow.height >= h
+            ? insideWindow : u.insetBy(dx: 16, dy: 16)
         var best = CGRect.null, bestD = -1.0
-        for x in [u.minX + 16, u.maxX - 16 - w] {
-            for y in [u.minY + 16, u.maxY - 16 - h] {
+        for x in [area.minX, area.maxX - w] {
+            for y in [area.minY, area.maxY - h] {
                 let r = CGRect(x: x, y: y, width: w, height: h)
                 let d = Double(hypot(r.midX - t.x, r.midY - t.y))
                 if d > bestD { bestD = d; best = r }
@@ -2296,6 +2377,11 @@ final class VeilScreen {
         capsule.isHidden = false
         hasCapsule = true
         block.frame = rect
+        // The native material alone can turn pale grey over a white page,
+        // leaving the pre-rendered white captions unreadable. Keep a stable
+        // contrast backing on the same animated text layer as the whole card.
+        block.backgroundColor = theme.dark ? srgb(0x16181D, 0.80) : srgb(0xF5F5F7, 0.86)
+        block.cornerRadius = 20
         var top = pad
         title.isHidden = false
         title.contents = assets.titleSmall?.image
@@ -2336,7 +2422,9 @@ final class VeilScreen {
         let h: CGFloat = 44, padX: CGFloat = 20, gapSub: CGFloat = 12, gapHint: CGFloat = 16
         let tt = assets.titleSmallText
         let fixed = padX * 2 + tt.width + gapHint * 2 + 1 + hint.extent
+        // I18N1 user-facing: begin
         let stepLabel = step.isEmpty ? label : (VeilCopy.system.zh ? "第 \(step) 步 · \(label)" : "Step \(step) · \(label)")
+        // I18N1 user-facing: end
         var (subImg, subText) = renderSub(stepLabel, 15, min(360, u.width - 32 - fixed - gapSub))
         if subImg != nil && subText.width < 40 { subImg = nil; subText = .zero }
         let w = ceil(fixed + (subImg != nil ? gapSub + subText.width : 0))
@@ -2351,6 +2439,8 @@ final class VeilScreen {
         capsule.isHidden = false
         hasCapsule = true
         block.frame = rect
+        block.backgroundColor = theme.dark ? srgb(0x16181D, 0.80) : srgb(0xF5F5F7, 0.86)
+        block.cornerRadius = h / 2
         var x = padX
         title.isHidden = false
         title.contents = assets.titleSmall?.image
@@ -3052,6 +3142,53 @@ func writePNG(_ img: CGImage, _ path: String) -> Bool {
     return CGImageDestinationFinalize(dest)
 }
 
+/// Exercise the real window/view/layer layout without ordering any window on
+/// screen, activating an app, installing a tap or posting input. Unlike the
+/// contact sheet, this catches compositing order and card/window collisions.
+func runVeilLayoutCheck() -> [String: Any] {
+    NSApplication.shared.setActivationPolicy(.prohibited)
+    guard let screen = NSScreen.main else { return ["ok": false, "error": "no_screen"] }
+    let theme = VeilTheme(dark: true, contrast: false)
+    let assets = VeilAssets(scale: screen.backingScaleFactor, theme: theme, copy: VeilCopy.system)
+    let vs = VeilScreen(screen, assets, theme)
+    let u = vs.usable()
+    var failures: [String] = [], cases: [[String: Any]] = []
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    for inset in [CGFloat(0), 40, 120] {
+        let hole = u.insetBy(dx: inset, dy: inset)
+        vs.setHole(hole)
+        for longFeed in [false, true] {
+            let m = PanelModel(["who": "Claude · fixture", "task": "Check login choices", "feedMode": true,
+                "feedStatus": "unavailable", "feedEntries": longFeed ? [String(repeating: "Visible fixture progress. ", count: 90)] : []], zh: VeilCopy.system.zh)!
+            let mode = vs.layoutText(label: "Waiting for the next action", target: CGPoint(x: hole.minX + 30, y: hole.maxY - 30), model: m)
+            let tag = "inset=\(Int(inset)),long=\(longFeed),mode=\(mode)"
+            if vs.window.isVisible { failures.append("\(tag): probe unexpectedly ordered a window") }
+            if !u.contains(vs.block.frame) { failures.append("\(tag): HUD outside usable screen") }
+            if mode == "card" {
+                if (vs.block.backgroundColor?.alpha ?? 0) < 0.8 { failures.append("\(tag): card lacks stable text contrast") }
+                if vs.block.frame != vs.capsule.frame { failures.append("\(tag): card background and text disagree") }
+                // If the complete card fits within the target, crossing its ring
+                // is unnecessary and makes the mask appear to cut the HUD apart.
+                let safeHole = hole.insetBy(dx: 16, dy: 16)
+                if safeHole.width >= vs.block.frame.width && safeHole.height >= vs.block.frame.height && !safeHole.contains(vs.block.frame) {
+                    failures.append("\(tag): card crosses target-window ring")
+                }
+                let children = vs.window.contentView?.subviews ?? []
+                let plateIndex = children.firstIndex(of: vs.capsule) ?? -1
+                let tintIndex = children.firstIndex(where: { $0.layer === vs.tint.superlayer }) ?? -1
+                if plateIndex <= tintIndex { failures.append("\(tag): dimming/ring paints over the card background") }
+                let stop = vs.hint.layer.convert(vs.hint.layer.bounds, to: vs.block)
+                if !vs.block.bounds.insetBy(dx: 12, dy: 12).contains(stop) { failures.append("\(tag): stop hint lacks card padding") }
+            }
+            cases.append(["case": tag, "card": NSStringFromRect(vs.block.frame), "hole": NSStringFromRect(hole)])
+        }
+    }
+    CATransaction.commit()
+    vs.window.close()
+    return ["ok": failures.isEmpty, "cases": cases, "failures": failures, "shown": false]
+}
+
 /// A sample model: a reply typed key by key into a field, step 3 of 7.
 func snapModel(_ zh: Bool, chars: Int = 54) -> PanelModel {
     let L = { (z: String, e: String) -> [String: String] in ["zh": z, "en": e] }
@@ -3233,22 +3370,74 @@ let DRYRUN_PASTEBOARD = "com.chromebridge.dryrun"
 
 /// Keys and mouse buttons physically down right now, by name. Read from the hardware state: input
 /// posted by a program (ours, another agent's) never shows here (measured 2026-10-13).
-func hardwareHeld() -> [String] {
+func hardwareHeld() -> [String] { hardwareHeldButtons() + hardwareHeldKeyCodes().map(heldKeyName) }
+func hardwareHeldButtons() -> [String] {
     var out: [String] = []
     for b in 0..<32 where CGEventSource.buttonState(.hidSystemState, button: CGMouseButton(rawValue: UInt32(b))!) {
         out.append(b == 0 ? "鼠标左键" : b == 1 ? "鼠标右键" : "鼠标键 \(b + 1)")
     }
-    // Caps Lock (57) reads as down for as long as it is ON (measured 2026-10-03: the IME switch
-    // key on this machine) — a toggle, not a key being held.
-    for k in 0..<128 where k != 57 && CGEventSource.keyState(.hidSystemState, key: CGKeyCode(k)) { out.append(heldKeyName(k)) }
     return out
 }
+/// The key codes physically down right now (keys only). Caps Lock (57) reads as down for as long as it is ON
+/// (measured 2026-10-03: the IME switch key on this machine) — a toggle, not a key being held.
+func hardwareHeldKeyCodes() -> [Int] { (0..<128).filter { $0 != 57 && CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) } }
+/// Seconds since the last key or mouse-button event in the hardware state (`cgevent idle` keyIdle): typing and
+/// clicking; pointer moves and the wheel are not counted.
+let HAND_EVENT_TYPES: [CGEventType] = [.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp,
+                                       .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp]
+func handsIdleSeconds() -> Double { HAND_EVENT_TYPES.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }.min() ?? 0 }
+/// STUCK1: modifier and fn key codes. Never cleared: they are held for long without repeating (existing rules).
+let MODIFIER_KEY_CODES: Set<Int> = [54, 55, 56, 58, 59, 60, 61, 62, 63]
 
-/// A key's name for a message, by macOS virtual key code; others by number.
+/// Test seam (dry session only, set through `_fake`): the unmodified character the layout gives per key
+/// code, or `fakeLayoutUnreadable` to make the layout data unavailable. Never set in a real session.
+var fakeLayoutChars: [Int: String]? = nil
+var fakeLayoutUnreadable = false
+
+/// ANSI (US) key caps for the letter and digit keys, by macOS virtual key code. Used only when the
+/// current keyboard layout's Unicode data cannot be read.
+let ANSI_KEY_NAMES: [Int: String] = [
+    0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V", 11: "B", 12: "Q", 13: "W",
+    14: "E", 15: "R", 16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 25: "9", 26: "7",
+    28: "8", 29: "0", 31: "O", 32: "U", 34: "I", 35: "P", 37: "L", 38: "J", 40: "K", 45: "N", 46: "M"]
+
+/// The character the current keyboard layout gives this key with no modifiers and no dead-key state,
+/// from the input source's kTISPropertyUnicodeKeyLayoutData via UCKeyTranslate; nil when unreadable.
+func layoutKeyChar(_ k: Int) -> String? {
+    if fakeLayoutUnreadable { return nil }
+    if let f = fakeLayoutChars { return f[k] }
+    var sources: [TISInputSource] = []
+    if let s = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue() { sources.append(s) }
+    if let s = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue() { sources.append(s) }
+    for src in sources {
+        guard let raw = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { continue }
+        let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue()
+        guard let bytes = CFDataGetBytePtr(data) else { continue }
+        var dead: UInt32 = 0
+        var len = 0
+        var chars = [UniChar](repeating: 0, count: 4)
+        let st = bytes.withMemoryRebound(to: UCKeyboardLayout.self, capacity: 1) {
+            UCKeyTranslate($0, UInt16(k), UInt16(kUCKeyActionDisplay), 0, UInt32(LMGetKbdType()),
+                           OptionBits(kUCKeyTranslateNoDeadKeysMask), &dead, chars.count, &len, &chars)
+        }
+        if st == noErr, len > 0 { return String(utf16CodeUnits: chars, count: len) }
+    }
+    return nil
+}
+
+/// A key's name for a message, by macOS virtual key code. Modifiers, mouse and a few named keys keep
+/// fixed names (the bridge classifies held input by them); letter and digit keys are named by the
+/// current layout (any single printable, non-space character it gives, letter or not), with the ANSI table
+/// only when the layout data is unreadable, the translation errors, or it yields empty/space/control output.
 func heldKeyName(_ k: Int) -> String {
     let names: [Int: String] = [55: "左 ⌘", 54: "右 ⌘", 56: "左 ⇧", 60: "右 ⇧", 58: "左 ⌥", 61: "右 ⌥", 59: "左 ⌃", 62: "右 ⌃",
                                 63: "fn", 36: "回车", 49: "空格", 53: "Esc", 48: "Tab", 51: "删除"]
-    return names[k] ?? "键码 \(k)"
+    if let n = names[k] { return n }
+    guard let ansi = ANSI_KEY_NAMES[k] else { return "键码 \(k)" }
+    if let c = layoutKeyChar(k), c.count == 1, c.unicodeScalars.allSatisfy({ !CharacterSet.whitespacesAndNewlines.contains($0) && !CharacterSet.controlCharacters.contains($0) }) {
+        return c.uppercased()
+    }
+    return ansi
 }
 
 enum Halt: Error {
@@ -3396,6 +3585,7 @@ let routeCallback: CGEventTapCallBack = { _, type, event, _ in
 
 let tapCallback: CGEventTapCallBack = { _, type, event, _ in
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        gSession?.recordMonitorDisabled(type)
         if let t = gTap { CGEvent.tapEnable(tap: t, enable: true) }
     } else {
         gSession?.observe(type, userData: event.getIntegerValueField(.eventSourceUserData))
@@ -3411,7 +3601,60 @@ struct Fake {
     var cursor: CGPoint?
     var userFlags: CGEventFlags = []
     var secureInput: String?
+    var screenState: String?
+    /// What the Open-panel reader sees (upload_file); nil: no panel, keyboard focus on the page.
+    var filePanel: [String: Any]?
 }
+
+/// What upload_file's Open-panel reader sees: bounded AX/CG reads of this Chrome, never page or file contents.
+struct PanelSight {
+    var frontPid: pid_t = 0
+    var frontName = ""
+    /// This Chrome's Open panel candidate (not the target window): its CG number and AX facts.
+    var window: Int?
+    var identifier = ""
+    /// An AX sheet, or a window with a dialog subrole.
+    var shaped = false
+    /// The app's keyboard focus (its focused element) lies inside that panel.
+    var focusInside = false
+    /// The innermost sheet/dialog holding the keyboard focus: the panel itself, or a sheet inside it.
+    var keyWindow: Int?
+    /// That inner sheet's AX parent is the panel element itself.
+    var keyParentIsPanel = false
+    /// The focused element is a text field or combo box (the Go-to-folder field).
+    var field = false
+    var element: AXUIElement?
+}
+
+enum FilePanel {
+    /// "ready": this Chrome's Open panel ("open-panel", sheet/dialog) is in front and holds the keyboard
+    /// itself. "other_app": another app is in front. "unidentified": a sheet or dialog of this Chrome that
+    /// is not an Open panel, or one whose keyboard focus is not confirmed. "none": nothing yet.
+    static func verdict(_ s: PanelSight, chromePid: pid_t, frontChromeWindow: Int?) -> String {
+        if s.frontPid != chromePid { return "other_app" }
+        guard let w = s.window, s.shaped else { return "none" }
+        guard s.identifier == "open-panel" else { return "unidentified" }
+        guard s.focusInside, s.keyWindow == w, frontChromeWindow == w else { return "unidentified" }
+        return "ready"
+    }
+    /// The keyboard is in the verified panel itself (not in any sheet inside it).
+    static func atPanel(_ s: PanelSight, chromePid: pid_t, panel: Int) -> Bool {
+        s.frontPid == chromePid && s.window == panel && s.identifier == "open-panel" && s.focusInside && s.keyWindow == panel
+    }
+    /// The keyboard is in the text field of the verified Go-to-folder sheet, whose AX parent is the panel.
+    static func atGoto(_ s: PanelSight, chromePid: pid_t, panel: Int, goto: Int) -> Bool {
+        s.frontPid == chromePid && s.window == panel && s.identifier == "open-panel" && s.focusInside &&
+            goto != panel && s.keyWindow == goto && s.keyParentIsPanel && s.field
+    }
+    /// A Go-to-folder sheet that appeared after Cmd+Shift+G: a sheet inside the panel, parented to it,
+    /// holding the focused text field, and not among the windows on screen before the chord.
+    static func newGoto(_ s: PanelSight, chromePid: pid_t, panel: Int, before: Set<Int>) -> Int? {
+        guard let g = s.keyWindow, !before.contains(g), atGoto(s, chromePid: chromePid, panel: panel, goto: g) else { return nil }
+        return g
+    }
+}
+
+enum PanelKeyTarget { case panel, goto(Int) }
 
 /// A bounded, in-memory attribution record: no key codes, text, titles, or URLs.
 /// Routing evidence survives the user switching to a target window and away between JS polls.
@@ -3452,13 +3695,13 @@ final class Session {
     var window = 0
     var windowBounds = CGRect.null
     var rate = 2.0
-    var interrupted: [String: Any]?
-    var terminate = false
+    var interrupted: [String: Any]? { didSet { if oldValue == nil && interrupted != nil { revokeNativeState() } } }
+    var terminate = false { didSet { if terminate && !oldValue { revokeNativeState() } } }
 
     // Takeover: holding = the user's input is being dropped right now.
     var takeover = false
-    var holding = false
-    var aborted = false
+    var holding = false { didSet { if oldValue && !holding { revokeNativeState() } } }
+    var aborted = false { didSet { if aborted && !oldValue { revokeNativeState() } } }
     var releasedBy: String?
     var swallowedKeys = 0, swallowedPointer = 0
     var escTimes: [Double] = []
@@ -3485,6 +3728,13 @@ final class Session {
     var releasePending = false
     var fakeHeld = false
     var fakeHeldKeys: [Int] = []
+    /// STUCK1 dry-run seams (`_fake`): a key-up from the HID-system-state source clears the fake key (as the real
+    /// state table is expected to; `stuckClears` true: every key, a list: only those codes), and the keyIdle the hold reads.
+    var fakeStuckClears = false
+    var fakeStuckClearKeys: Set<Int>? = nil
+    var fakeKeyIdle = 100.0
+    /// STUCK1: this session's one stale-key clearing attempt has been made.
+    var stuckClearTried = false
     var abortedBy: String?
 
     // The progress panel (from hold/begin's veil; also in a dry run, without the veil) and the
@@ -3498,6 +3748,9 @@ final class Session {
     var speedSaveGeneration = 0
     var pendingSpeedSave: Int?
     var speedSaveState = "idle"
+
+    /// upload_file: armed by file_panel_begin for exactly one file_panel op (opFilePanelBegin).
+    var filePanelToken: String?
 
     // What this session holds down right now (§1.6).
     var heldMouse: (CGPoint, Int)?
@@ -3515,6 +3768,7 @@ final class Session {
     var posted: [[String: Any]] = []
     var triggers: [[String: Any]] = []
     var progress: [String: Any] = [:]
+    var lastTypedCharacter: Character?
 
     // stdin, filled by the reader thread.
     let lock = NSLock()
@@ -3532,6 +3786,138 @@ final class Session {
     var slowestStage: [String: Any]?
     var slowestStageMs = 0.0
     var tapFailure: [String: Any]?
+
+    // Native writes and Stop share this main-thread Session owner. Only immutable
+    // read snapshots leave this executor; no grant authorizes a later worker write.
+    var nativeEpoch = 1
+    var nativeRevoked = false
+    var nativePaused = false
+    var nativeUncertain = false
+    var nativePolicy = "inspect"
+    var nativeOwner: ChromeNative.Owner?
+    var pendingEnd: [String: Any]?
+
+    func revokeNativeState(uncertain: Bool = false) {
+        if uncertain { nativeOwner?.active?.markUnresolved(); nativeUncertain = true }
+        if !nativeRevoked { nativeEpoch += 1; nativeRevoked = true }
+        nativeOwner?.invalidate()
+    }
+
+    func pumpNative() throws {
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.001))
+        drainControl()
+        try checkStop(true)
+    }
+
+    func checkNative(_ stage: String) throws {
+        checkpoint(stage)
+        try pumpNative()
+        guard !nativeRevoked, !nativeUncertain else { throw Halt.bad("native_session_revoked", "Native session was revoked.") }
+        if nativePolicy == "inspect" { return }
+        guard monitor else { throw Halt.bad("no_input_monitor", "Input monitor is unavailable.") }
+        if takeover {
+            guard holding, tapFailure == nil else { throw Halt.bad("hold_ended", "The original hold is no longer healthy.") }
+            if !dry, let tap = gTakeoverTap, !CGEvent.tapIsEnabled(tap: tap) {
+                revokeNativeState(uncertain: true); throw Halt.bad("hold_ended", "Takeover event tap is disabled.")
+            }
+        } else if !begun { throw Halt.bad("not_begun", "Monitored preparation requires begin.") }
+        if nativePaused && nativePolicy != "restore" { throw Halt.bad("native_paused", "Normal input is paused.") }
+        if nativePaused && !holding { throw Halt.bad("hold_ended", "Paused restoration requires the original hold.") }
+        if secureInputHolder() != nil { revokeNativeState(uncertain: true); throw Halt.bad("secure_input", "Secure input became active.") }
+        let usable: Bool
+        if dry { usable = fake.screenState == nil || fake.screenState == "awake" }
+        else {
+            let state = CGSessionCopyCurrentDictionary() as? [String: Any]
+            let unlocked = state?["CGSSessionScreenIsLocked"].map { ($0 as? Bool) == false } ?? true
+            var ids = [CGDirectDisplayID](repeating: 0, count: 16), count: UInt32 = 0
+            let displays = CGGetActiveDisplayList(16, &ids, &count) == .success && ids.prefix(Int(count)).contains { CGDisplayIsAsleep($0) == 0 }
+            usable = state?["kCGSSessionOnConsoleKey"] as? Bool == true && state?["kCGSessionLoginDoneKey"] as? Bool == true && unlocked && displays
+            if let tap = gTap, !CGEvent.tapIsEnabled(tap: tap) { recordMonitorDisabled(.tapDisabledByTimeout) }
+        }
+        if !usable { revokeNativeState(uncertain: true); throw Halt.bad("screen_state_unknown", "The interactive screen is unavailable.") }
+        try checkStop(nativePolicy == "restore")
+    }
+
+    func owner() -> ChromeNative.Owner {
+        if let existing = nativeOwner { return existing }
+        let value = ChromeNative.Owner(dry: dry)
+        value.stageCheck = { [unowned self] stage in try self.checkNative(stage) }
+        value.pump = { [unowned self] in try self.pumpNative() }
+        // PERM1 r1 A3: a Chrome popup is answered only under a healthy physical hold (never in monitored mode).
+        value.held = { [unowned self] in self.takeover && self.holding && self.tapFailure == nil }
+        nativeOwner = value
+        return value
+    }
+
+    func opNative(_ req: [String: Any], _ op: String) throws -> [String: Any] {
+        guard (req["schema"] as? Int) == 1 else { throw Halt.bad("native_schema_invalid", "Native schema must be 1.") }
+        let previousPolicy = nativePolicy
+        nativePolicy = op == "inspectDialog" ? "inspect" : (req["policy"] as? String ?? "normal")
+        defer { nativePolicy = previousPolicy }
+        guard ["inspect", "normal", "restore"].contains(nativePolicy), op == "inspectDialog" || nativePolicy != "inspect" else {
+            throw Halt.bad("native_policy_invalid", "Unknown native policy.")
+        }
+        if op != "inspectDialog" {
+            guard req["epoch"] as? Int == nativeEpoch else { throw Halt.bad("native_epoch_stale", "Native epoch is stale.") }
+        }
+        if nativePolicy == "restore", (req["intent"] as? [String: Any])?["kind"] as? String != "restoreScene" {
+            throw Halt.bad("native_policy_invalid", "Restore policy only authorizes the captured scene.")
+        }
+        try checkNative("native_dispatch")
+        let native = owner()
+        // NAT-RETRY: after the epoch, Stop, revoked and unknown checks above; restore and inspect never open a call.
+        if nativePolicy == "normal", op != "inspectDialog", let call = req["call"] as? String { native.enterCall(call) }
+        native.seedCG = window > 0 ? window : 7
+        if !windowBounds.isNull { native.seedBounds = windowBounds }
+        switch op {
+        case "inspectDialog":
+            guard let target = req["target"] as? [String: Any] else { throw Halt.bad("native_target_invalid", "An exact target is required.") }
+            return try native.inspect(target, existing: req["dialogToken"] as? String)
+        case "bindNativeTarget":
+            guard let target = req["target"] as? [String: Any] else { throw Halt.bad("native_target_invalid", "An exact target is required.") }
+            if begun, ChromeNative.dialogInt(target["chromePid"]) != Int(chromePid) || ChromeNative.dialogInt(target["cgWindow"]) != window {
+                throw Halt.bad("native_target_changed", "Native target must agree with begin.")
+            }
+            return try native.bind(target)
+        case "recordNativeScene":
+            guard let scene = req["scene"] as? [String: Any] else { throw Halt.bad("native_scene_invalid", "A captured scene is required.") }
+            return try native.recordScene(scene)
+        default:
+            let result = try native.run(req)
+            // A response or control-integrity uncertainty freezes every later input path.
+            if result["inputDelivery"] as? String == "unknown" { revokeNativeState(uncertain: true) }
+            // Dialog adapters may return a typed error after their bounded scan. A Stop
+            // observed during that scan takes precedence without losing delivery evidence.
+            try checkStop(nativePolicy == "restore")
+            if result["ok"] as? Bool == true, result["geometry"] is [String: Any] {
+                try refreshNativeGeometry(result, native: native)
+            }
+            return result
+        }
+    }
+
+    func refreshNativeGeometry(_ result: [String: Any], native: ChromeNative.Owner) throws {
+        try checkNative("native_geometry_refresh")
+        let target = try ChromeNative.Target(result)
+        guard native.target == target, let b = result["bounds"] as? [String: Any],
+              Set(b.keys) == Set(["left", "top", "width", "height"]),
+              b.values.allSatisfy({ value in (value as? NSNumber).map { CFGetTypeID($0) != CFBooleanGetTypeID() } == true }),
+              let x = num(b["left"]), let y = num(b["top"]), let w = num(b["width"]), let h = num(b["height"]) else {
+            throw Halt.bad("native_geometry_unconfirmed", "Final native geometry was not verified.")
+        }
+        let bounds = CGRect(x: x, y: y, width: w, height: h)
+        guard ChromeNative.geometryRectValid(bounds) else {
+            throw Halt.bad("native_geometry_unconfirmed", "Final native geometry was not verified.")
+        }
+        // The first begin consumes this result normally. Its identity is not set yet.
+        if !begun { return }
+        guard chromePid == target.chromePid, window == target.cgWindow else {
+            throw Halt.bad("native_target_changed", "Native geometry must agree with the existing begin.")
+        }
+        try checkNative("native_geometry_refresh")
+        windowBounds = bounds
+        if holding { veil?.updateHole(bounds) }
+    }
 
     /// A dry run never touches the general pasteboard. CGEVENT_DRYRUN_PASTEBOARD
     /// may name a per-run pasteboard for parallel tests, only under the same prefix.
@@ -3569,10 +3955,19 @@ final class Session {
         lastRunLoopService = stamp
     }
 
+    func recordMonitorDisabled(_ type: CGEventType) {
+        guard begun || holding || nativeOwner != nil else { return }
+        revokeNativeState(uncertain: true)
+        monitor = false
+        if holding { recordTapDisabled(type) }
+        else if !aborted { abortedBy = "tap_disabled"; aborted = true }
+    }
+
     func recordTapDisabled(_ type: CGEventType) {
         // Creating the disabled tap in prime can notify before a hold exists. A notification
         // after release must also preserve the first failure; only a live hold can be lost.
         guard holding else { return }
+        revokeNativeState(uncertain: true)
         let stamp = nowMs()
         tapFailure = ["reason": type == .tapDisabledByTimeout ? "timeout" : "user_input",
                       "operation": currentOperation, "stage": currentStage,
@@ -3769,6 +4164,88 @@ final class Session {
         return hardwareHeld()
     }
     func userHoldsInput() -> Bool { !heldInputs().isEmpty }
+    /// STUCK1: the key codes behind heldInputs' key names (dry: the fake keys).
+    func heldKeyCodesNow() -> [Int] { dry ? fakeHeldKeys : hardwareHeldKeyCodes() }
+
+    /// STUCK1: what the bridge allows this hold to clear (`hold` op `clearStuck`): the key codes it found stale in
+    /// its own readings (read as held while another key was pressed after them, or with no key activity for the
+    /// stuck threshold), and how long the keys and buttons must still have been quiet for that decision to stand.
+    struct StuckClear { let keys: Set<Int>; let quietS: Double }
+
+    /// STUCK1: inside this hold, before any input of ours. When what reads as held is exactly keys the bridge found
+    /// stale (no mouse button, no modifier or fn) and no key or button event came since its decision (a real hold
+    /// keeps refreshing key activity), post one key-up per key with the HID-system-state source and read the state
+    /// again. "skipped": nothing posted; "cleared": each now reads up; "failed": some still down. One attempt per
+    /// session (the bridge allows one per call); never a key-down; never outside the hold or after `begin`.
+    /// r2: `progress["stuckKeys"]` says per requested key whether its key-up was posted and whether it still reads held
+    /// (opHold sets every key to not posted first, so a refusal before this point reports exactly that).
+    func clearStaleKeys(_ c: StuckClear) -> String {
+        guard holding, takeover, !begun, !stuckClearTried,
+              dry || gTakeoverTap.map({ CGEvent.tapIsEnabled(tap: $0) }) == true else { return "skipped" }
+        let codes = heldKeyCodesNow()
+        // At most four keys (r1 A3: the bridge never asks for more; every release fits the row and the receipt).
+        guard !codes.isEmpty, codes.count <= 4, heldInputs().count == codes.count,
+              codes.allSatisfy({ c.keys.contains($0) && !MODIFIER_KEY_CODES.contains($0) }),
+              (dry ? fakeKeyIdle : handsIdleSeconds()) >= c.quietS else { return "skipped" }
+        stuckClearTried = true
+        var posted: Set<Int> = []
+        for k in codes {
+            postStaleKeyUp(k)
+            posted.insert(k)
+            reportStuckKeys(c, posted: posted, held: Set(heldKeyCodesNow()))
+        }
+        // The state table changes as the event is processed: a moment's wait, the run loop (and the tap) kept served.
+        let t0 = nowMs()
+        while !dry && !Set(heldKeyCodesNow()).isDisjoint(with: codes) && nowMs() - t0 < 150 {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.005))
+        }
+        let held = Set(heldKeyCodesNow())
+        reportStuckKeys(c, posted: posted, held: held)
+        return held.isDisjoint(with: codes) ? "cleared" : "failed"
+    }
+
+    /// STUCK1 r2: the per-key report of a clearing hold: every requested key, whether its key-up was posted and whether
+    /// it reads held now (a partial success says which keys cleared and which did not).
+    func reportStuckKeys(_ c: StuckClear, posted: Set<Int>, held: Set<Int>) {
+        progress["stuckKeys"] = c.keys.sorted().map { k -> [String: Any] in ["key": k, "posted": posted.contains(k), "held": held.contains(k)] }
+    }
+
+    /// STUCK1: one key-up for `code`, created from an event source of the HID system state (CGEventSource.h: that
+    /// table holds the key state accumulated from the sources posting with it; the default source is the combined
+    /// session state, ID 0, and leaves `keyState(.hidSystemState)` unchanged: measured 2026-10-13). Tagged as ours,
+    /// so the hold lets it through to the front app like the release it missed. Not counted as posted input (no
+    /// key-down) nor as a key to route to Chrome (it is not for Chrome).
+    func postStaleKeyUp(_ code: Int) {
+        guard let e = CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState), virtualKey: CGKeyCode(code), keyDown: false)
+        else { return }
+        defer { lastKeyPostedAt = Date().timeIntervalSince1970 * 1000 }
+        let state = e.getIntegerValueField(.eventSourceStateID)
+        if dry {
+            posted.append(["type": e.type == .keyUp ? "keyUp" : e.type == .keyDown ? "keyDown" : "other", "key": code,
+                           "stuckClear": true, "sourceStateID": Int(state), "holding": holding && takeover, "t": ms()])
+            if fakeStuckClears && (fakeStuckClearKeys?.contains(code) ?? true) && e.type == .keyUp &&
+               state == Int64(CGEventSourceStateID.hidSystemState.rawValue) {
+                fakeHeldKeys.removeAll { $0 == code }
+            }
+            return
+        }
+        e.setIntegerValueField(.eventSourceUserData, value: SESSION_TAG)
+        e.post(tap: .cghidEventTap)
+    }
+
+    /// Checked only once the tap holds: a down that slipped in before it is seen here (and refused), one after it is
+    /// dropped together with its up. STUCK1: keys the bridge found stale are released first (clearStaleKeys); still
+    /// down after that → input_stuck (never retried); anything else held → input_held, as before.
+    func checkHeldInsideHold(_ clear: StuckClear?, undo: () -> Void) throws {
+        var held = heldInputs()
+        if let c = clear {
+            let outcome = held.isEmpty ? "skipped" : clearStaleKeys(c)
+            progress["stuckKeyClear"] = outcome
+            if outcome != "skipped" { held = heldInputs() }
+            if outcome == "failed" { undo(); throw Halt.bad("input_stuck", "held: " + held.joined(separator: "、")) }
+        }
+        if !held.isEmpty { undo(); throw Halt.bad("input_held", "held: " + held.joined(separator: "、")) }
+    }
 
     /// Who holds Secure Event Input (a password field, Terminal's Secure Keyboard Entry, an app
     /// that leaks it), or nil. While it is on, no tap sees the keyboard, so nothing can be held.
@@ -3783,9 +4260,11 @@ final class Session {
         return NSRunningApplication(processIdentifier: pid)?.localizedName ?? "pid \(pid)"
     }
 
-    func startTakeover(maxMs: Double, idleMs: Double, untilDone: Bool = false) throws {
+    func startTakeover(maxMs: Double, idleMs: Double, untilDone: Bool = false, clearStuck: StuckClear? = nil) throws {
         if let holder = secureInputHolder() { throw Halt.bad("secure_input", holder) }
-        if dry, case let held = heldInputs(), !held.isEmpty { throw Halt.bad("input_held", "held: " + held.joined(separator: "、")) }
+        // A dry run refuses held input before holding, as before; with a stale-key request (STUCK1) the check runs
+        // inside the hold instead, where a real run makes it.
+        if dry, clearStuck == nil, case let held = heldInputs(), !held.isEmpty { throw Halt.bad("input_held", "held: " + held.joined(separator: "、")) }
         refreshSpeedSetting()
         recentStage = nil; slowestStage = nil; slowestStageMs = 0
         lastRunLoopService = nowMs(); longestRunLoopGapMs = 0
@@ -3808,27 +4287,33 @@ final class Session {
         if !untilDone {
             Timer.scheduledTimer(withTimeInterval: maxMs / 1000, repeats: false) { [weak self] _ in self?.releaseTakeover("timeout") }
         }
-        if dry { panel?.finish("hold"); return }
+        if dry {
+            if clearStuck != nil { try checkHeldInsideHold(clearStuck) { holding = false; takeover = false } }
+            panel?.finish("hold"); return
+        }
         guard let tap = gTakeoverTap ?? makeTakeoverTap()
         else { holding = false; takeover = false; throw Halt.bad("no_takeover_tap", "active HID event tap could not be created") }
         gTakeoverTap = tap
         CGEvent.tapEnable(tap: tap, enable: true)
         heldAt = Date().timeIntervalSince1970 * 1000
-        // Checked only once the tap holds: a down that slipped in before it is seen here
-        // (and refused), one after it is dropped together with its up.
-        let held = heldInputs()
-        if !held.isEmpty {
+        try checkHeldInsideHold(clearStuck) {
             CGEvent.tapEnable(tap: tap, enable: false)
             gTakeoverTap = nil
             holding = false; takeover = false
-            throw Halt.bad("input_held", "held: " + held.joined(separator: "、"))
         }
         measuredStage("overlay_show") { showOverlay() }
+        // Showing the overlay pumps the run loop. A real disable or Stop may
+        // have released input during it; never acknowledge a hold we lost.
+        guard holding && !aborted && CGEvent.tapIsEnabled(tap: tap) else {
+            if holding { releaseTakeover("tap_disabled") }
+            throw Halt.bad("takeover_expired", "input hold lost while showing overlay")
+        }
         // Ticked just after the entrance, so the first stage visibly turns green.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in self?.panel?.finish("hold") }
     }
 
-    /// The active HID tap, created disabled (enabled by startTakeover).
+    /// Create the active HID tap only when starting a hold. Do not disable it
+    /// here: a delayed disable notification could otherwise cancel the new hold.
     func makeTakeoverTap() -> CFMachPort? {
         var mask: UInt64 = 0
         let types: [CGEventType] = [.mouseMoved, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
@@ -3838,16 +4323,14 @@ final class Session {
         guard let tap = CGEvent.tapCreate(tap: .cghidEventTap, place: .headInsertEventTap, options: .defaultTap,
                                           eventsOfInterest: CGEventMask(mask), callback: takeoverCallback, userInfo: nil)
         else { return nil }
-        CGEvent.tapEnable(tap: tap, enable: false)
         CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes)
         return tap
     }
 
-    /// `prime`: build the tap (disabled) and the veil (hidden) while the caller is still
-    /// locating its target, so `hold` only has to switch them on.
+    /// `prime`: prepare only the hidden veil. The input tap is created by hold,
+    /// avoiding queued notifications from a deliberately disabled primed tap.
     func opPrime() -> [String: Any] {
         if dry { return ["ok": true] }
-        if gTakeoverTap == nil { gTakeoverTap = makeTakeoverTap() }
         if veil == nil { measuredStage("overlay_prime") { veil = Veil() } }
         return ["ok": true, "veilPrimeMs": r2(veil?.primeMs ?? 0)]
     }
@@ -3918,11 +4401,12 @@ final class Session {
 
     // MARK: waiting
 
-    func checkStop() throws {
+    func checkStop(_ allowPause: Bool = false) throws {
+        if nativePaused && !allowPause { throw Halt.bad("native_paused", "Normal input is paused.") }
         if aborted { throw Halt.aborted }
         if interrupted != nil { throw Halt.interrupted }
         lock.lock(); let gone = eof; lock.unlock()
-        if terminate || gone { throw Halt.terminated }
+        if terminate || gone || pendingEnd != nil { revokeNativeState(); throw Halt.terminated }
     }
 
     /// Run-loop wait in ≤5 ms slices, so the tap, NSWorkspace and signal
@@ -3966,14 +4450,38 @@ final class Session {
     }
     func guardPress(at p: CGPoint, checkCursor: Bool = true) throws {
         try checkStop()
+        let displays = try guardLanding(p)
+        // All checked display reads finish before the final event guards.
+        // Do not pump controls between these checks and their caller's event.
+        if checkCursor {
+            let actual = cursor()
+            if dist(actual, p) > 1.5 { throw Halt.guardFailed("cursor_moved") }
+            guard displays.valid.contains(where: { actual.x >= $0.usable.minX && actual.x < $0.usable.maxX &&
+                actual.y >= $0.usable.minY && actual.y < $0.usable.maxY }) else { throw Halt.guardFailed("landing_unreachable") }
+            if topWindow(at: actual) != window { throw Halt.guardFailed("window_not_top") }
+        }
         if frontPid() != chromePid { throw Halt.guardFailed("not_frontmost") }
         if topWindow(at: p) != window { throw Halt.guardFailed("window_not_top") }
         if foreignModifiers() { throw Halt.guardFailed("modifier_held") }
-        if checkCursor && dist(cursor(), p) > 1.5 { throw Halt.guardFailed("cursor_moved") }
     }
     func guardWheel(at p: CGPoint) throws {
         try checkStop()
+        let displays = try guardLanding(p), actual = cursor()
+        if dist(actual, p) > 1.5 { throw Halt.guardFailed("cursor_moved") }
+        guard displays.valid.contains(where: { actual.x >= $0.usable.minX && actual.x < $0.usable.maxX &&
+            actual.y >= $0.usable.minY && actual.y < $0.usable.maxY }) else { throw Halt.guardFailed("landing_unreachable") }
+        if topWindow(at: actual) != window { throw Halt.guardFailed("window_not_top") }
         if topWindow(at: p) != window { throw Halt.guardFailed("window_not_top") }
+    }
+    @discardableResult
+    func guardLanding(_ p: CGPoint) throws -> ChromeNative.WindowDisplaySet {
+        try checkStop()
+        guard p.x.isFinite, p.y.isFinite else { throw Halt.guardFailed("landing_unreachable") }
+        let displays = try owner().readWindowDisplays()
+        guard displays.valid.contains(where: { p.x >= $0.usable.minX && p.x < $0.usable.maxX &&
+            p.y >= $0.usable.minY && p.y < $0.usable.maxY }) else { throw Halt.guardFailed("landing_unreachable") }
+        try checkStop()
+        return displays
     }
 
     // MARK: posting
@@ -4071,7 +4579,7 @@ final class Session {
 
     func isControl(_ r: [String: Any]) -> Bool {
         let op = r["op"] as? String ?? ""
-        return op == "cancel" || (op.hasPrefix("_") && op != "__invalid")
+        return ["cancel", "revokeNative"].contains(op) || (opRunning && ["status", "end"].contains(op)) || (op.hasPrefix("_") && op != "__invalid")
     }
 
     /// `cancel` acts immediately in every session. The dry-run controls act even in
@@ -4082,7 +4590,7 @@ final class Session {
         queue.removeAll(where: isControl)
         lock.unlock()
         for c in ctl {
-            if c["op"] as? String == "cancel" {
+            if ["cancel", "revokeNative", "status", "end"].contains(c["op"] as? String ?? "") {
                 applyControl(c)
             } else if !dry {
                 writeLine(["ok": false, "op": c["op"] ?? "", "id": c["id"] ?? NSNull(), "error": "dryrun_only",
@@ -4110,6 +4618,27 @@ final class Session {
         switch op {
         case "cancel":
             r = cancelInput()
+        case "revokeNative":
+            let reason = c["reason"] as? String ?? "caller_cancel"
+            if reason == "pause" && !nativeRevoked && !aborted && interrupted == nil && holding {
+                nativePaused = true
+                r["paused"] = true
+            } else {
+                if !aborted { abortedBy = reason; aborted = true }
+                r = cancelInput()
+            }
+        case "status":
+            lastActivity = nowMs()
+            r = ["ok": true, "cursor": pointJSON(cursor()), "inputSpeed": ["value": speed, "saveState": speedSaveState]]
+        case "end":
+            pendingEnd = c
+            revokeNativeState()
+            return
+        case "_native":
+            do { try owner().configureDry(c) }
+            catch let error as ChromeNative.Failure { r = error.json }
+            catch { r = ChromeNative.Failure("native_request_invalid", "native_prepare").json }
+
         case "_navigationEvent":
             if c["unknown"] as? Bool == true { navigationHistory.invalidate() }
             else {
@@ -4118,7 +4647,9 @@ final class Session {
             }
         case "_inject":
             let kind = c["kind"] as? String ?? "key"
-            if kind == "tapDisabled" {
+            if kind == "monitorDisabled" {
+                recordMonitorDisabled(.tapDisabledByTimeout)
+            } else if kind == "tapDisabled" {
                 // The native callback receives disable notifications before hold and after release too.
                 recordTapDisabled(c["reason"] as? String == "user_input" ? .tapDisabledByUserInput : .tapDisabledByTimeout)
             } else if holding && kind == "escUp" && releasePending {
@@ -4145,7 +4676,17 @@ final class Session {
             if let f = c["userFlags"] as? [String] { fake.userFlags = flagsFrom(f) }
             if let h = c["held"] as? Bool { fakeHeld = h }
             if let ks = c["heldKeys"] as? [NSNumber] { fakeHeldKeys = ks.map { $0.intValue } }
+            if let v = c["stuckClears"] as? Bool { fakeStuckClears = v; fakeStuckClearKeys = nil }
+            if let v = c["stuckClears"] as? [NSNumber] { fakeStuckClears = true; fakeStuckClearKeys = Set(v.map { $0.intValue }) }
+            if let v = num(c["keyIdle"]) { fakeKeyIdle = v }
+            if dry {
+                if let m = c["layout"] as? [String: String] { fakeLayoutChars = Dictionary(uniqueKeysWithValues: m.compactMap { k, v in Int(k).map { ($0, v) } }) }
+                if let u = c["layoutUnreadable"] as? Bool { fakeLayoutUnreadable = u }
+            }
             if let si = c["secureInput"] as? String { fake.secureInput = si }
+            if let screen = c["screenState"] as? String { fake.screenState = screen }
+            if c["filePanel"] is NSNull { fake.filePanel = nil }
+            else if let panel = c["filePanel"] as? [String: Any] { fake.filePanel = panel }
         case "_term":
             terminate = true
         case "_pb":
@@ -4166,6 +4707,9 @@ final class Session {
         default:
             r = ["ok": false, "error": "bad_request", "message": "unknown op \(op)"]
         }
+        r["epoch"] = nativeEpoch
+        r["nativePaused"] = nativePaused
+        if dry { r["posted"] = posted }
         r["op"] = op
         r["id"] = c["id"] ?? NSNull()
         r["t"] = ms()
@@ -4208,6 +4752,7 @@ final class Session {
         startReader()
         while true {
             drainControl()
+            if let end = pendingEnd { finish("end", end) }
             if terminate { finish("signal") }
             lock.lock()
             let req = queue.isEmpty ? nil : queue.removeFirst()
@@ -4228,6 +4773,8 @@ final class Session {
 
     func reply(_ req: [String: Any], _ body: [String: Any]) {
         var r = body
+        r["epoch"] = nativeEpoch
+        r["nativePaused"] = nativePaused
         r["op"] = req["op"] ?? NSNull()
         if let id = req["id"] { r["id"] = id }
         r["interrupted"] = interrupted ?? NSNull()
@@ -4251,6 +4798,7 @@ final class Session {
             }
             if ["click", "move", "wheel", "type", "key", "paste"].contains(op) { refreshSpeedSetting() }
             switch op {
+            case "inspectDialog", "bindNativeTarget", "recordNativeScene", "nativeChrome": r = try opNative(req, op)
             case "watchNavigation": r = try opWatchNavigation(req)
             case "navigationState": r = opNavigationState(req)
             case "begin": r = try opBegin(req)
@@ -4273,6 +4821,10 @@ final class Session {
             case "end": finish("end", req)
             default: r = ["ok": false, "error": "bad_request", "message": "unknown op \(op)"]
             }
+        } catch let e as ChromeNative.Failure {
+            r = e.json
+        } catch let e as ChromeNative.DialogFailure {
+            r = e.json
         } catch let h as Halt {
             panel?.fail()
             r = progress
@@ -4288,6 +4840,14 @@ final class Session {
         } catch {
             r = ["ok": false, "error": "internal", "message": "\(error)", "released": releaseHeld()]
         }
+        if ["nativeChrome", "bindNativeTarget", "recordNativeScene", "inspectDialog"].contains(op) {
+            r["inputDelivery"] = r["inputDelivery"] ?? "not_sent"
+        }
+        if op == "nativeChrome", let transaction = nativeOwner?.lastTransaction,
+           transaction.operationId == req["operationId"] as? String {
+            r = transaction.result(r)
+            if transaction.delivery == "unknown" { revokeNativeState(uncertain: true) }
+        }
         reply(req, r)
     }
 
@@ -4295,6 +4855,7 @@ final class Session {
     /// unchanged, reply once, then stay only until the veil has faded out (≤ ~0.4 s;
     /// the caller does not wait for it), exit 0.
     func finish(_ reason: String, _ req: [String: Any] = ["op": "end"]) -> Never {
+        revokeNativeState()
         posted = []
         // A normal end: whatever was left on the checklist is done (a failed one stays failed).
         if reason == "end" && !aborted { panel?.allDone() } else { panel?.fail() }
@@ -4342,24 +4903,35 @@ final class Session {
     func opNavigationState(_ req: [String: Any]) -> [String: Any] {
         if !dry && (IsSecureEventInputEnabled() || gRouteTap == nil) { navigationHistory.invalidate() }
         let since = num(req["since"]) ?? navigationHistory.startedAt ?? 0
-        let untouched = navigationOnly && navigationHistory.untouched(pid: Int(num(req["chromePid"]) ?? 0),
-            window: Int(num(req["window"]) ?? 0), since: since)
-        return ["ok": true, "known": navigationOnly && navigationHistory.reliable,
+        let pid = Int(num(req["chromePid"]) ?? 0), window = Int(num(req["window"]) ?? 0)
+        let validRange = navigationOnly && pid > 0 && window > 0 && since.isFinite &&
+            navigationHistory.startedAt.map { since >= $0 } == true
+        let covered = validRange && navigationHistory.reliable
+        // A later observation failure cannot erase a positive, exactly routed event.
+        let targetInput = validRange && (navigationHistory.latest["\(pid):\(window)"] ?? 0) > since
+        let ambiguousInput = validRange && (navigationHistory.latest["\(pid):?"] ?? 0) > since
+        let untouched = covered && !targetInput && !ambiguousInput
+        return ["ok": true, "known": covered, "targetInput": targetInput, "ambiguousInput": ambiguousInput,
                 "untouched": untouched, "startedAt": navigationHistory.startedAt ?? NSNull()]
     }
 
-    /// Putting the user's scene back is still wanted after Esc-Esc (their input was held, nothing of theirs moved).
+    /// Restoration shares the same healthy Session. Pause permits only this
+    /// cleanup path; Esc, release, interruption and unknown delivery never do.
     func requireRestore() throws {
-        let wasAborted = aborted
-        aborted = false
-        defer { aborted = wasAborted }
-        try requireInput()
+        // The stdin reader only queues controls. Apply them on this owner before
+        // the final health check, including controls received during settle().
+        drainControl()
+        if !monitor { throw Halt.bad("no_input_monitor", "listen-only event tap could not be created") }
+        if !begun { throw Halt.bad("not_begun", "send begin first") }
+        try checkStop(true)
+        if nativeRevoked || nativeUncertain || (takeover && !holding) || (nativePaused && !holding) {
+            throw Halt.bad("hold_ended", "The original input hold is no longer healthy.")
+        }
     }
 
     func requireInput() throws {
-        if !monitor { throw Halt.bad("no_input_monitor", "listen-only event tap could not be created") }
-        if !begun { throw Halt.bad("not_begun", "send begin first") }
-        try checkStop()
+        try requireRestore()
+        if nativePaused { throw Halt.bad("native_paused", "Normal input is paused.") }
     }
 
     /// Service the run loop once so a user event already queued at the tap
@@ -4374,14 +4946,15 @@ final class Session {
         try requireRestore()
         panel?.begin("restore")
         guard let p = pointArg(req["to"]) else { throw Halt.bad("bad_request", "warp needs to {x,y}") }
+        // Panel preparation may run callbacks; service controls again at dispatch.
+        try requireRestore()
         if dry {
             fake.cursor = p
-        } else {
-            CGWarpMouseCursorPosition(p)
-            CGAssociateMouseAndMouseCursorPosition(1)
-            veil?.pointerReturned(to: p)
+            return ["ok": true, "verified": true, "warped": pointJSON(p)]
         }
-        return ["ok": true, "warped": pointJSON(p)]
+        let result = restorePointer(to: p)
+        if result["verified"] as? Bool == true { veil?.pointerReturned(to: p) }
+        return result
     }
 
     /// Give the front back to the user's app from inside the running session
@@ -4406,10 +4979,14 @@ final class Session {
         try requireRestore()
         panel?.begin("restore")
         guard let pid = num(req["pid"]) else { throw Halt.bad("bad_request", "handBack needs pid") }
-        if dry { return ["ok": true, "frontmost": true, "dryRun": true] }
+        if dry {
+            try requireRestore()
+            return ["ok": true, "frontmost": true, "dryRun": true]
+        }
         guard let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
             return ["ok": false, "error": "no_such_app"]
         }
+        try requireRestore()
         app.activate(options: [])
         var waited = 0.0
         while waited < 400 && NSWorkspace.shared.frontmostApplication?.processIdentifier != pid_t(pid) {
@@ -4433,9 +5010,18 @@ final class Session {
             return ["ok": true, "panel": true, "queue": queueLabels.count]
         }
         guard let p = panel else { return ["ok": true, "panel": false] }
+        if let n = num(req["confirmedChars"]), let total = num(req["totalChars"]) {
+            guard n.isFinite, total.isFinite, n.rounded() == n, total.rounded() == total,
+                  n >= Double(p.charsDone), total >= n, total > 0, total <= 10_000_000 else {
+                return ["ok": false, "error": "bad_progress", "message": "Confirmed character counts must be bounded and monotonic."]
+            }
+            p.confirmChars(Int(n), total: Int(total))
+            return ["ok": true, "confirmedChars": p.charsDone, "totalChars": p.charsTotal]
+        }
         if p.feedMode, let entries = req["feedEntries"] as? [String] {
             p.feedEntries = Array(entries.suffix(16)).map { String($0.suffix(8000)) }
             p.feedStatus = req["feedStatus"] as? String ?? p.feedStatus
+            p.feedReason = req["feedReason"] as? String ?? ""
             if holding { measuredStage("overlay_feed") { veil?.relabel(label: veilLabel, target: veilTarget, model: p) } }
             return ["ok": true, "panel": true, "feedCount": p.feedEntries.count]
         }
@@ -4456,7 +5042,7 @@ final class Session {
     /// agent's next step. The veil is laid out again in place.
     func opVeil(_ req: [String: Any]) -> [String: Any] {
         if let h = req["hidden"] as? Bool { veil?.setHidden(h); return ["ok": true, "held": holding, "hidden": h] }
-        guard let d = req["veil"] as? [String: Any] else { return ["ok": true] }
+        guard let d = req["veil"] as? [String: Any] else { return ["ok": true, "held": holding] }
         if let p = d["panel"] as? [String: Any], let m = PanelModel(p) {
             m.speed = speed
             m.speedSaveState = speedSaveState
@@ -4481,16 +5067,26 @@ final class Session {
     /// Take over before anything else is known (no Chrome window yet): veil up, the user's input
     /// held. `begin` follows with the target window.
     func opHold(_ req: [String: Any]) throws -> [String: Any] {
-        if holding { return ["ok": true] }
+        // STUCK1: the keys the bridge found stale, released inside this hold (clearStaleKeys); hold only.
+        let clear = (req["clearStuck"] as? [String: Any]).flatMap { d -> StuckClear? in
+            guard let ks = d["keys"] as? [NSNumber], let q = num(d["quietS"]), q.isFinite, q >= 0 else { return nil }
+            let keys = Set(ks.map { $0.intValue }.filter { (0..<128).contains($0) })
+            return keys.isEmpty ? nil : StuckClear(keys: keys, quietS: q)
+        }
+        // r2/r3: nothing posted yet for any requested key, before the first exit: every refusal from here on (already
+        // held, hold ended, Stop, no Accessibility, Secure Input, no tap, …) reports that.
+        if let c = clear { progress["stuckKeys"] = c.keys.sorted().map { k -> [String: Any] in ["key": k, "posted": false] } }
+        if holding { return ["ok": true].merging(progress.filter { $0.key == "stuckKeys" }) { a, _ in a } }
         if takeover { throw Halt.bad("hold_ended", "this session already held and released") }
         try checkStop()
         if !dry && !isTrusted() { throw Halt.bad("no_accessibility", "Accessibility permission missing") }
         takeVeil(req["veil"])
         try startTakeover(maxMs: min(1_800_000, max(1000, num(req["takeoverMaxMs"]) ?? 600_000)),
                           idleMs: min(120_000, max(500, num(req["takeoverIdleMs"]) ?? 10_000)),
-                          untilDone: req["takeoverUntilDone"] as? Bool == true)
+                          untilDone: req["takeoverUntilDone"] as? Bool == true, clearStuck: clear)
         // Where the user's pointer is, read inside the hold (it cannot move any more).
         var r: [String: Any] = ["ok": true, "pointer": pointJSON(cursor())]
+        for k in ["stuckKeyClear", "stuckKeys"] { if let v = progress[k] { r[k] = v } }
         r["heldAt"] = heldAt ?? Date().timeIntervalSince1970 * 1000
         if let v = veilMs { r["veilMs"] = v; r["veilMode"] = veil?.mode ?? NSNull() }
         return r
@@ -4503,6 +5099,10 @@ final class Session {
             throw Halt.bad("bad_request", "begin needs chromePid, window, windowBounds")
         }
         if !dry && !isTrusted() { throw Halt.bad("no_accessibility", "Accessibility permission missing") }
+        if let target = nativeOwner?.target,
+           target.chromePid != pid_t(pid) || target.cgWindow != Int(win) {
+            throw Halt.bad("native_target_changed", "Begin must confirm the prebound native target.")
+        }
         chromePid = pid_t(pid)
         window = Int(win)
         windowBounds = wb
@@ -4616,12 +5216,19 @@ final class Session {
             throw Halt.bad("bad_request", "move needs to {x,y} and rect {x,y,w,h}")
         }
         let plan = planMove(from: cursor(), rect: rect, aim: to, window: windowBounds, rate: rate, u: fittsU())
+        // Movement is also used by background scrolling: require the exact top
+        // window and reachable point, without granting foreground activation.
+        try guardLanding(plan.landing)
+        if topWindow(at: plan.landing) != window { throw Halt.guardFailed("window_not_top") }
         let tReact = nowMs()
         let react = sampleReaction()
         panel?.begin("move", est: react + plan.moveMs)
         try pace(react)
         let reaction = nowMs() - tReact
         let m = try runMove(plan)
+        let actual = cursor()
+        if dist(actual, plan.landing) > 1.5 { throw Halt.guardFailed("cursor_moved") }
+        try guardWheel(at: actual)
         panel?.finish("move")
         return ["ok": true, "landed": pointJSON(plan.landing), "skippedMove": plan.skipped,
                 "submovements": plan.strokes.count, "points": m.points,
@@ -4650,15 +5257,18 @@ final class Session {
     }
 
     /// One character on its real key (§1.3 type): Shift as its own
-    /// flagsChanged, guard right before each down. `delivered` runs at keyDown.
-    func strike(_ code: CGKeyCode, shift: Bool, unicode: String?, delivered: () -> Void = {}) throws {
+    /// flagsChanged, guard right before each down. `delivered` runs at keyDown. `keyGuard` replaces
+    /// guardKeys only for upload_file's Open panel (guardFilePanelKeys); every other caller omits it.
+    func strike(_ code: CGKeyCode, shift: Bool, unicode: String?, keyGuard: (() throws -> Void)? = nil,
+                delivered: () -> Void = {}) throws {
+        let check = keyGuard ?? { try self.guardKeys() }
         if shift {
-            try guardKeys()
+            try check()
             heldShift = true
             sendFlags(kShift)
             try pace(lognormalMs(55, 0.35, 20, 150))
         }
-        try guardKeys()
+        try check()
         heldKey = (code, unicode)
         sendKey(code, true, unicode)
         delivered()
@@ -4681,7 +5291,19 @@ final class Session {
         }
         var typed = 0
         progress["typed"] = 0
+        let confirmedProgress = req["confirmedProgress"] as? Bool == true
+        progress["confirmationPending"] = confirmedProgress
         panel?.begin("type")
+        func flightAfter(_ ch: Character) -> Double {
+            var flight = gHabits.flight.sample()
+            if ch == " " || ch == "\t" { flight *= gHabits.spaceFactor }
+            if ",.;:!?".contains(ch) { flight *= gHabits.punctFactor }
+            if unit() < gHabits.longPause { flight += uniform(300, 900) }
+            return flight
+        }
+        if req["continueTyping"] as? Bool == true, let previous = lastTypedCharacter {
+            try pace(flightAfter(previous))
+        } else { lastTypedCharacter = nil }
         if req["firstDelay"] as? Bool == true { try pace(lognormalMs(600, 0.4, 330, 2000)) }
         let chars = Array(text)
         for (i, ch) in chars.enumerated() {
@@ -4692,22 +5314,39 @@ final class Session {
             for (j, s) in strokes.enumerated() {
                 if j > 0 { try pace(gHabits.flight.sample() * gHabits.spaceFactor) }
                 try strike(s.0, shift: s.1, unicode: s.2, delivered: {
-                    if j == strokes.count - 1 { typed += 1; progress["typed"] = typed; panel?.addChars(1) }
+                    if j == strokes.count - 1 {
+                        typed += 1; progress["typed"] = typed; lastTypedCharacter = ch
+                        if !confirmedProgress { panel?.addChars(1) }
+                    }
                 })
             }
             if i == chars.count - 1 { break }
             // Flight to the next key: slower after spaces and punctuation, occasional hesitation.
-            var flight = gHabits.flight.sample()
-            if ch == " " || ch == "\t" { flight *= gHabits.spaceFactor }
-            if ",.;:!?".contains(ch) { flight *= gHabits.punctFactor }
-            if unit() < gHabits.longPause { flight += uniform(300, 900) }
-            try pace(flight)
+            try pace(flightAfter(ch))
         }
         return ["ok": true, "typed": typed]
     }
 
     func opKey(_ req: [String: Any]) throws -> [String: Any] {
+        // upload_file's arming ends with its action, also when the session is no longer healthy.
+        if req["name"] as? String == "file_panel_end" { filePanelToken = nil; return ["ok": true, "key": "file_panel_end"] }
         try requireInput()
+        if req["name"] as? String == "file_panel_begin" { return try opFilePanelBegin(req) }
+        if req["name"] as? String == "file_panel" { return try opFilePanel(req) }
+        if (req["name"] as? String)?.lowercased() == "select_all" {
+            try pace(lognormalMs(120, 0.3, 50, 300))
+            try guardKeys()
+            heldCmd = true
+            sendFlags(kCommand)
+            try pace(lognormalMs(55, 0.35, 20, 150))
+            // Real Command+A only. The caller must bind/verify its editable target and selection.
+            // strike guards A-down; handle's catch releases A/Command on every interruption.
+            try strike(0, shift: false, unicode: nil)
+            try pace(lognormalMs(35, 0.4, 10, 120))
+            heldCmd = false
+            sendFlags(kCommand)
+            return ["ok": true, "key": "select_all", "postedInput": progress["postedInput"] ?? 0]
+        }
         guard let name = (req["name"] as? String)?.lowercased(), let code = namedKeys[name] else {
             throw Halt.bad("bad_request", "key name must be one of \(namedKeys.keys.sorted().joined(separator: "|"))")
         }
@@ -4718,11 +5357,361 @@ final class Session {
         return ["ok": true, "key": name]
     }
 
+    // MARK: upload_file: the macOS Open panel (src/index.js uploadFile)
+
+    /// This Chrome's Open panel as AX and CG report it now. `known`: the panel identified earlier (its
+    /// later states); nil: look for it. Bounded reads only; a dry run reports `_fake filePanel`
+    /// ({pid, app, window, identifier, shaped, focus: "panel"|"goto"|"sub"|"none", goto, gotoParent, field}).
+    func readFilePanel(_ known: AXUIElement?) -> PanelSight {
+        var s = PanelSight()
+        if dry {
+            s.frontPid = frontPid() ?? chromePid
+            guard let d = fake.filePanel else { return s }
+            if let pid = num(d["pid"]) { s.frontPid = pid_t(pid) }
+            s.frontName = d["app"] as? String ?? ""
+            s.window = num(d["window"]).map { Int($0) }
+            s.identifier = d["identifier"] as? String ?? ""
+            s.shaped = d["shaped"] as? Bool ?? false
+            let focus = d["focus"] as? String ?? "none"
+            let inner = num(d["goto"]).map { Int($0) }
+            s.focusInside = ["panel", "goto", "sub"].contains(focus)
+            s.keyWindow = focus == "panel" ? s.window : (focus == "goto" || focus == "sub") ? inner : nil
+            s.keyParentIsPanel = (focus == "goto" || focus == "sub") && (d["gotoParent"] as? String ?? "panel") == "panel"
+            s.field = d["field"] as? Bool ?? (focus == "goto")
+            return s
+        }
+        guard let front = NSWorkspace.shared.frontmostApplication else { return s }
+        s.frontPid = front.processIdentifier
+        s.frontName = front.localizedName ?? ""
+        guard s.frontPid == chromePid else { return s }
+        let app = AXUIElementCreateApplication(chromePid)
+        let started = nowMs()
+        var reads = 0
+        func attr(_ e: AXUIElement, _ key: String) -> CFTypeRef? {
+            reads += 1
+            guard reads <= 400, nowMs() - started < 1500 else { return nil }
+            // These reads share the main run loop with the takeover tap: service it between them.
+            if reads % 8 == 0 { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.001)) }
+            AXUIElementSetMessagingTimeout(e, 0.25)
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(e, key as CFString, &value) == .success ? value : nil
+        }
+        func element(_ e: AXUIElement, _ key: String) -> AXUIElement? {
+            guard let v = attr(e, key), CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
+            return (v as! AXUIElement)
+        }
+        func elements(_ e: AXUIElement, _ key: String) -> [AXUIElement] { attr(e, key) as? [AXUIElement] ?? [] }
+        func number(_ e: AXUIElement) -> Int? {
+            var n: CGWindowID = 0
+            return nativeEscapeWindowNumber(e, &n) == .success && n != 0 ? Int(n) : nil
+        }
+        func shaped(_ e: AXUIElement) -> Bool {
+            let role = attr(e, kAXRoleAttribute) as? String ?? ""
+            if role == "AXSheet" { return true }
+            guard role == (kAXWindowRole as String) else { return false }
+            let sub = attr(e, kAXSubroleAttribute) as? String ?? ""
+            return sub == "AXDialog" || sub == "AXSystemDialog"
+        }
+        var panel = known
+        if panel == nil {
+            // The focused window and its sheets first (a sheet may be reported either way), then the
+            // sheets and dialog-shaped windows of every window of this Chrome; an "open-panel" one first.
+            var candidates: [AXUIElement] = []
+            if let fw = element(app, kAXFocusedWindowAttribute) {
+                if shaped(fw) { candidates.append(fw) }
+                candidates.append(contentsOf: elements(fw, "AXSheets").prefix(4))
+            }
+            let isOpenPanel = { (e: AXUIElement) in attr(e, "AXIdentifier") as? String == "open-panel" }
+            if !candidates.contains(where: isOpenPanel) {
+                for w in elements(app, kAXWindowsAttribute).prefix(32) {
+                    if shaped(w) { candidates.append(w) }
+                    candidates.append(contentsOf: elements(w, "AXSheets").prefix(4))
+                }
+            }
+            panel = candidates.first(where: isOpenPanel) ?? candidates.first
+        }
+        guard let p = panel, let n = number(p), n != window, cgOnScreenOwned(n) else { return s }
+        s.window = n
+        s.element = p
+        s.identifier = attr(p, "AXIdentifier") as? String ?? ""
+        s.shaped = shaped(p)
+        // The keyboard: the app's focused element, walked up to the panel. The innermost sheet or
+        // dialog on that way is the window that receives keys now.
+        guard let focused = element(app, kAXFocusedUIElementAttribute) else { return s }
+        var node: AXUIElement? = focused, inner: AXUIElement?, steps = 0
+        while let e = node, steps < 40 {
+            steps += 1
+            if CFEqual(e, p) { s.focusInside = true; break }
+            if inner == nil && shaped(e) { inner = e }
+            if attr(e, kAXRoleAttribute) as? String == (kAXApplicationRole as String) { break }
+            node = element(e, kAXParentAttribute)
+        }
+        guard s.focusInside else { return s }
+        if let i = inner {
+            if let g = number(i), g != n, g != window, cgOnScreenOwned(g) { s.keyWindow = g }
+            if let parent = element(i, kAXParentAttribute) { s.keyParentIsPanel = CFEqual(parent, p) }
+        } else {
+            s.keyWindow = n
+        }
+        let role = attr(focused, kAXRoleAttribute) as? String ?? ""
+        s.field = role == (kAXTextFieldRole as String) || role == "AXComboBox"
+        return s
+    }
+
+    /// Window `n` is on screen, at layer 0, and this Chrome's.
+    func cgOnScreenOwned(_ n: Int) -> Bool {
+        guard let rows = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(n)) as? [[String: Any]],
+              let row = rows.first(where: { ($0[kCGWindowNumber as String] as? Int) == n }) else { return false }
+        return pid_t((row[kCGWindowOwnerPID as String] as? Int) ?? 0) == chromePid &&
+            ((row[kCGWindowLayer as String] as? Int) ?? -1) == 0 && (row[kCGWindowIsOnscreen as String] as? Bool) == true
+    }
+
+    /// This Chrome's on-screen windows now (CG numbers): what existed before Cmd+Shift+G.
+    func chromeWindowNumbers() -> Set<Int> {
+        if dry {
+            var out: Set<Int> = [window]
+            if let d = fake.filePanel {
+                for key in ["window", "goto"] { if let v = num(d[key]) { out.insert(Int(v)) } }
+            }
+            return out
+        }
+        guard let rows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return [] }
+        return Set(rows.compactMap { row in
+            pid_t((row[kCGWindowOwnerPID as String] as? Int) ?? 0) == chromePid ? row[kCGWindowNumber as String] as? Int : nil
+        })
+    }
+
+    func filePanelPresent(_ n: Int) -> Bool {
+        if dry { return num(fake.filePanel?["window"]).map { Int($0) } == n }
+        return cgOnScreenOwned(n)
+    }
+
+    /// guardKeys for the Open panel only, right before each key or modifier press: this Chrome in
+    /// front, its front window one of `allowed` (never the target), no foreign modifier, and AX
+    /// confirming the keyboard is in the expected verified window for this stage: the panel itself,
+    /// or the field of the Go-to-folder sheet identified after Cmd+Shift+G.
+    func guardFilePanelKeys(_ allowed: Set<Int>, _ target: PanelKeyTarget, panel: Int, element: AXUIElement?) throws {
+        try checkStop()
+        if frontPid() != chromePid { throw Halt.guardFailed("not_frontmost") }
+        guard let w = frontChromeWindow(), w != window, allowed.contains(w) else { throw Halt.guardFailed("key_window") }
+        if foreignModifiers() { throw Halt.guardFailed("modifier_held") }
+        let s = readFilePanel(element)
+        switch target {
+        case .panel:
+            guard FilePanel.atPanel(s, chromePid: chromePid, panel: panel) else { throw Halt.guardFailed("key_window") }
+        case .goto(let g):
+            guard FilePanel.atGoto(s, chromePid: chromePid, panel: panel, goto: g) else { throw Halt.guardFailed("key_window") }
+        }
+        // The AX reads serviced the run loop: a Stop seen meanwhile wins over the key.
+        try checkStop()
+        if frontPid() != chromePid { throw Halt.guardFailed("not_frontmost") }
+    }
+
+    /// upload_file's scope: only uploadFile arms the one file_panel op of its own action, and only
+    /// under an active takeover hold. The token is consumed by that op (or cleared by file_panel_end).
+    func opFilePanelBegin(_ req: [String: Any]) throws -> [String: Any] {
+        guard takeover, holding else { throw Halt.bad("file_panel_not_held", "The Open panel needs an active takeover.") }
+        guard let token = req["token"] as? String, token.count >= 16, token.count <= 128 else {
+            throw Halt.bad("bad_request", "file_panel_begin needs a token")
+        }
+        filePanelToken = token
+        return ["ok": true, "key": "file_panel_begin"]
+    }
+
+    /// Choose `path` in the Open panel that the page's file control (clicked just before) opened:
+    /// Cmd+Shift+G, the path key by key, Return (Go to Folder), Return (Open). Keys reach only the
+    /// windows identified here as this Chrome's Open panel and its Go-to-folder sheet, each re-verified
+    /// by AX before every key, and only during this armed op under an active takeover; guardKeys and
+    /// every other op keep requiring the target window. A failure that is not a stop closes the panel
+    /// with Esc into those same windows. After a stop only the releases of keys this op still holds go out.
+    func opFilePanel(_ req: [String: Any]) throws -> [String: Any] {
+        let armed = filePanelToken
+        filePanelToken = nil
+        guard takeover, holding, let token = armed, req["token"] as? String == token else {
+            throw Halt.bad("file_panel_not_armed", "The Open panel op was not armed by upload_file under an active takeover.")
+        }
+        guard let path = req["path"] as? String, path.hasPrefix("/"), path.count <= 1024,
+              path.allSatisfy({ usKeys[$0] != nil }) else {
+            throw Halt.bad("bad_request", "file_panel needs an absolute path of US-keyboard characters")
+        }
+        let appearMs = min(15_000, max(300, num(req["appearMs"]) ?? 6000))
+        let settleMs = min(10_000, max(300, num(req["settleMs"]) ?? 4000))
+        progress["panelOpen"] = false
+        progress["typed"] = 0
+        progress["panelStage"] = "wait"
+        // 1. This Chrome's Open panel, in front with the keyboard.
+        checkpoint("file_panel_wait")
+        var sight = readFilePanel(nil)
+        var verdict = FilePanel.verdict(sight, chromePid: chromePid, frontChromeWindow: frontChromeWindow())
+        let appearUntil = nowMs() + appearMs
+        while verdict != "ready" && nowMs() < appearUntil {
+            do { try wait(60) } catch {
+                // Stopped while waiting: report whether a panel is up; send nothing.
+                progress["panelOpen"] = readFilePanel(nil).window.map(filePanelPresent) ?? false
+                throw error
+            }
+            sight = readFilePanel(nil)
+            verdict = FilePanel.verdict(sight, chromePid: chromePid, frontChromeWindow: frontChromeWindow())
+        }
+        guard verdict == "ready", let panelWindow = sight.window else {
+            // Another app in front: this Chrome's windows were not read, so nothing is claimed about them.
+            progress["panelOpen"] = verdict == "other_app" ? NSNull() : (sight.window.map(filePanelPresent) ?? false)
+            switch verdict {
+            case "other_app":
+                progress["panelApp"] = String(sight.frontName.prefix(80))
+                throw Halt.bad("file_panel_other_app", "Another app has the keyboard, not this Chrome's Open panel.")
+            case "unidentified":
+                progress["panelState"] = sight.identifier == "open-panel" ? "not_key" : "not_open_panel"
+                throw Halt.bad("file_panel_unidentified", "A Chrome sheet or dialog is not a verified Open panel with keyboard focus.")
+            default:
+                throw Halt.bad("file_panel_missing", "No Open panel appeared.")
+            }
+        }
+        progress["panelOpen"] = true
+        let element = sight.element
+        var allowed: Set<Int> = [panelWindow]
+        var gotoWindow: Int?
+        let atPanel = { () throws in try self.guardFilePanelKeys(allowed, .panel, panel: panelWindow, element: element) }
+        let atGoto = { () throws in
+            guard let g = gotoWindow else { throw Halt.guardFailed("key_window") }
+            try self.guardFilePanelKeys(allowed, .goto(g), panel: panelWindow, element: element)
+        }
+        var stage = "goto"
+        do {
+            panel?.begin("type")
+            progress["panelStage"] = stage
+            try pace(lognormalMs(350, 0.35, 150, 1000))
+            // Cmd+Shift+G: Go to Folder. Whatever is on screen now cannot be its sheet.
+            let before = chromeWindowNumbers().union([panelWindow, window])
+            try atPanel()
+            heldCmd = true
+            sendFlags(kCommand)
+            try pace(lognormalMs(55, 0.35, 20, 150))
+            try atPanel()
+            heldShift = true
+            sendFlags(kShift)
+            try pace(lognormalMs(55, 0.35, 20, 150))
+            try strike(5, shift: false, unicode: nil, keyGuard: atPanel)
+            try pace(lognormalMs(35, 0.4, 10, 120))
+            heldShift = false
+            sendFlags(kShift)
+            try pace(lognormalMs(25, 0.4, 10, 100))
+            heldCmd = false
+            sendFlags(kCommand)
+            checkpoint("file_panel_goto")
+            let gotoUntil = nowMs() + settleMs
+            while gotoWindow == nil {
+                if let g = FilePanel.newGoto(readFilePanel(element), chromePid: chromePid, panel: panelWindow, before: before) {
+                    gotoWindow = g
+                    break
+                }
+                if nowMs() >= gotoUntil { throw Halt.bad("file_panel_goto_missing", "No Go to Folder field appeared.") }
+                try wait(60)
+            }
+            allowed.insert(gotoWindow!)
+            // The path, key by key, into the Go-to-folder field.
+            stage = "path"
+            progress["panelStage"] = stage
+            try pace(lognormalMs(400, 0.35, 150, 1200))
+            var typed = 0
+            let chars = Array(path)
+            for (i, ch) in chars.enumerated() {
+                let (code, shift) = usKeys[ch]!
+                try strike(code, shift: shift, unicode: String(ch), keyGuard: atGoto)
+                typed += 1
+                progress["typed"] = typed
+                if i < chars.count - 1 {
+                    var flight = gHabits.flight.sample()
+                    if ch == " " { flight *= gHabits.spaceFactor }
+                    try pace(flight)
+                }
+            }
+            // Return: Go to Folder closes, the panel shows the file's folder with the file selected.
+            stage = "go"
+            progress["panelStage"] = stage
+            try pace(lognormalMs(450, 0.35, 200, 1300))
+            try strike(kReturn, shift: false, unicode: nil, keyGuard: atGoto)
+            checkpoint("file_panel_go")
+            let goUntil = nowMs() + settleMs
+            while !(FilePanel.atPanel(readFilePanel(element), chromePid: chromePid, panel: panelWindow) &&
+                    frontChromeWindow() == panelWindow) {
+                if nowMs() >= goUntil { throw Halt.bad("file_panel_not_closed", "Go to Folder did not close.") }
+                try wait(60)
+            }
+            allowed.remove(gotoWindow!)
+            // Return: Open. The panel closes and Chrome hands the file to the page.
+            stage = "open"
+            progress["panelStage"] = stage
+            try pace(lognormalMs(500, 0.35, 250, 1400))
+            try strike(kReturn, shift: false, unicode: nil, keyGuard: atPanel)
+            checkpoint("file_panel_open")
+            let openUntil = nowMs() + settleMs
+            while filePanelPresent(panelWindow) {
+                if nowMs() >= openUntil { throw Halt.bad("file_panel_not_closed", "The Open panel did not close.") }
+                try wait(60)
+            }
+            progress["panelOpen"] = false
+            progress["panelStage"] = "closed"
+            panel?.finish("type")
+            return ["ok": true, "key": "file_panel", "typed": typed, "panelClosed": true]
+        } catch {
+            progress["panelStage"] = stage
+            // Only the releases of what this op still holds (no key-down, no pointer): no stuck keys.
+            _ = releaseHeld()
+            // Esc only after a refusal or an unmet expectation; a stop (Esc×2, cancel, interruption,
+            // end) or a pause sends nothing more: checkStop inside the guard refuses those too.
+            var recoverable = false
+            if let halt = error as? Halt {
+                switch halt {
+                case .bad, .guardFailed: recoverable = true
+                default: recoverable = false
+                }
+            }
+            if recoverable { escapeFilePanel(panelWindow, element, verifiedGoto: gotoWindow) }
+            progress["panelOpen"] = filePanelPresent(panelWindow)
+            throw error
+        }
+    }
+
+    /// After a failure that is not a stop: Esc (≤ 3), each guarded like any panel key, into the
+    /// verified panel or its verified Go-to sheet only, until the panel is gone. Never after Stop,
+    /// an interruption, the end or a pause.
+    func escapeFilePanel(_ panelWindow: Int, _ element: AXUIElement?, verifiedGoto: Int?) {
+        for _ in 0..<3 {
+            guard filePanelPresent(panelWindow) else { return }
+            let s = readFilePanel(element)
+            let target: PanelKeyTarget
+            var keys: Set<Int> = [panelWindow]
+            if FilePanel.atPanel(s, chromePid: chromePid, panel: panelWindow) { target = .panel }
+            else if let g = verifiedGoto, FilePanel.atGoto(s, chromePid: chromePid, panel: panelWindow, goto: g) {
+                target = .goto(g)
+                keys.insert(g)
+            } else { return }
+            let inGoto: Bool
+            if case .goto = target { inGoto = true } else { inGoto = false }
+            do {
+                try pace(lognormalMs(250, 0.35, 100, 700))
+                try strike(53, shift: false, unicode: nil,
+                           keyGuard: { try self.guardFilePanelKeys(keys, target, panel: panelWindow, element: element) })
+                progress["escaped"] = ((progress["escaped"] as? Int) ?? 0) + 1
+                checkpoint("file_panel_esc")
+                let until = nowMs() + 1500
+                while nowMs() < until {
+                    if !filePanelPresent(panelWindow) { break }
+                    if inGoto && FilePanel.atPanel(readFilePanel(element), chromePid: chromePid, panel: panelWindow) { break }
+                    try wait(60)
+                }
+            } catch { _ = releaseHeld(); return }
+        }
+    }
+
     /// Clipboard stays set after the paste; restoreClipboard (or end) puts the
     /// user's items back.
     func opPaste(_ req: [String: Any]) throws -> [String: Any] {
         try requireInput()
         guard let text = req["text"] as? String, !text.isEmpty else { throw Halt.bad("bad_request", "paste needs text") }
+        progress["pastePosted"] = false
+        progress["confirmationPending"] = req["confirmedProgress"] as? Bool == true
         try guardKeys()
         if !pendingRestore {
             savedItems = (pb.pasteboardItems ?? []).map { item in
@@ -4749,7 +5738,8 @@ final class Session {
             heldKey = (kV, nil)
             sendKey(kV, true, nil)
             vDown = true
-            panel?.addChars(text.count)
+            progress["pastePosted"] = true
+            if req["confirmedProgress"] as? Bool != true { panel?.addChars(text.count) }
             try pace(lognormalMs(80, 0.25, 40, 160), floor: 30)
             sendKey(kV, false, nil)
             heldKey = nil
@@ -5513,8 +6503,15 @@ func loadImage(_ path: String) -> CGImage? {
 /// Text lines in the image at `path`, the way Pourtype's Grabber reads them (Vision, .accurate,
 /// language correction). Vision's boxes are normalized with a BOTTOM-left origin; they are
 /// returned in image pixels with a TOP-left origin, sorted top to bottom, then left to right.
-func runOCR(path: String, langs: [String]) -> [String: Any] {
-    guard let img = loadImage(path) else { fail("bad_image", "cannot read image: \(path)") }
+func runOCR(path: String, langs: [String], maxPx: Int? = nil) -> [String: Any] {
+    let started = ProcessInfo.processInfo.systemUptime
+    let img: CGImage
+    if let limit = maxPx, let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+       let scaled = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
+           kCGImageSourceThumbnailMaxPixelSize: limit, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) {
+        img = scaled
+    } else if maxPx == nil, let original = loadImage(path) { img = original }
+    else { fail("bad_image", "cannot read image: \(path)") }
     let W = Double(img.width), H = Double(img.height)
     let req = VNRecognizeTextRequest()
     req.recognitionLevel = .accurate
@@ -5538,7 +6535,27 @@ func runOCR(path: String, langs: [String]) -> [String: Any] {
     }
     lines.sort { $0.y != $1.y ? $0.y < $1.y : $0.x < $1.x }
     return ["ok": true, "width": img.width, "height": img.height, "langs": use, "autoLanguage": auto,
-            "lines": lines.map { $0.d }]
+            "lines": lines.map { $0.d }, "elapsedMs": Int((ProcessInfo.processInfo.systemUptime - started) * 1000)]
+}
+
+/// Crop in screen points, rounding inward in image pixels so no browser chrome survives.
+func runPageCrop(out: String, base: String, rect: CGRect, crop: CGRect) -> [String: Any] {
+    guard rect.width > 0, rect.height > 0, crop.width > 0, crop.height > 0,
+          crop.minX >= rect.minX, crop.minY > rect.minY, crop.maxX <= rect.maxX, crop.maxY <= rect.maxY,
+          let image = loadImage(base) else { fail("bad_crop", "page crop must be strictly inside its window") }
+    let sx = CGFloat(image.width) / rect.width, sy = CGFloat(image.height) / rect.height
+    guard abs(sx / sy - 1) <= 0.03 else { fail("bad_crop", "window image geometry disagrees with content bounds") }
+    let left = ceil((crop.minX - rect.minX) * sx), top = ceil((crop.minY - rect.minY) * sy)
+    let right = floor((crop.maxX - rect.minX) * sx), bottom = floor((crop.maxY - rect.minY) * sy)
+    guard right > left, bottom > top,
+          let result = image.cropping(to: CGRect(x: left, y: top, width: right - left, height: bottom - top)),
+          let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: out) as CFURL, "public.png" as CFString, 1, nil) else {
+        fail("bad_crop", "cannot crop page image")
+    }
+    CGImageDestinationAddImage(dest, result, nil)
+    guard CGImageDestinationFinalize(dest) else { fail("bad_crop", "cannot write page image") }
+    return ["ok": true, "width": result.width, "height": result.height,
+            "rect": ["x": rect.minX + left / sx, "y": rect.minY + top / sy, "w": (right - left) / sx, "h": (bottom - top) / sy]]
 }
 
 /// The window's CG bounds, and the on-screen windows in front of it that overlap it (front to
@@ -5605,6 +6622,11 @@ guard let cmd = args.first else {
 
 switch cmd {
 
+case "focus-front":
+    // FOCUS2 child mode: one short-lived process per skylight activation (native-chrome.swift Focus.childMain).
+    // No ScriptingBridge, private symbols by dlsym only; a fault here ends this child, never the session helper.
+    ChromeNative.Focus.childMain(args)
+
 case "escape-menu":
     guard args.count == 5, let pid = pid_t(args[1]), pid > 0, let window = Int(args[2]), window > 0,
           let since = Double(args[4]) else { fail("usage", "escape-menu <pid> <window> <document-token> <checked-since-ms>") }
@@ -5620,6 +6642,8 @@ case "trust":
     // CGRequestScreenCaptureAccess), and the Automation answer without asking unless --ask-automation.
     emit(["ok": true, "accessibility": isTrusted(), "screenRecording": CGPreflightScreenCaptureAccess(),
           "automation": automationCode(ask: args.contains("--ask-automation")), "responsible": responsibleApp(),
+          // FOCUS2: which activation backends this macOS could run (symbol presence only; nothing is called).
+          "focusSymbols": ChromeNative.Focus.symbolReport(),
           "arch": archName])
 
 case "idle":
@@ -5636,12 +6660,13 @@ case "idle":
     // keyIdle: seconds since the last key or mouse button event (typing, clicking; pointer moves and
     // the wheel are not counted). held: keys and buttons physically down now. Before taking over,
     // the bridge waits until the user is done typing (keyIdle) and holds nothing (held).
-    let hands: [CGEventType] = [.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp,
-                                .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp]
-    let h = hands.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }.min() ?? 0
+    let h = handsIdleSeconds()
+    // heldCodes (STUCK1): the key codes behind the key names in `held`, from the same reading (mouse buttons first
+    // in `held`, then these keys in this order); the bridge decides a stale key from them.
+    let codes = hardwareHeldKeyCodes()
     // keyAt: the same as a wall-clock time (epoch ms), read here so the bridge's own delay does not shift it.
     emit(["ok": true, "idle": s, "clickIdle": c, "keyIdle": h, "keyAt": Date().timeIntervalSince1970 * 1000 - h * 1000,
-          "held": hardwareHeld()])
+          "held": hardwareHeldButtons() + codes.map(heldKeyName), "heldCodes": codes])
 
 case "warp":
     // Put the pointer back where the user left it. CGWarpMouseCursorPosition
@@ -5649,9 +6674,7 @@ case "warp":
     guard args.count >= 3, let x = Double(args[1]), let y = Double(args[2]) else {
         fail("usage", "usage: cgevent warp <x> <y>")
     }
-    CGWarpMouseCursorPosition(CGPoint(x: x, y: y))
-    CGAssociateMouseAndMouseCursorPosition(1)
-    emit(["ok": true, "x": x, "y": y])
+    emit(restorePointer(to: CGPoint(x: x, y: y)))
 
 case "mousepos":
     let p = currentMouse()
@@ -5910,6 +6933,9 @@ case "habits":
         fail("usage", usage)
     }
 
+case "veillayout":
+    emit(runVeilLayoutCheck())
+
 case "veilsnap":
     var opt: [String: String] = [:]
     var i = 1
@@ -5954,7 +6980,22 @@ case "ocr":
     if let i = args.firstIndex(of: "--langs"), i + 1 < args.count {
         langs = args[i + 1].split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
-    emit(runOCR(path: args[1], langs: langs))
+    var maxPx: Int? = nil
+    if let i = args.firstIndex(of: "--max-px") {
+        guard i + 1 < args.count, let n = Int(args[i + 1]), n >= 256, n <= 4096 else { fail("usage", "--max-px must be 256...4096") }
+        maxPx = n
+    }
+    emit(runOCR(path: args[1], langs: langs, maxPx: maxPx))
+
+case "crop":
+    func arg(_ flag: String) -> String? { args.firstIndex(of: flag).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
+    guard let out = arg("--out"), let base = arg("--base"), let wr = arg("--rect"), let cr = arg("--crop") else {
+        fail("usage", "crop --out page.png --base window.png --rect x,y,w,h --crop x,y,w,h")
+    }
+    let r = parseNums(wr), c = parseNums(cr)
+    guard r.count == 4, c.count == 4, (r + c).allSatisfy({ $0.isFinite }) else { fail("bad_crop", "invalid page bounds") }
+    emit(runPageCrop(out: out, base: base, rect: CGRect(x: r[0], y: r[1], width: r[2], height: r[3]),
+                     crop: CGRect(x: c[0], y: c[1], width: c[2], height: c[3])))
 
 case "windowstack":
     guard args.count >= 2, let wid = Int(args[1]) else { fail("usage", "usage: cgevent windowstack <cgWindowId>") }

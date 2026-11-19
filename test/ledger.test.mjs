@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'cb-ledger-test-'));
@@ -35,7 +36,7 @@ console.log('transitions (nextTabState), cell by cell against the table in src/l
   // The table in the comment is the specification: parse it and run every cell.
   const src = await readFile(path.join(ROOT, 'src/ledger.js'), 'utf8');
   const lines = src.split('\n');
-  const h = lines.findIndex(l => /^\s*\*\s+open\s+popup\s+navigated\s+read\s+takeover\s+close\s+missing\s+foreign\s+owner_dead\s*$/.test(l));
+  const h = lines.findIndex(l => /^\s*\*\s+open\s+popup\s+navigated\s+read\s+uncertain\s+verified\s+takeover\s+close\s+missing\s+foreign\s+owner_dead\s*$/.test(l));
   assert.ok(h > 0, 'transition table header not found in src/ledger.js');
   const cols = lines[h].replace(/^\s*\*\s+/, '').trim().split(/\s+/);
   assert.deepEqual(cols, L.EVENTS);
@@ -59,7 +60,7 @@ console.log('transitions (nextTabState), cell by cell against the table in src/l
       cells++;
     }
   }
-  assert.equal(cells, 8 * 9);
+  assert.equal(cells, 9 * 11);
   ok(`all ${cells} cells of the table hold (the comment cannot drift from the code)`);
 }
 
@@ -148,7 +149,7 @@ console.log('wording: list section, reminder line, recovery line, owner names');
   const e = (tabId, state, x = {}) => ({ tabId, state, url: `https://site${tabId}.test/page`, title: `标题${tabId}`, base: null, from: null, why: null, at: 0, ...x });
   const sec = L.mineSection([e(1, 'ready'), e(2, 'stale'), e(3, 'taken_over', { why: 'url_changed' }), e(4, 'gone'), e(5, 'ready', { from: 1 }),
     e(6, 'taken_over', { why: 'moved_window' }), e(7, 'taken_over', { why: 'user_viewing', helped: true })]);
-  assert.equal(sec[0], '你（这个会话）的标签（7 个）：');
+  assert.equal(sec[0], '你（这个连接；主会话与子 agent 共用）的标签（7 个）：');
   assert.match(sec.join('\n'), /tab=2 stale .*\n {6}→ 网址在你上次 read_page 之后变了，编号已失效：先 read_page\(tab=2\)/);
   assert.match(sec.join('\n'), /tab=3 taken_over .*\n {6}→ 可能被用户动过（它现在的网址不是 agent 打开或点出来的）：先 read_page\(tab=3\) 看现在的页面；确认用户已交回后在这个标签继续/);
   assert.match(sec.join('\n'), /tab=6 taken_over .*\n {6}→ 可能已被用户接手（它被移到了别的窗口）：先不要点击、输入或关闭；可 read_page 查看现状。用户明确交回后在原标签继续，不要另开标签替代/);
@@ -246,36 +247,77 @@ let chrome, log;
 
 /** Every bridge call fails loudly unless faked here: nothing may reach the real Chrome or the helper. */
 function fakeBridge() {
+  let held = false;
   const fake = Object.fromEntries(idx.__bridgeKeysForTests().map(k => [k, async () => { throw new Error(`B.${k} reached in ledger.test`); }]));
   const target = (tab) => {
     const id = tab == null ? chrome.front : Number(tab);
     for (const w of chrome.windows) {
       const t = w.tabs.find(x => x.id === id);
-      if (t) return { tabId: id, windowId: w.id, url: t.url, title: t.title };
+      if (t) return { tabId: id, windowId: w.id, url: t.url, title: t.title, chromePid: 42, cgWindow: 100 + w.id,
+        tabActive: t.active, windowIndex: w.index, bounds: { left: 20, top: 30, width: 1000, height: 800 } };
     }
     throw Object.assign(new Error('找不到标签（可能已关闭或被移到别的窗口）。请重新调用 list_tabs。'), { code: 'no_such_tab' });
   };
+  const ledgerPage = (kind, tab, BridgeError) => {
+    let t;
+    try { t = target(tab); } catch (e) { throw new BridgeError(e.code, e.message); }
+    if (kind === 'block') return { ok: true, blocked: (chrome.blocked && chrome.blocked[t.tabId]) || null, target: t };
+    // chrome.brokenRead: a payload read_page chokes on after its use check (any failure from there on).
+    if (kind === 'read') return chrome.brokenRead ? { ok: true, hint: 'x', target: t }
+      : { ok: true, text: `=== 这一屏\n[1] 链接 ${t.title}`, count: 1, hint: '', opaque: 0, outline: [], target: t };
+    if (kind === 'opener') return { ok: true, ...(chrome.openers[t.tabId] || { referrer: '', opener: false }), target: t };
+    throw new Error(`unexpected page script ${kind}`);
+  };
   return Object.assign(fake, {
+    // Native input is synthetic and fail-closed: only the transaction ops used here exist.
+    openInputSession: async () => ({
+      request: async req => {
+        log.push(`session ${req.op}`);
+        if (req.op === 'hold') { held = true; return { ok: true, epoch: 1, pointer: { x: 10, y: 20 }, heldAt: Date.now() }; }
+        if (req.op === 'status') return { ok: true, epoch: 1, takeover: { active: held }, interrupted: null };
+        if (req.op === 'veil') return { ok: true, epoch: 1, held, takeover: { active: held } };
+        if (req.op === 'begin') { assert.equal(held, true); return { ok: true, epoch: 1, inputMonitor: true, takeover: { active: held } }; }
+        if (req.op === 'warp') { assert.equal(held, true); return { ok: true, verified: true, warped: req.to }; }
+        if (req.op === 'handBack') { assert.equal(held, true); return { ok: true, appFrontmost: true }; }
+        if (req.op === 'inspectDialog') return { ok: true, epoch: 1, known: true, open: false };
+        if (req.op === 'bindNativeTarget') {
+          assert.equal(held, true); assert.equal(req.epoch, 1);
+          for (const key of ['chromePid', 'windowId', 'tabId', 'cgWindow']) assert.ok(Number.isSafeInteger(req.target[key]) && req.target[key] > 0);
+          return { ok: true, epoch: 1 };
+        }
+        if (req.op === 'recordNativeScene') { assert.equal(held, true); assert.equal(req.epoch, 1); return { ok: true, epoch: 1, restoreToken: 'fixture-restore' }; }
+        if (req.op === 'revokeNative') { assert.ok(['pause', 'caller', 'task', 'conversation'].includes(req.reason)); return { ok: true, epoch: 1 }; }
+        if (req.op === 'nativeChrome') {
+          assert.equal(held, true); assert.equal(req.epoch, 1); assert.match(req.operationId, /^native-\d+$/);
+          assert.equal(req.intent.kind, 'restoreScene'); assert.equal(req.policy, 'restore'); assert.equal(req.restoreToken, 'fixture-restore');
+          return { ok: true, epoch: 1, operationId: req.operationId, inputDelivery: 'sent', stages: [], appFrontmost: true };
+        }
+        if (['prime', 'panel'].includes(req.op)) return { ok: true };
+        throw new Error(`unexpected synthetic session op ${req.op}`);
+      },
+      close: async () => { log.push('session end'); held = false; return { ok: true, epoch: 1, takeover: { active: false } }; }
+    }),
+    snapshotScene: async () => ({ appPid: 9, chromeWindow: 1, chromeTab: 1 }),
+    restoreScene: async (_scene, { native }) => { assert.equal(held, true); return native({ kind: 'restoreScene' }, { policy: 'restore' }); },
     listTabs: async () => { log.push('listTabs'); return { ok: true, frontmost: chrome.frontmost || 'WeChat', chromePid: 42, windows: structuredClone(chrome.windows) }; },
-    pageScript: async (kind) => kind,
+    // Page scripts are one expression returning JSON, as in Chrome; read_page joins block.js and read.js
+    // in one eval (src/index.js gatedReadScript), so the fake page runs whatever script it is given.
+    pageScript: async (kind) => `fakePage(${JSON.stringify(kind)})`,
     pageDialog: async () => ({ ok: true, open: false }),
-    evalInPage: async (kind, tab) => {
-      let t;
-      try { t = target(tab); } catch (e) { const { BridgeError } = await import('../src/bridge.js'); throw new BridgeError(e.code, e.message); }
-      if (kind === 'block') return { ok: true, blocked: (chrome.blocked && chrome.blocked[t.tabId]) || null, target: t };
-      // chrome.brokenRead: a payload read_page chokes on after its use check (any failure from there on).
-      if (kind === 'read') return chrome.brokenRead ? { ok: true, hint: 'x', target: t }
-        : { ok: true, text: `=== 这一屏\n[1] 链接 ${t.title}`, count: 1, hint: '', opaque: 0, outline: [], target: t };
-      if (kind === 'opener') return { ok: true, ...(chrome.openers[t.tabId] || { referrer: '', opener: false }), target: t };
-      throw new Error(`unexpected page script ${kind}`);
+    evalInPage: async (src, tab) => {
+      const { BridgeError } = await import('../src/bridge.js');
+      // As chromectl: the tab is resolved before the script runs, so a gone tab fails the eval itself (G1).
+      try { target(tab); } catch (e) { throw new BridgeError(e.code, e.message); }
+      return JSON.parse(vm.runInNewContext(src, { fakePage: kind => JSON.stringify(ledgerPage(kind, tab, BridgeError)) }));
     },
     chromeInfo: async (tab) => ({ ok: true, ...target(tab) }),
     closeTab: async (id) => { log.push(`closeTab ${id}`); for (const w of chrome.windows) w.tabs = w.tabs.filter(t => t.id !== id); return { ok: true }; },
     cgevent: async (args) => {
       if (args[0] === 'idle') {
         const ci = 'clickIdle' in chrome ? chrome.clickIdle : 100;     // undefined: an answer without clickIdle
-        return { ok: true, idle: 100, ...(ci !== undefined ? { clickIdle: ci } : {}) };
+        return { ok: true, idle: 100, keyIdle: 100, held: [], ...(ci !== undefined ? { clickIdle: ci } : {}) };
       }
+      if (args[0] === 'mousepos') return { ok: true, x: 10, y: 20 };
       throw new Error(`unexpected cgevent ${args[0]}`);
     }
   });
@@ -314,9 +356,9 @@ console.log('list_tabs: mine first, then everything, others by name');
   const { text } = await call('list_tabs');
   const lines = text.split('\n');
   assert.ok(lines[0].startsWith('MyChrome MCP 版本'), lines[0]);
-  assert.equal(lines[1], '你（这个会话）的标签（1 个）：');
+  assert.equal(lines[1], '你（这个连接；主会话与子 agent 共用）的标签（1 个）：');
   assert.match(lines[2], /^ {2}tab=10 ready {2}Mine A｜https:\/\/mine\.test\/a$/);
-  assert.ok(text.indexOf('你（这个会话）的标签') < text.indexOf('Chrome 共 2 个窗口'), 'my section is not first');
+  assert.ok(text.indexOf('你（这个连接；主会话与子 agent 共用）的标签') < text.indexOf('Chrome 共 2 个窗口'), 'my section is not first');
   assert.match(text, /tab=10 {2}Mine A {2}［你的·ready］/);
   assert.match(text, new RegExp(`tab=11 {2}Codex page {2}［另一个 agent「codex」（进程 ${OTHER}）开的］`));
   assert.match(text, new RegExp(`tab=12 {2}Orphan page {2}［无主：开它的 agent「gone-agent」（进程 ${DEAD}）已退出］`));
@@ -328,7 +370,7 @@ console.log('list_tabs: mine first, then everything, others by name');
   ok('my section first; other agents\' tabs by name (an old build\'s record by pid); orphans; user and stray tabs as before');
 
   const m = await call('list_tabs', { mine: true });
-  assert.deepEqual(m.text.split('\n'), [`你（这个会话，进程 ${process.pid}）的标签（1 个）：`, '  tab=10 ready  Mine A｜https://mine.test/a']);
+  assert.deepEqual(m.text.split('\n'), [`你（这个连接，进程 ${process.pid}；主会话与子 agent 共用）的标签（1 个）：`, '  tab=10 ready  Mine A｜https://mine.test/a']);
   ok('list_tabs {mine:true}: only this session\'s tabs');
 
   // A record of mine the ledger never saw (registered by another path): adopted from the registry.
@@ -341,10 +383,12 @@ console.log('the reminder line: only when my tabs changed');
 {
   await world();
   await call('list_tabs');
-  const direct = await idx.readPage({ tab: 10 });
-  const r1 = await call('read_page', { tab: 10 });
+  // Compare reminder overhead with the same full body; read deduplication has
+  // its own tests and would otherwise return `unchanged` on the second read.
+  const direct = await idx.readPage({ tab: 10, refresh: true });
+  const r1 = await call('read_page', { tab: 10, refresh: true });
   assert.equal(r1.text, direct, 'a reply with nothing changed got extra text');
-  const r2 = await call('read_page', { tab: 10 });
+  const r2 = await call('read_page', { tab: 10, refresh: true });
   assert.equal(r2.text.length - direct.length, 0);
   ok('nothing changed: 0 extra characters on the reply');
 
@@ -402,8 +446,8 @@ console.log('a tab that is not mine, gone or taken over: the reply lists mine');
 
   await world();
   await T.forgetTab(10); await T.forgetTab(11); await T.forgetTab(12); await T.forgetTab(13);
-  const quiet = await call('read_page', { tab: 2 });
-  assert.equal(quiet.text, await idx.readPage({ tab: 2 }), 'working on the user\'s page with no tabs of my own got a warning');
+  const quiet = await call('read_page', { tab: 2, refresh: true });
+  assert.equal(quiet.text, await idx.readPage({ tab: 2, refresh: true }), 'working on the user\'s page with no tabs of my own got a warning');
   ok('no tabs of my own: the user\'s tab gets no warning (working on the user\'s page is the point)');
 
   await world();
@@ -803,13 +847,18 @@ console.log('over MCP (in-memory transport): the client\'s own name goes on the 
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
   const fake = fakeBridge();
+  let observerDisposals = 0;
   Object.assign(fake, {
+    // The real MCP close hook owns this lifecycle. Keep all unrelated bridge
+    // entries strict; no real observer/child exists in this isolated fixture.
+    disposePagePromptObserver: () => { observerDisposals++; return Promise.resolve(); },
     ensureScreenAwake: async () => ({ woke: false, displays: 1, locked: false }),
     openNavigationObserver: async () => ({
       startedAt: Date.now(), untouched: async () => true, close: async () => {},
     }),
     profiles: async () => ({ ok: true, default: 'Default', profiles: [{ dir: 'Default', name: 'Me', user: 'me@test' }] }),
     openTab: async (url, windowId, o) => {
+      assert.ok(log.lastIndexOf('session hold') > log.lastIndexOf('session end'), 'openTab requires synthetic hold');
       log.push(`openTab ${url} ${windowId} select=${!!(o && o.select)}`);
       chrome.windows.find(w => w.id === Number(windowId)).tabs.push(tab(50, url, 'New'));
       return { ok: true, tabId: 50, windowId: Number(windowId), selected: true };
@@ -826,15 +875,29 @@ console.log('over MCP (in-memory transport): the client\'s own name goes on the 
     const o = await client.callTool({ name: 'open_tab', arguments: { url: 'https://new.test/', why: 'user_asked' } });
     assert.match(o.content[0].text, /新开标签 tab=50/);
     assert.doesNotMatch(o.content[0].text, FOOT, 'open_tab carried the reminder line');
-    assert.ok(log.includes('openTab https://new.test/ 7 select=true'), log.join(','));
+    assert.ok(log.includes('openTab https://new.test/ 7 select=false'), log.join(','));
     const rec = await T.getTab(50);
     assert.deepEqual([rec.ownerPid, rec.agentName, rec.windowId], [process.pid, 'clientinfo-test', 7]);
     const m = await client.callTool({ name: 'list_tabs', arguments: { mine: true } });
     assert.deepEqual(m.content[0].text.split('\n').slice(1).map(l => l.replace(/^( {2}tab=\d+ \w+).*$/, '$1')), ['  tab=10 ready', '  tab=50 ready']);
+    assert.equal(observerDisposals, 0, 'a live transport must not dispose its observer');
+    // Seed only an inert core binding (no probe/resume or prompt delivery), so
+    // close must clear it as well as invoke the bridge disposal exactly once.
+    idx.__pageEventsForTests().events.bind({ schema: 1, ...idx.__pageEventsForTests().ackContext(),
+      provider: 'other', threadId: null, target: { chromePid: 42, windowId: 7, tabId: 50, cgWindow: 107 } });
+    assert.equal(idx.__pageEventsForTests().events.snapshot().observer.reason, null);
   } finally {
     process.env.CHROME_BRIDGE_AGENT_NAME = envName;
     await client.close();
   }
+  assert.equal(observerDisposals, 1, 'actual MCP transport close must dispose the observer once');
+  const closedEvents = idx.__pageEventsForTests();
+  assert.equal(closedEvents.source, null);
+  assert.equal(closedEvents.events.snapshot().observer.reason, 'unbound_source');
+  assert.deepEqual(closedEvents.events.snapshot().events, []);
+  await client.close();
+  assert.equal(observerDisposals, 1, 'repeated client close must not replay observer disposal');
+  ok('MCP close clears the inert page-event binding and disposes exactly once without suppressing unexpected bridge errors');
   ok('open_tab through the MCP handler records the MCP client\'s name (no CHROME_BRIDGE_AGENT_NAME); list_tabs {mine:true} over MCP lists it');
 }
 

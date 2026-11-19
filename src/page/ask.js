@@ -3,7 +3,7 @@
    (window.__chromeBridgeAsk): page scripts cannot see its state.
 
    __ASK__  {arm: token, marker, text: {title, hint, hintMulti, brand}}: resolve the read_page
-              marker, scroll it into view, focus it, draw a ring around it with a note (a closed
+              marker, verify its existing native focus, draw a ring around it with a note (a closed
               shadow root, styles set through the CSSOM so a page's CSP does not drop them,
               pointer-events none), and listen in its document for
                 - a trusted Return in it or in another field of its form (Cmd/Ctrl+Return in a
@@ -220,8 +220,13 @@
       return out({ ok: false, error: 'not_a_field',
         message: '[' + A.marker + '] 不是可输入的文本框（' + String(el.tagName).toLowerCase() + '），field 只能指向用户要输入文字的框' });
     }
-    try { el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }); } catch (e) {}
-    try { el.focus({ preventScroll: true }); } catch (e) {}
+    var bound = window.__chromeBridgeFieldTarget;
+    if (!bound || typeof A.focusToken !== 'string' || bound.token !== A.focusToken ||
+        bound.el !== el || bound.marker !== A.marker || bound.url !== location.href) {
+      return out({ ok: false, error: 'focus_unconfirmed', message: '输入框身份已变化，没有显示输入就绪提示' });
+    }
+    var focusRoot = el.getRootNode ? el.getRootNode() : el.ownerDocument;
+    if (focusRoot.activeElement !== el) return out({ ok: false, error: 'focus_unconfirmed', message: '无法确认输入框已获得焦点，没有显示输入就绪提示' });
     var st = draw(el, A.text || {}, kind === 'multi');
     st.token = A.arm; st.doc = el.ownerDocument; st.win = st.doc.defaultView || window; st.entered = null;
     st.like = { id: el.id || '', name: el.getAttribute('name') || '', type: String(el.getAttribute('type') || '').toLowerCase(), tag: el.tagName,

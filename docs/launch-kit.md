@@ -1,45 +1,77 @@
-# MyChrome launch kit
+# MyChrome launch kit — drafts
 
-## One sentence
+Draft copy for review; nothing in this kit has been posted. These drafts describe capabilities available in 0.15.0.
 
-MyChrome lets you bring AI into the Chrome task you're already doing, share the page when a step needs you, and continue with input that can be tuned to your rhythm.
+## One line
 
-## Short introduction
+Let Codex or Claude Code work in your own logged-in Google Chrome on macOS, with real mouse and keyboard input and handoff when a step needs you.
 
-Keep browsing. Bring in AI when you need a hand.
+## Short description
 
-MyChrome connects Codex, Claude Code and other local MCP clients to the Google Chrome you're already using on your Apple Silicon Mac. Ask for help in your existing conversation, point to an open page and let the assistant carry out the task. When a password or verification code needs you, it hands the page back. Handle the step and explicitly tell it to continue with the original task.
+MyChrome is a local MCP server with a native macOS app. Codex, Claude Code and other local stdio MCP clients can work in your existing Google Chrome tabs and signed-in accounts. Real mouse and keyboard input, adjustable pace and same-page handoff support work that needs your own session. MyChrome is open source under the MIT License.
 
-Choose typing or paste and adjust the pace of typing, mouse movement and scrolling. Optional experimental habit sampling fits timing statistics from three minutes of your keyboard and mouse use for later input. Double Esc returns control whenever you need it.
+## Show HN draft
 
-Start with the source installer, connect your client and return to the page where you want help. MyChrome is open source under MIT. It requires macOS 13+, Google Chrome, supported Node.js and Xcode Command Line Tools. Codex and Claude Code conversations created in the App support live text and direct replies. Existing external Claude Code conversations cannot be associated; continue them in Claude Code.
+**Title:** Show HN: MyChrome — let AI work in your logged-in Chrome on macOS
 
-Click **新对话 (New conversation)** to choose an installed, logged-in Codex or Claude Code CLI, an available model, supported reasoning effort and a working directory. Model choices come from that CLI; the first task is optional.
+MyChrome is a local MCP server with a native macOS app for work that needs your own Google Chrome, login or shared page. It connects Codex, Claude Code and other local stdio MCP clients to the Chrome you already use.
 
-## 中文简介
+- Pages are read through Chrome's “Allow JavaScript from Apple Events” setting; no extension, remote debugging port or separate browser profile is needed.
+- Clicks, typing and scrolling use the Mac's real mouse and keyboard. During takeover, ordinary physical input is intercepted and a card shows the task, steps, time left and speed.
+- Press Esc twice within 0.8 seconds to stop the current agent. Another takeover needs a new instruction; stopping does not undo actions already sent. The pause control blocks further input from all connections.
+- Passwords and verification codes come back to you. The assistant should wait for an explicit “continue” in the original conversation, then reread the page. Continuation follows the assistant's instructions; MyChrome does not enforce a cross-client continuation gate.
+- Choose follow-task, key-by-key or paste input and a speed from 0.5× to 3×. Optional personal input habit sampling is experimental: a 3-minute sample supplies timing statistics, with defaults kept where samples are insufficient.
 
-你的 Chrome，随时多一双手。
+In 0.15.0, a terminal Claude Code session connected to MyChrome appears as a read-only mirror of prompts and reply text from connection time. The takeover sidebar shows reply text. Thinking, tool calls and tool results are excluded. You reply in the terminal. Mirror text stays in memory only. It is on by default; set `CHROME_BRIDGE_CLAUDE_FEED=0` in the MCP server's environment and reconnect the MCP client to turn it off.
 
-你照常用 Chrome，需要帮忙时，在原来的 Codex、Claude Code 等 AI 对话里指出页面和任务，让助手随时介入同一网页办事。密码、验证码需要你本人处理时，页面交回给你；处理好并明确说“继续”后，AI 接回原来的任务。
+For public pages, MyChrome's instructions prefer an API or web fetch; for JavaScript pages without a login, headless Playwright. Sites may restrict automation: MyChrome stops and hands over at CAPTCHAs or bot checks and does not solve them. On access denial or rate limits, the assistant should stop and report. Compatibility depends on the site, account permissions and current page.
 
-输入可以选逐字或粘贴，打字、鼠标移动和滚动的节奏都能调整。还可自选采样三分钟键鼠节奏，拟合后用于后续输入；这项习惯采样目前是实验功能。需要立即收回控制时，快速连按两次 Esc。
+Requirements: Apple Silicon, macOS 13+, Google Chrome in `/Applications`, native arm64 Node.js (24+ recommended; 20.19+ and 22.13+ supported), Git and Xcode Command Line Tools. Install from source; MyChrome is not published to npm. In 0.15.0, MyChrome's windows and notifications follow your Mac's language (English or Chinese), with a Language setting under Settings in the menu bar panel.
 
-项目采用 MIT License，支持 Apple Silicon Mac、macOS 13+，需要 Google Chrome、受支持的 Node.js 和 Xcode Command Line Tools。完成源码安装和客户端连接后，回到需要帮忙的页面即可。通过 App 新建的 Codex 和 Claude Code 对话均支持实时文字及直接回复；外部已有的 Claude Code 对话仍不能关联，请在原客户端继续。
+MyChrome runs locally. Page content returned through MCP goes to the AI client and is handled under its settings. The client provides model access through its own account; its charges or subscription may apply.
 
-点击「新对话」，选择已安装并登录的 Codex 或 Claude Code CLI，再选择可用模型、支持的思考强度和工作目录。模型选项由本机 CLI 返回，第一条任务可以留空。
+[MIT-licensed source](https://github.com/shuaige121/mychrome-mcp) · [Source installation and permissions](https://shuaige121.github.io/mychrome-mcp/getting-started.html)
 
-## Example requests / 需求示例
+## X / Twitter thread draft
 
-These examples describe tasks a user can request, not completed case studies or verified platform coverage. / 以下是可提出的需求，不代表已经完成的案例或经过验证的平台支持。
+1/ MyChrome lets Codex or Claude Code work in your own Google Chrome on macOS: existing tabs, signed-in accounts, real mouse and keyboard. Local MCP server and native app. Source: https://github.com/shuaige121/mychrome-mcp
 
-- Organize my open LinkedIn page using the wording we've agreed on. / 按我们定好的文案，整理我已打开的 LinkedIn page。
-- Check my Facebook notifications and messages for people trying to reach me. / 看一下我的 Facebook 通知和消息，有没有人找我。
-- Distribute my finished article to the Facebook, 小红书, Reddit and LinkedIn accounts I specify, using my supplied platform versions and publishing instructions. / 按各平台文案和发布要求，把我写好的文章分发到指定的 Facebook、小红书、Reddit、LinkedIn 账号。
+2/ Passwords and verification codes come back to you. The assistant should wait for “continue” in the original conversation, then reread the page. Continuation follows assistant instructions; MyChrome does not enforce a cross-client continuation gate.
 
-## Links
+3/ During takeover, ordinary input is intercepted. Press Esc twice within 0.8 seconds to stop the current agent. A new instruction is needed before another takeover. Stopping does not undo actions already sent.
 
-- Product: https://shuaige121.github.io/mychrome-mcp/
-- Source: https://github.com/shuaige121/mychrome-mcp
-- Guide: https://shuaige121.github.io/mychrome-mcp/getting-started.html
-- 中文入门: https://shuaige121.github.io/mychrome-mcp/zh/getting-started.html
-- License: [MIT](../LICENSE)
+4/ MyChrome stops at CAPTCHAs and bot checks and hands over; it does not solve them. On access denial or rate limits, the assistant should stop and report. Website compatibility depends on the site, account permissions and current page.
+
+5/ Choose input mode and speed from 0.5× to 3×. Apple Silicon, macOS 13+, Google Chrome; source install, not npm. MIT License. AI client model access may have charges. Setup: https://shuaige121.github.io/mychrome-mcp/getting-started.html
+
+## Reddit draft
+
+**Title:** MyChrome: a local MCP server for your logged-in Google Chrome on macOS
+
+MyChrome lets Codex, Claude Code or another local stdio MCP client work in the Google Chrome you already use. It uses the Mac's real mouse and keyboard, with a takeover card showing the task and steps. During takeover, ordinary input is intercepted. Press Esc twice within 0.8 seconds to stop the current agent; stopping does not undo prior actions.
+
+Example requests, not verified case studies: update your LinkedIn page with details you provide; check Facebook notifications and messages for people trying to reach you; publish an article you wrote to the Facebook, Xiaohongshu, Reddit or LinkedIn accounts you specify.
+
+The assistant hands personal steps back to you and should wait for an explicit “continue” in the original conversation. Continuation follows assistant instructions; MyChrome does not enforce a cross-client continuation gate. At a CAPTCHA or bot check it stops and hands over, without solving it. On access denial or rate limits, the assistant should stop and report. Compatibility depends on the site, account permissions and current page.
+
+Apple Silicon and macOS 13+; Google Chrome only; source installation, not npm. In 0.15.0, MyChrome's windows and notifications follow your Mac's language (English or Chinese), with a Language setting under Settings in the menu bar panel. Page content returned through MCP goes to your AI client under its settings; client model access may have charges.
+
+[MIT-licensed source](https://github.com/shuaige121/mychrome-mcp) · [MyChrome FAQ](https://shuaige121.github.io/mychrome-mcp/faq.html)
+
+## Product Hunt draft
+
+**Name:** MyChrome
+
+**Tagline:** Let AI work in your own Google Chrome on macOS
+
+**Description:** A local MCP server and native macOS app. Codex and Claude Code work in your existing Google Chrome tabs and signed-in accounts, with real mouse and keyboard input. Press Esc twice within 0.8 seconds to stop. MIT-licensed source.
+
+**First comment:** MyChrome is for work that needs your own Chrome, login or shared page. It needs no extension, remote debugging port or separate browser profile. Passwords and verification codes come back to you. The assistant should wait for an explicit continuation instruction; MyChrome does not enforce a cross-client continuation gate. It stops and hands over at CAPTCHAs or bot checks and does not solve them. On access denial or rate limits, the assistant should stop and report. Apple Silicon and macOS 13+; source installation, not npm. In 0.15.0, MyChrome's windows and notifications follow your Mac's language (English or Chinese), with a Language setting under Settings in the menu bar panel. Page content returned through MCP goes to the AI client; its model access may have charges.
+
+## Media and links
+
+Use the [English takeover animation](../site/assets/takeover-card-en.gif), captioned: “Rendered from MyChrome's own code with a sample task; not a screen recording.” The [brand card](../site/assets/social-card.png) is the existing English sharing image. The Chinese-interface overview film is for Chinese surfaces only.
+
+- [Product website](https://shuaige121.github.io/mychrome-mcp/)
+- [Source installation and permissions](https://shuaige121.github.io/mychrome-mcp/getting-started.html)
+- [MIT License](../LICENSE)

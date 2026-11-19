@@ -1,3 +1,4 @@
+import { pageEventStubs } from './page-event-test-stubs.mjs';
 // Actual MCP dispatch functions and integration, with no browser or native input.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -5,6 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { test } from 'node:test';
 import vm from 'node:vm';
 import { createRoutineIntegration, ROUTINE_ACTIONS } from '../src/routine-integration.js';
+import { runInputAction } from '../src/guard.js';
 import { RoutineError, routineMessage } from '../src/routine-runner.js';
 
 const source = await readFile(new URL('../src/index.js', import.meta.url), 'utf8');
@@ -12,7 +14,7 @@ const guardSource = await readFile(new URL('../src/guard.js', import.meta.url), 
 function productionFunction(name, code = source) {
   const start = code.search(new RegExp(`(?:async )?function ${name}\\(`));
   assert.ok(start >= 0, `production function ${name}`);
-  return code.slice(start, code.indexOf('\n}', start) + 2);
+  return (name === 'callToolInner' ? 'function noticeTerminalRefusal() {}\n' : '') + code.slice(start, code.indexOf('\n}', start) + 2);
 }
 const observedStart = source.indexOf('  const observedAction = async (session, prep, ctx, pre) => {', source.indexOf('async function inputActionRun('));
 const observedEnd = source.indexOf('\n  const ops = {', observedStart);
@@ -21,11 +23,15 @@ const observedSource = source.slice(observedStart, observedEnd);
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function fixture() {
   const page = { origin: 'https://fixture.test', path: '/form' };
+  const nativeTarget = { tabId: 7, windowId: 3, chromePid: 42, cgWindow: 11,
+    url: 'https://fixture.test/form', bounds: { left: 0, top: 0, width: 800, height: 600 } };
+  const dialogIdentity = { version: 1, tabId: 7, windowId: 3, chromePid: 42, cgWindow: 11,
+    dialogCgWindow: 21, token: 'a'.repeat(64), dialogToken: 'a'.repeat(64) };
   const target = { version: 1, tag: 'input', role: 'textbox', name: 'Search' };
   const routine = { id: 'synthetic', site: page.origin, parameters: [{ name: 'input_1' }],
     steps: [{ tool: 'type_text', before: page, after: page, target, args: { textParam: 'input_1' } }] };
   const state = { actions: 0, directActions: 0, records: [], finishes: [], captured: 0,
-    currentPage: page, captureHook: null, holdInspect: null, inspectEntered: null };
+    currentPage: page, captureHook: null, holdInspect: null, inspectEntered: null, dialogProbes: 0 };
   const integration = createRoutineIntegration({ recording: () => true, store: {
     get: async () => routine, recordRun: async () => {}, snapshot: async () => ({ enabled: true }),
     begin: async event => { state.records.push({ ...event, kind: 'begin' }); return { id: String(state.records.length) }; },
@@ -41,21 +47,42 @@ function fixture() {
     resolve: async () => ({ ok: true, marker: 1 }), act: async () => { state.actions++; return { ok: true }; },
   } });
   const CALL = new AsyncLocalStorage();
-  const c = vm.createContext({ CALL, ROUTINES: integration, ROUTINE_ACTIONS,
+  const c = vm.createContext({ ...pageEventStubs, CALL, ROUTINES: integration, ROUTINE_ACTIONS,
     ROUTINE_EXCLUSIVE: new Set([...ROUTINE_ACTIONS, 'open_tab', 'close_tab', 'wait_for_user', 'task_plan', 'wake_screen']),
     ORDINARY_WRITES: new Set([...ROUTINE_ACTIONS, 'open_tab', 'close_tab', 'task_plan', 'wake_screen']),
     ORDINARY_INPUTS: 0, ORDINARY_TAIL: Promise.resolve(), PLAN: null, INFLIGHT: 0, LAST_CALL_END: 0, RECORD: false,
+    TASK_CANCELLED: null, TASK_HOLD: null, PANEL_TASK: { text: '', at: 0 }, PANEL_TASK_KEEP_MS: 0,
+    pausedCheck() {}, conversationInputCheck() {}, cancelledError: () => new RoutineError('cancelled'),
+    boundsRect: b => ({ x: b.left, y: b.top, w: b.width, h: b.height }),
     presenceBusy: () => null, ledgerTail: async () => '', pauseGate: async () => {}, touchTab: async () => {},
     RoutineError, routineMessage, BridgeError: class extends Error {}, noteOutcome: () => {},
     FALLBACK_CODES: new Set(), goneTabNote: () => '', setupHint: () => '',
     readPage: async () => 'Synthetic read', click: async () => { state.directActions++; return 'Synthetic click'; },
     recoverNativeMenu: async () => 'Synthetic native menu recovered',
-    B: { pageDialog: async () => ({ open: true, title: 'fixture.test', buttons: ['OK'], texts: [] }),
-      chromeInfo: async () => ({ url: 'https://fixture.test/form' }),
-      answerDialog: async () => { state.directActions++; return { ok: true }; } },
-    Date, AbortController,
+    B: { pageDialog: async target => {
+        if (target) for (const key of ['tabId', 'windowId', 'chromePid', 'cgWindow']) assert.equal(target[key], nativeTarget[key]);
+        state.dialogProbes++;
+        return { ok: true, known: true, open: true, title: 'fixture.test', buttons: ['OK'], texts: [], hasField: true, identity: dialogIdentity };
+      },
+      chromeInfo: async tab => { assert.equal(tab, 7); return nativeTarget; },
+      answerDialog: async (button, _text, identity, {native}) => {
+        assert.deepEqual(identity, dialogIdentity); state.directActions++;
+        return native({kind:'dialogAnswer',dialogToken:identity.dialogToken,button,text:_text});
+      } },
+    Date, AbortController, setTimeout, clearTimeout,
+    CALL_BUDGET: { ms: 100_000, reserveMs: null }, budgetReserve: () => 10_000, prepareReserve: () => 20_000, TIMED_OUT: Symbol('timed_out'),
+    // HI1's input budget (callToolRun) is exercised by test/input-budget.test.mjs; this harness keeps its fixtures unbudgeted.
+    INPUT_BUDGET_TOOLS: new Set(),
   });
-  vm.runInContext(['answerDialogTool', 'pressKeyTool', 'callToolInner', 'callToolRun'].map(name => productionFunction(name)).join('\n'), c);
+  vm.runInContext(['taskKey', 'inputBoundaryCheck', 'prepareNativeTarget', 'nativeMutation',
+    'answerDialogTool', 'pressKeyTool', 'callToolInner', 'enterOrdinaryQueue', 'untilTime', 'callToolRun'].map(name => productionFunction(name)).join('\n'), c);
+  // Route the native-only entry through the same real observer and guard fixture,
+  // so recording barriers are produced by production hooks rather than the mock.
+  c.inputAction = async (label, prepare, action, options) => {
+    assert.equal(label, 'answer_dialog'); assert.equal(options.nativeOnly, 'dialog');
+    const beforeSend = () => c.inputBoundaryCheck(options.task, options.idle?.signal);
+    return (await nativeFixture({ c, CALL, state }, action, { prepare, beforeSend, preflight:options.preflight })).out;
+  };
   const request = (name, args, signal) => CALL.run({}, () => c.callToolRun({ params: { name, arguments: args } }, { signal }));
   const runArgs = (action, nonce) => ({ action, id: 'synthetic', tab: 7, params: { input_1: 'Synthetic text' }, nonce });
   return { state, integration, c, CALL, request, runArgs };
@@ -63,22 +90,28 @@ function fixture() {
 
 // Execute the production native-observer wrapper and the real guard lifecycle;
 // every session/OS operation is a pure fixture, and the caller owns its lease.
-async function nativeFixture(f, action, { handoff = false } = {}) {
+async function nativeFixture(f, action, { handoff = false, prepare = null, beforeSend = null, preflight = null } = {}) {
   Object.assign(f.c, { action, TASK_HOLD: null, conversationInputCheck() {},
     UserInterrupted: class extends Error {}, sessionError: value => Object.assign(Error('Synthetic session error'), value) });
   f.c.B.openNavigationObserver = async () => null;
   const observed = vm.runInContext(`(() => { let navigationObserver, routineAbortCleanup,
-    inputCount=0, actionSession, navigationAnchor; const takeover=false, actionPlan=null;
+    inputCount=0, actionSession, navigationAnchor; const takeover=false, actionPlan=null, label='click';
     ${observedSource}; return observedAction; })()`, f.c);
-  vm.runInContext(productionFunction('runInputAction', guardSource), f.c);
-  const session = { interrupted: null, request: async () => ({ ok: true, inputMonitor: true,
-    takeover: { active: true } }), close: async () => ({ ok: true }) };
-  return f.c.runInputAction({ now: () => 1000, waitForUserIdle: async () => 0, snapshotScene: async () => null,
-    mousepos: async () => null, prepare: async () => ({ chromePid: 42, cgWindow: 7, target: { tabId: 7 } }),
+  f.c.runInputAction = runInputAction;
+  const session = { interrupted:null, request:async request => {
+    if(request.op === 'inspectDialog') return f.c.B.pageDialog(request.target);
+    if(request.op === 'nativeChrome') return {ok:true,epoch:1,operationId:request.operationId,inputDelivery:'sent',
+      stages:[{sequence:1,stage:'dialog_press',delivery:'sent',entered:true,acknowledged:true}],pressed:request.intent.button,sameStillOpen:false};
+    return {ok:true,epoch:1,inputMonitor:true,restoreToken:'fixture-scene',takeover:{active:true}};
+  }, close:async()=>({ok:true,
+    ...(handoff ? {interrupted:null,takeover:{active:false,aborted:false}} : {})}) };
+  return f.c.runInputAction({ now: () => 1000, waitForUserIdle: async () => 0, snapshotScene: async () => preflight ? ({appPid:9,chromePid:42,chromeWindow:3,chromeTab:7}) : null,
+    mousepos: async () => null, prepare: prepare || (async () => ({ chromePid: 42, cgWindow: 7, target: { tabId: 7 } })),
+    ...(beforeSend ? { beforeSend } : {}), ...(preflight ? {preflight,nativeTransactions:true} : {}),
     userActedSince: async () => false, openSession: async () => session, navigationUntouched: async () => true,
     restoreScene: async () => ({}), warp: async () => {},
     ...(handoff ? { takeover: true, handoff: async () => ({ to: 'synthetic-worker', commit: async () => {} }) } : {}),
-  }, observed);
+  }, observed).catch(error => { f.state.nativeError = error; throw error; });
 }
 
 test('MCP run cancellation reaches the background runner before any action is dispatched', async () => {
@@ -142,7 +175,8 @@ for (const [name, args] of [['answer_dialog', { tab: 7, button: 'OK' }], ['press
     await f.integration.beforeInput(context, 7); await f.integration.afterInput(context, {});
     const before = f.state.captured;
     const result = await f.request(name, args);
-    assert.notEqual(result.isError, true); assert.equal(f.state.captured, before);
+    assert.notEqual(result.isError, true, JSON.stringify(result)); assert.equal(f.state.captured, before);
+    if (name === 'answer_dialog') { assert.equal(f.state.directActions, 1); assert.equal(f.state.dialogProbes, 2); }
     assert.equal(f.state.records.at(-1).kind, 'barrier'); assert.equal(f.state.records.at(-1).tab, 7);
   });
 }
@@ -173,13 +207,21 @@ test('overlapping ordinary calls cannot promote another action\'s postcondition'
     return 'Synthetic native action completed';
   }).then(result => result.out);
   const first = f.request('click', { tab: 7, marker: 1 });
-  await captureEntered.promise;
-  // The first native action has finished, but its asynchronous postcondition
-  // probe is pending. A second MCP request must not change what it records.
-  const second = f.request('click', { tab: 7, marker: 2 });
-  await new Promise(resolve => setImmediate(resolve));
-  captureRelease.resolve();
-  await Promise.all([first, second]);
+  let second;
+  try {
+    await Promise.race([captureEntered.promise, first.then(result => {
+      assert.fail(f.state.nativeError?.stack || `The action returned before the postcondition gate: ${JSON.stringify(result)}`);
+    })]);
+    // The first native action has finished, but its asynchronous postcondition
+    // probe is pending. A second MCP request must not change what it records.
+    second = f.request('click', { tab: 7, marker: 2 });
+    await new Promise(resolve => setImmediate(resolve));
+    captureRelease.resolve();
+    await Promise.all([first, second]);
+  } finally {
+    captureRelease.resolve();
+    await Promise.allSettled([first, second].filter(Boolean));
+  }
   const recordedFirst = f.state.finishes.find(event => event.id === '1');
   assert.ok(recordedFirst);
   assert.ok(recordedFirst.replayable === false || recordedFirst.after.path === '/first',
@@ -189,13 +231,13 @@ test('overlapping ordinary calls cannot promote another action\'s postcondition'
 test('the actual native action hook awaits recording before posting any input', async () => {
   const recording = deferred(), entered = deferred(), events = [];
   const context = { routineGuard: async () => events.push('guard'), routineCheck: () => events.push('check') };
-  const c = vm.createContext({ CALL: { getStore: () => context }, TASK_HOLD: null,
+  const c = vm.createContext({ ...pageEventStubs, CALL: { getStore: () => context }, TASK_HOLD: null,
     conversationInputCheck: () => {},
     ROUTINES: { beforeInput: async () => { events.push('record_begin'); entered.resolve(); await recording.promise; events.push('record_saved'); } },
     B: { openNavigationObserver: async () => null }, action: async () => { events.push('native_input'); },
   });
   vm.runInContext(`let navigationObserver, routineAbortCleanup, inputCount=0, actionSession, navigationAnchor;
-    const takeover=false, actionPlan=null;${observedSource};this.runObserved=observedAction;`, c);
+    const takeover=false, actionPlan=null, label='type tab 7';${observedSource};this.runObserved=observedAction;`, c);
   const running = c.runObserved({}, { target: { tabId: 7 } }, { sent() {}, unsent() {}, observe() {} });
   await entered.promise; assert.deepEqual(events, ['guard', 'record_begin']);
   recording.resolve(); await running;

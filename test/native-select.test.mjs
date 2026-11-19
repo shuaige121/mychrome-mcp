@@ -12,7 +12,7 @@ const source = await fs.readFile(new URL('../src/index.js', import.meta.url), 'u
 function productionFunction(name) {
   const start = source.search(new RegExp(`(?:async )?function ${name}\\(`));
   if (start < 0) return '';
-  return source.slice(start, source.indexOf('\n}', start) + 2);
+  return (name === 'callToolInner' ? 'function noticeTerminalRefusal() {}\n' : '') +  source.slice(start, source.indexOf('\n}', start) + 2);
 }
 let passed = 0, failed = 0;
 async function check(name, fn) {
@@ -30,7 +30,7 @@ function harness(html = '<select id="sel"><option>A</option><option>B</option></
   w.__chromeBridge = { markers: [null, sel], url: w.location.href };
   w.document.elementFromPoint = () => sel;
   const posted = [], steps = [];
-  const target = { tabId: 7, bounds };
+  const target = { tabId:7,windowId:9,chromePid:42,cgWindow:70,bounds:{...bounds} };
   const loc = { tag: 'select', bounds, view: { innerWidth: 1000, innerHeight: 700, outerWidth: 1000, outerHeight: 800 },
     rect: { x: 20, y: 20, width: 200, height: 40 }, visible: { x: 20, y: 20, width: 200, height: 40 },
     aim: { x: 100, y: 40 }, hitOk: true, text: 'A B', url: w.location.href };
@@ -40,10 +40,13 @@ function harness(html = '<select id="sel"><option>A</option><option>B</option></
     chromeInfo: async () => target,
     evalInPage: async src => ({ ...JSON.parse(w.eval(src)), bounds }),
     listTabs: async () => [],
+    // FOCUS4 r1 A2: tab and ordinary escape read the page's focus only after AX shows no native menu open.
+    axInput: async () => ({ ok: true, frontmost: true, windowMatches: true, nodeFound: true, menuOpen: false, menuState: 'closed', nativePopup: false }),
   };
   const c = vm.createContext({
-    B, BridgeError, Date, Number, String, Math, sleep: async () => {},
-    SHOTS: new Map([[7, { width: 1000, height: 800, rect: { x: 100, y: 60, w: 1000, h: 800 }, at: Date.now() }]]),
+    B, BridgeError, Date, Number, String, Math, process: { pid: 12345, env: {} }, sleep: async () => {},
+    newToken: () => 'native-select-test-observation',
+    GEOMETRY_UNVERIFIED:new Set(), SHOTS: new Map([[7, { baseline:structuredClone(target), width: 1000, height: 800, rect: { x: 100, y: 60, w: 1000, h: 800 }, at: Date.now() }]]),
     SHOT_FRESH_MS: 300000, PRE_LOC_FRESH_MS: 1500,
     post: async (_s, _ctx, _kind, req) => { posted.push(req); return { landed: req.aim || { x: 120, y: 180 } }; },
     persist: fn => fn({}),
@@ -55,17 +58,18 @@ function harness(html = '<select id="sel"><option>A</option><option>B</option></
     clickPreflight: async () => ({ tab: 7, loc, at: Date.now() }),
     activationHint: () => null,
     targetLine: () => 'tab 7', veilFor: () => ({}), taskKey: () => '',
-    locateTarget: async () => loc, originFor: x => viewportOrigin(x.bounds, x.view),
+    locateForInput: async () => loc, locateTarget: async () => loc, originFor: x => viewportOrigin(x.bounds, x.view),
     scrollToTarget: async (_s, _ctx, _marker, _tab, l) => ({ loc: l, done: true }),
     planScrollStep: () => ({ done: true }), rectToScreenRect, toScreen,
     armAck: async () => 'ack', waitAck: async () => ({ seen: true }),
     clip: s => s, screenReady: null,
     guardNativeTarget: async () => ({}), recoverNativeMenu: async () => null,
+    CALL: { getStore: () => null }, RoutineError: Error,
   });
   vm.runInContext(source.match(/const SELECT_ERRORS = \{[\s\S]*?\n\};/)[0], c);
-  const names = ['refuseNativeSelect', 'guardNativeSelect', 'clickDeliver', 'click', 'clickAt', 'pressKeyTool', 'screenReady', 'selectInSession'];
+  const names = ['geometryTarget','geometryKey','sameGeometryBounds','refuseNativeSelect', 'guardNativeSelect', 'clickObservation', 'clickDeliver', 'click', 'clickAt', 'pressKeyTool', 'screenReady', 'selectInSession', 'gatedPageScript', 'passGate'];
   vm.runInContext(names.map(productionFunction).join('\n'), c);
-  return { w, sel, c, loc, posted, B, ctx, close: () => w.close() };
+  return { w, sel, c, loc, target, posted, B, ctx, close: () => w.close() };
 }
 const rejectsSelect = p => assert.rejects(p, e => e.code === 'use_select_option' && /select_option/.test(e.message));
 
@@ -183,7 +187,14 @@ await check('coordinate guard maps screen points through page zoom before hit te
 await check('a button inside a label still activates the button', async () => {
   const h = harness('<label for="sel"><button>Help</button></label><select id="sel"><option>A</option></select>');
   h.w.document.elementFromPoint = () => h.w.document.querySelector('button');
-  try { await h.c.clickAt({ x: 50, y: 150, tab: 7 }); assert.equal(h.posted.length, 1); }
+  h.c.prepareActivate = async () => ({ target: h.target, ownNote: '共享标签：保留当前会话。' });
+  try {
+    const out = await h.c.clickAt({ x: 50, y: 150, tab: 7 });
+    assert.match(out, /效果未确认/);
+    assert.match(out, /共享标签：保留当前会话。/);
+    assert.doesNotMatch(out, /屏幕 x=|screenshot|read_page/);
+    assert.equal(h.posted.length, 1);
+  }
   finally { h.close(); }
 });
 
@@ -276,7 +287,7 @@ await check('failed keyboard selection never invokes set or emits synthetic inpu
   h.w.document.hasFocus = () => true;
   h.sel.addEventListener('input', () => events.push('input'));
   h.sel.addEventListener('change', () => events.push('change'));
-  h.B.pageScript = async (name, vars) => { modes.push(vars.MODE); return pageScript(name, vars); };
+  h.B.pageScript = async (name, vars) => { if (name !== 'block') modes.push(vars.MODE); return pageScript(name, vars); };
   try {
     await assert.rejects(h.c.selectInSession({}, { target: { tabId: 7 } }, h.ctx, { marker: 1, option: 'B' }),
       e => e.code === 'select_failed' && /没有改用网页脚本/.test(e.message));
@@ -292,7 +303,7 @@ await check('failed keyboard selection never invokes set or emits synthetic inpu
 await check('keyboard selection succeeds only after the requested option is read back', async () => {
   const h = harness(), modes = [];
   h.w.document.hasFocus = () => true;
-  h.B.pageScript = async (name, vars) => { modes.push(vars.MODE); return pageScript(name, vars); };
+  h.B.pageScript = async (name, vars) => { if (name !== 'block') modes.push(vars.MODE); return pageScript(name, vars); };
   h.c.post = async (_s, _ctx, _kind, req) => {
     h.posted.push(req);
     // This fake models the browser applying the posted key, not a production DOM fallback.
@@ -323,11 +334,46 @@ await check('unsupported type-ahead fails without posting keys or changing the s
   } finally { h.close(); }
 });
 
-await check('select errors never recommend click_at or press_key as a bypass', async () => {
-  const decl = source.match(/const FALLBACK_CODES = new Set\([\s\S]*?\);/)[0];
-  const codes = vm.runInNewContext(`${decl}\nFALLBACK_CODES`);
-  for (const code of ['use_select_option', 'bad_select', 'select_failed']) assert.equal(codes.has(code), false, code);
-});
+for (const code of ['select_failed', 'bad_select', 'use_select_option', 'chromectl_failed', 'stale_marker']) {
+  await check(`${code} returns the original error and state without a cross-tool tutorial`, async () => {
+    const tool = ['chromectl_failed', 'stale_marker'].includes(code) ? 'click' : 'select_option';
+    const args = { tab: 7, marker: 1, ...(tool === 'select_option' ? { option: 'B' } : {}) };
+    const error = new BridgeError(code, `Synthetic ${code}: result unconfirmed; no repeated input.`);
+    error.stage = 'fixture_readback';
+    const state = {}, calls = [], stateNote = '\nSynthetic tab state: original tab retained.';
+    const fail = async actual => { assert.equal(actual, args); calls.push('action'); throw error; };
+    const c = vm.createContext({
+      BridgeError, RoutineError: class extends Error {}, PLAN: null,
+      CALL: { getStore: () => state },
+      pauseGate: async (name, actual) => { assert.equal(name, tool); assert.equal(actual, args); calls.push('pause'); },
+      touchTab: async tab => { assert.equal(tab, 7); calls.push('touch'); },
+      click: fail, selectOption: fail,
+      noteOutcome: (ok, actual) => { assert.equal(ok, false); assert.equal(actual, error); calls.push('outcome'); },
+      goneTabNote: (name, actual, failure) => { assert.equal(name, tool); assert.equal(actual, args); assert.equal(failure, error); return ''; },
+      setupHint: actual => { assert.equal(actual, code); return ''; },
+    });
+    // Load real legacy dependencies if present: an unwanted footer must fail on
+    // the actual receipt, rather than merely on a missing VM variable.
+    const fallbackCodes = source.match(/const FALLBACK_CODES = new Set\([\s\S]*?\);/)?.[0] || '';
+    const fallbackHint = source.match(/const FALLBACK_HINT = [\s\S]*?;\n/)?.[0] || '';
+    const dispatch = productionFunction('callToolInner');
+    assert.ok(dispatch, 'production error dispatch exists');
+    vm.runInContext([fallbackCodes, fallbackHint, dispatch].join('\n'), c);
+    const reply = await c.callToolInner(tool, args, {}, async options => {
+      assert.equal(options.ok, false); assert.equal(options.error, error); calls.push('tail'); return stateNote;
+    });
+    assert.equal(reply.isError, true);
+    assert.equal(reply.content.length, 1);
+    assert.equal(reply.content[0].type, 'text');
+    assert.equal(reply.content[0].text, error.message + stateNote);
+    assert.doesNotMatch(reply.content[0].text, /看不到或点不到|screenshot|click_at|press_key|Claude in Chrome|computer use/);
+    assert.deepEqual(calls, ['pause', 'touch', 'action', 'outcome', 'tail'], 'one dispatch; no retry or extra fallback');
+    assert.equal(state.failed, true);
+    assert.equal(state.code, code);
+    assert.equal(state.stage, 'fixture_readback');
+    assert.equal(state.inputDelivery, 'unknown');
+  });
+}
 
 await check('an unreadable display state fails closed; a locked screen does not promise an automatic retry', async () => {
   const h = harness();

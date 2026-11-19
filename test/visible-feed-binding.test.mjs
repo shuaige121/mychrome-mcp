@@ -137,13 +137,14 @@ await check('a verified Codex environment ID works and task completion only clos
   assert.equal(h.feedSnapshot().feedEntries.length, 0);
 }, { env: { CODEX_THREAD_ID: 'verified-current-thread' } }));
 
-for (const client of ['Claude Code', 'unrecognized-client', '']) {
+for (const [client, reason] of [['Claude Code', 'transcript_unavailable'], ['unrecognized-client', 'browser_only'], ['', 'browser_only']]) {
   await check(`${client || 'unknown'} cannot inherit a Codex progress stream`, () => bindingHarness(async h => {
     await h.connectTaskFeed(undefined, { sameTask: false });
-    assert.equal(h.observers.length, 0, 'unsupported provider opened the Codex adapter');
+    assert.equal(h.observers.length, 0, 'a non-Codex provider opened the Codex adapter');
     assert.equal(h.hosts.length, 0);
-    assert.equal(h.feedSnapshot().feedReason, 'unsupported_client');
-    assert.match(h.taskFeedMessage(), /不可用/);
+    assert.equal(h.feedSnapshot().feedReason, reason);
+    assert.match(h.taskFeedMessage(), /不可用|读不到/);
+    assert.doesNotMatch(h.taskFeedMessage(), /不支持/);
   }, { client, env: { CODEX_THREAD_ID: 'parent-codex-thread' } }));
 }
 

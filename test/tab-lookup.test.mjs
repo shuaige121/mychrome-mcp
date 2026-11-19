@@ -18,6 +18,8 @@ import Foundation
 let fixture = try! JSONSerialization.jsonObject(with: Data(CommandLine.arguments[1].utf8)) as! [String: Any]
 final class ErrorCatcher { var last: String?; var lastCode: Int = 0 }
 let catcher = ErrorCatcher()
+let cmd = "info"
+var closeCommandSent = false
 var windowReads = 0, tabReads = 0, collectionSequence = 0
 var windowCollections: [Int] = []
 func emit(_ obj: [String: Any]) -> Never {

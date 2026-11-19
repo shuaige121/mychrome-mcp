@@ -5,7 +5,7 @@
  * ps, kitty, tmux and claude are faked here; nothing reaches a real terminal. */
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, symlink, stat, utimes } from 'node:fs/promises';
-import { writeFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, writeFileSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -15,6 +15,7 @@ const { sourceFingerprint } = await import('../src/settings.js');
 let passed = 0;
 const ok = (name) => { passed++; console.log(`  ok  ${name}`); };
 const CMD = '/mcp reconnect chrome-bridge';
+const OUTCOMES = process.env.RESTART_OUTCOMES_OUT || null;   // I18N1: where the scenarios' outcomes are collected (off by default)
 
 /* ---------------------------------------------------------------- a fake machine */
 
@@ -37,6 +38,9 @@ async function world() {
   await mkdir(path.join(root, 'src'), { recursive: true });
   await writeFile(path.join(root, 'src', 'a.js'), 'export {};\n');
   await writeFile(path.join(root, 'src', 'index.js'), '');
+  await mkdir(path.join(root, 'src', 'page'), { recursive: true });
+  await writeFile(path.join(root, 'src', 'page-prompt-templates.json'), '{}');
+  await writeFile(path.join(root, 'src', 'page', 'prompt-observation.js'), '');
   const lockDir = path.join(dir, 'lock', 'input.lock');
   const serversDir = path.join(dir, 'lock', 'servers');
   await mkdir(serversDir, { recursive: true });
@@ -162,7 +166,9 @@ async function world() {
     throw new Error(`unexpected command: ${cmd} ${args.join(' ')}`);
   };
   W.opts = (extra = {}) => ({ root, lockDir, run: W.run, home: W.home, selfPid: 1, pollMs: 3000, waitMs: 60_000, verifyMs: 9000, typeSettleMs: 400,
-    now: () => W.t, sleep: async (ms) => { W.t += ms; if (W.onTick) W.onTick(W.t); }, ...extra });
+    now: () => W.t, sleep: async (ms) => { W.t += ms; if (W.onTick) W.onTick(W.t); }, ...extra,
+    // I18N1 (test/ui-language.test.mjs): every outcome these scenarios produce, as restartAll reports it to the panel's file.
+    onUpdate: targets => { extra.onUpdate?.(targets); if (OUTCOMES) for (const t of targets) appendFileSync(OUTCOMES, JSON.stringify({ state: t.state, how: t.how, note: t.note }) + '\n'); } });
   return W;
 }
 const typedCount = (W) => W.log.filter(l => / send-text | -l /.test(l)).length;
@@ -741,6 +747,25 @@ const typedCount = (W) => W.log.filter(l => / send-text | -l /.test(l)).length;
   assert.equal(await owner(), process.pid);
   await assert.rejects(stat(claim), 'the claim is let go');
   ok('run lock: free, held, a takeover claimed by another run (never removed by age), a claim left by a dead run reported, a dead owner taken over');
+}
+
+{
+  // I18N1 coverage (test/ui-language.test.mjs reads these outcomes): a session that closes while waited for is reported
+  // done-and-closed, never restarted; sessions MyChrome cannot type into are left untouched with nothing typed.
+  const W = await world();
+  const closing = W.session({ how: 'kitty', status: 'busy' });
+  const print = W.session({ cmd: 'claude -p "do it"' });
+  const other = W.session({ cmd: '/opt/homebrew/bin/codex mcp' });
+  const plain = W.session({});
+  const me = W.session({ how: 'kitty' });
+  W.onTick = (t) => { if (t >= 6000) W.ps.delete(closing.claude); };
+  const out = await R.restartAll(W.opts({ selfPid: me.claude, waitMs: 20_000 }));
+  const by = new Map(out.map(t => [t.client, t]));
+  assert.deepEqual([by.get(closing.claude).state, by.get(closing.claude).note], ['done', '会话已经关了']);
+  for (const s of [print, other, plain, me]) assert.equal(by.get(s.claude).state, 'skipped', by.get(s.claude).note);
+  assert.deepEqual([print, other, plain, me].map(s => by.get(s.claude).how), ['print', 'other', 'unknown', 'self']);
+  assert.equal(typedCount(W), 0, 'nothing typed');
+  ok('a session that closes while waited for: done, closed, not restarted; print/other/plain/self sessions: skipped, nothing typed');
 }
 
 console.log(`restart tests passed (${passed})`);
